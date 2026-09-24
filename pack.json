@@ -1,0 +1,19 @@
+{
+  "name": "Cutemaodie's Tweak Mod",
+  "version": "1.0.0",
+  "uuid": "ab6c0b16-3c3e-4749-9cf2-3110ab32eb10",
+  "priority": 100,
+  "author": "CuteMaodie",
+  "description": "21 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。",
+  "formatversion": 1,
+  "gameversion": "0.14.0",
+  "gpNextVersion": ">=1.0.0",
+  "apiVersion": 2,
+  "requiredGpNextFeatures": [],
+  "capabilities": [
+    "json"
+  ],
+  "js": {
+    "entry": "scripts/main.js"
+  }
+}
