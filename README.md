@@ -263,3 +263,5 @@ window.__TAURI_INTERNALS__.invoke('plugin:fs|read_text_file', { path })
 | 全部数值改动拿不到 `PvZ2ObjectContainer` | 数值改动全部不生效 |
 
 > 上面这些都会在控制台留下 `[Cutemaodies_Tweaks]` 的警告行 —— 看到就知道是哪一项没接上。
+
+本模组代码以 **MIT License** 发布（见 [LICENSE](LICENSE)）。
