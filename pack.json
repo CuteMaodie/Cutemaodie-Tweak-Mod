@@ -5,6 +5,9 @@
   "priority": 100,
   "author": "CuteMaodie",
   "description": "23 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。",
+  "packFormatVersion": 1,
+  "minGpNextVersion": "1.4.6",
+  "_字段说明": "packFormatVersion / minGpNextVersion 是官方指南（新版 GP-Next）的字段名；formatversion / gameversion / gpNextVersion 是 0.14.0 时代的旧字段名（同代参考模组 Vanilla Enhance Mod 也用这三个），为兼容 0.14.0 保留。两套并存，装载器只认自己那套、认不出的键会被忽略。",
   "formatversion": 1,
   "gameversion": "0.14.0",
   "gpNextVersion": ">=1.0.0",
@@ -14,6 +17,7 @@
     "json"
   ],
   "js": {
-    "entry": "scripts/main.js"
+    "entry": "scripts/main.js",
+    "reloadable": false
   }
 }
