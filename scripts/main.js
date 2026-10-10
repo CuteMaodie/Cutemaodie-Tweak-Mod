@@ -4885,11 +4885,20 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         const recFoodEnd = methodRecord(SplitPeaPlant, 'specialPlantFoodEnd');
         P.specialPlantFoodEnd = function () {
             const r = recFoodEnd.original.apply(this, arguments);
+            // ★ 修复（2026/10/10 实机 + 日志定位，属"纯视觉层"）：
+            //   MGP 开大（`Plant.food()`）会把 `body`（真正画贴图/装扮的骨架子节点）从植物节点上
+            //   摘走挂到开大专用层、并在结束时写回 `body.scale = (1,1,1)`；`node.scale` 虽仍是负值，
+            //   但骨架的镜像观感被这次"摘走→挂回+改缩放"打乱，表现为【贴图回到未翻转】。
+            //   `Character.scale` 的 setter 本身就是"写 node.scale"，所以在这里把翻转【重新写一次】，
+            //   强制引擎重算镜像即可（子弹方向/前后数量在 A 型里本来就是对的，不动）。
+            if (this.__gpnSpFlip) {
+                try { this.scale = -1; } catch (e) { warn('裂荚射手：开大结束重写翻转出错', e); }
+            }
             if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚【开大结束】specialPlantFoodEnd：flip=' + !!this.__gpnSpFlip
                         + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
-                        + ' ｜ ' + gpnSpDiag(this));
+                        + (this.__gpnSpFlip ? '（已重写翻转）' : '') + ' ｜ ' + gpnSpDiag(this));
                 } catch (e) { /* 只影响日志 */ }
             }
             return r;
