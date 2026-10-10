@@ -705,14 +705,18 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
                     track(d, 'zh'); d.zh = d.zh + zhSuffix;
                     gpnAlmAppendWrites++;
+                    // ★ 只在【真的写入】时打日志，且最多打 5 条（2026/10/10 实机定论：这段代码
+                    //   每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
+                    //   但判据是可靠的 —— 文本【不会】被重复追加，用户实机确认图鉴文案正常）。
+                    if (dbgOn(CFG.splitpea.debugLog) && gpnAlmAppendWrites <= 5) {
+                        log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加（第 '
+                            + gpnAlmAppendWrites + ' 次写入；本次是第 ' + gpnAlmAppendCalls + ' 次进入）');
+                    }
                 }
                 if (typeof enSuffix === 'string' && typeof d.en === 'string'
                     && d.en.indexOf(enSuffix) === -1) {
                     track(d, 'en'); d.en = d.en + enSuffix;
                 }
-                if (dbgOn(CFG.splitpea.debugLog)) log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加'
-                    + '（第 ' + gpnAlmAppendCalls + ' 次进入，判据"已含后缀"=' + _zhHitBefore
-                    + '，此前长度 ' + _zhBefore.length + '，本次实际写入=' + (gpnAlmAppendWrites > 0 ? '是' : '否') + '）');
                 return true;
             };
 
@@ -1602,8 +1606,9 @@ let gpnAlmAppendCalls = 0;     // appendLoc() 进入次数（= 命中并走到�
 let gpnAlmAppendWrites = 0;    // 其中"判据通过、真的写了 zh"的次数
 const gpnAlmAppendLog = [];    // 前若干条明细
 // ⚠️【临时诊断开关】排查"图鉴文案重复 50 次"期间置 true ⇒ 每次 apply() 后打一次记账+dump。
-//   查完请改回 false（或删除本行与相关记账）。它不依赖 verboseLog，所以能在复现态（false）下拿到数据。
-let gpnAlmTempVerbose = true;
+//   **2026/10/10 已查清**：那段代码每次 apply 都会执行 ⇒ 日志刷 ~50 行，但判据可靠、文本不重复
+//   （用户实机确认图鉴文案正常）⇒ 现改回 false（静默）。要再排查时置回 true 即可。
+let gpnAlmTempVerbose = false;
 let gpnSpBodyIds = null, gpnSpBodyIdNext = 1;  // 给 body 对象分配稳定 id（用来判断"是否换了对象/换装"）
 
 /** 【诊断】把任意对象映射成一个稳定 id（区分"同名但不同对象"） */
