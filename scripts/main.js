@@ -4695,6 +4695,81 @@ function gpnSpFireDir(baseShoot, plant, dir, o, n, type, i, a, sp) {
     return pr;
 }
 
+/**
+ * 【裂荚射手 · 自建索敌】—— 取代引擎的 detectEnemySplit()
+ *
+ * 为什么必须自建（**0.15.0 / GP-Next 1.5.4 实测暴露**，2026/10/10；当时官方指南已到 1.5.5）：
+ *   引擎原版是「① 索敌判前后 → ② 播 ShootR/ShootL 动画 → ③ 动画事件触发 _shoot/_shootBack」三段。
+ *   我们的翻转做法是【② 的 1↔2 交换】+【③ 两个方法方向整体对调】= 两次对调，
+ *   在 0.14.0 上成立，是因为那代原版探测器 `createRectangleCenter((prjX.x+prjX.y)/2, y), 11×格宽)`
+ *   是【以植物为中心】的 —— 左右两侧的僵尸都能进统计，bit1/bit2 都能取到。
+ *   1.5.4 起该几何/坐标语义变了 ⇒「左侧有僵尸」进不了统计 ⇒ 原版只可能返回 0 或 1，
+ *   两次对调就露馅：表现为「翻转后，只有原右侧（机械后方）有僵尸时才开火」（用户实测 · 必现）。
+ *   ⇒ 修法 = 索敌不再依赖引擎的探测器几何，只用【僵尸自身的判定框】+【本株的 worldPositionX】判左右。
+ *
+ * 口径与引擎一致：
+ *   · 僵尸侧判定框 = 僵尸的 bodyRecForShooter（引擎里所有"打僵尸"的索敌都用它，例如狙击豌豆/椰子炮）
+ *   · 左右比较用【公开属性 worldPositionX】（引擎内部用的是私有 _worldPositionX，同值但更脆弱）
+ *   · 返回位序沿用引擎语义：bit1 = 靠房子那一侧（游戏里右边），bit2 = 另一侧（左边）
+ *   · 障碍物（墓碑等）走 tombPool() + bodyRec，与引擎一致
+ * 失败兜底：拿不到僵尸池 / 位置字段时，退回引擎原版实现，绝不静默变成"永不开火"。
+ */
+function gpnSpDetectSplit(plant, fallback) {
+    const res = { bits: 0, left: false, right: false, fell: false };
+    try {
+        const lane = plant && plant.inLane;
+        if (!lane || typeof lane.zombiePool !== 'function') throw new Error('no lane/zombiePool');
+        const px = plant.worldPositionX;
+        if (typeof px !== 'number' || !isFinite(px)) throw new Error('no worldPositionX');
+
+        // 引擎口径：矩形在 x 轴上的投影 prjX()，其 .y = 最大边、.x = 最小边
+        //   —— 引擎自己就是拿 `bodyRecForShooter.prjX().y > this.worldPositionX` 判"靠房子那一侧"
+        const zx = (z) => {
+            try {
+                const r = z && (z.bodyRecForShooter || z.bodyRec);
+                if (r && typeof r.prjX === 'function') {
+                    const p = r.prjX();
+                    if (p && typeof p.y === 'number' && isFinite(p.y)) return p.y;
+                }
+                if (r) {
+                    const lo = (typeof r.left === 'number') ? r.left : r.x;
+                    if (typeof lo === 'number' && isFinite(lo)) return lo + (r.width || 0);
+                }
+            } catch (e) { /* 取不到就算了 */ }
+            return null;
+        };
+
+        const walk = (pool) => {
+            if (!pool || typeof pool.forEach !== 'function') return;
+            pool.forEach((t) => {
+                if (!t || (res.left && res.right)) return;
+                try { if (typeof t.isAlive === 'function' && !t.isAlive()) return; } catch (e) { /* 没这方法就继续 */ }
+                const x = zx(t);
+                if (x === null) return;
+                if (x > px) res.right = true; else res.left = true;   // 位序 1/2 与引擎一致
+            });
+        };
+        walk(lane.zombiePool());
+        if (!(res.left && res.right) && typeof lane.tombPool === 'function') walk(lane.tombPool());
+
+        if (!res.left && !res.right) res.bits = 0;
+        else if (res.right && res.left) res.bits = 3;
+        else if (res.right) res.bits = 1;      // bit1 = 右边（原版"前"）
+        else res.bits = 2;                     // bit2 = 左边（原版"后"）
+        return res;
+    } catch (e) {
+        res.fell = true;
+        try {
+            const b = (typeof fallback === 'function') ? fallback.call(plant) : 0;
+            res.bits = (b === 1 || b === 2 || b === 3) ? b : 0;
+            res.right = (b === 1);
+            res.left = (b === 2);
+            if (b === 3) { res.right = true; res.left = true; }
+        } catch (e2) { res.bits = 0; }
+        return res;
+    }
+}
+
 function makeSplitPeaPatch(SplitPeaPlant, deps) {
     const recs = [];
     const P = SplitPeaPlant && SplitPeaPlant.prototype;
@@ -4746,18 +4821,21 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push(recBack);
 
-    // ---- ③ 播哪支动画也要对调（否则"只有前方"时仍会播只发 1 颗那支）----
-    if (typeof P.detectEnemySplit === 'function') {
-        const rec = methodRecord(SplitPeaPlant, 'detectEnemySplit');
-        P.detectEnemySplit = function () {
-            const n = rec.original.apply(this, arguments);
-            if (!this.__gpnSpFlip) return n;
-            return (n === 1) ? 2 : ((n === 2) ? 1 : n);          // 3 = 两边都有，不用变
-        };
-        recs.push(rec);
-    } else {
-        warn('跳过裂荚射手：没有 detectEnemySplit（前后动画不会对调）');
-    }
+    // ---- ③ 索敌：**不再用引擎的 detectEnemySplit**（自建版，理由见 gpnSpDetectSplit 上方大注释）----
+    const fallbackDetect = (typeof P.detectEnemySplit === 'function') ? P.detectEnemySplit : null;
+    if (!fallbackDetect) warn('裂荚射手：引擎没有 detectEnemySplit（自建索敌仍会接管，但失去兜底）');
+    P.detectEnemySplit = function () {
+        const out = gpnSpDetectSplit(this, fallbackDetect);
+        if (C.debugLog) {
+            try {
+                log('裂荚：索敌 → bits=' + out.bits + '（左=' + out.left + ' 右=' + out.right
+                    + '，翻转=' + !!this.__gpnSpFlip + '，本株x=' + Math.round(this.worldPositionX)
+                    + (out.fell ? '，已退回引擎原版' : '') + '）');
+            } catch (e) { /* 只影响日志 */ }
+        }
+        return out.bits;
+    };
+    recs.push({ Cls: SplitPeaPlant, name: 'detectEnemySplit', original: fallbackDetect });
 
     // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化）----
     if (typeof P.specialPlantOnSquareChange === 'function') {
