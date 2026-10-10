@@ -3156,22 +3156,40 @@ function makePepperBurnPatch(CommonShot, deps) {
     //   ⚠️ 这两个类是【独立模块】（`chunks:///_virtual/DarkJesterZombie.ts` 等），所以从 setup 的
     //      IMPORTS 里导入后传进来（见 `deps.DarkJesterZombieCls` / `Abbot3SectionStaffCls`）。
     const _gpnSpShort = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    /** 拿一个对象的类名（Cocos 的 cc.js.getClassName；拿不到就返回空串） */
+    const _gpnSpClassName = (o) => {
+        try {
+            const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+            if (ccg && ccg.js && typeof ccg.js.getClassName === 'function') return String(ccg.js.getClassName(o) || '');
+        } catch (e) { /* 忽略 */ }
+        try { return (o && o.constructor && o.constructor.name) ? String(o.constructor.name) : ''; } catch (e) { return ''; }
+    };
+    /**
+     * 判定"这一发是被谁反弹的"。
+     * ⚠️ 必须**双条件**（2026/10/10 用户指出：弄臣还有**复活节变体**，而它的代号里【没有】juggler）：
+     *    · 主判据 = **类名**：`DarkJesterZombie`（弄臣系，含节日/复活节等换装变体）/ `Abbot3SectionStaffZombie`（三节棍）；
+     *    · 兜底 = **Zombie_Type 名字**：含 juggler ⇒ 弄臣；含 3section ⇒ 三节棍。
+     *   两个都拿不到就返回 null（不打标记 ⇒ 维持引擎原样，宁可漏也不误判）。
+     */
     const gpnReflectOwner = (z) => {
         try {
             if (!z) return null;
-            const t = _gpnSpShort(z.Zombie_Type);                 // 例：'dark_juggler' / 'abbot_3section_staff'
-            if (!t) return null;
-            if (t.indexOf('juggler') !== -1) return 'juggler';    // 含节日变种 birthday_juggler
-            if (t.indexOf('3section') !== -1) return 'staff';
+            const cn = _gpnSpShort(_gpnSpClassName(z));      // 例：'darkjesterzombie' / 'abbot3sectionstaffzombie'
+            const tn = _gpnSpShort(z.Zombie_Type);           // 例：'darkjuggler' / 'birthdayjuggler' / 'easter…'
+            if (cn.indexOf('darkjester') !== -1 || cn.indexOf('jester') !== -1) return 'juggler';
+            if (cn.indexOf('3section') !== -1 || cn.indexOf('abbot3') !== -1) return 'staff';
+            if (tn.indexOf('juggler') !== -1) return 'juggler';
+            if (tn.indexOf('3section') !== -1) return 'staff';
             return null;
         } catch (e) { return null; }
     };
-    const gpnMarkReflect = (shot, owner) => {
+    const gpnMarkReflect = (shot, owner, who) => {
         try {
             if (!shot || !owner) return;
             shot.__gpnReflectBy = owner;
             if (dbgOn(CFG.pepperpult.debugLog)) {
                 log('甜椒【反弹标记】这一发由' + (owner === 'juggler' ? '弄臣僵尸' : '三节棍僵尸') + '反弹'
+                    + '（识别依据：' + (who || '?') + '）'
                     + ' ⇒ ' + (owner === 'juggler' ? '不再算投掷物（不吃伞叶/回旋镖）' : '仍算投掷物（照旧可被挡下）'));
             }
         } catch (e) { /* 只影响诊断 */ }
@@ -3186,7 +3204,11 @@ function makePepperBurnPatch(CommonShot, deps) {
                 const r = recR.original.apply(this, arguments);
                 try {
                     const owner = gpnReflectOwner(this);
-                    if (owner) for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner);
+                    if (owner) {
+                        const who = 'Zombie_Type=' + String(this.Zombie_Type == null ? '(空)' : this.Zombie_Type)
+                            + ' 类名=' + (_gpnSpClassName(this) || '(空)');
+                        for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner, who);
+                    }
                 } catch (e) { /* 只影响诊断 */ }
                 return r;
             };
