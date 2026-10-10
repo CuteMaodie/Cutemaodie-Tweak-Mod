@@ -4991,7 +4991,50 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         recs.push(recFoodEnd);
     }
 
-    // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
+    // ---- ⑦b 【body 缩放自洽纠正】可被"帧内"与"帧末"两处调用 ----
+    //   为什么需要两处：`node.scale = x` 这类**直接赋值不会通知引擎重算世界变换**（脏标记/传播时机问题），
+    //   所以"值对了、画面没变"是可能发生的。这里统一做三件事：
+    //     ① 用 `setScale()`（走 setter、会标脏）而不是直改分量；
+    //     ② 主动 `invalidateChildren(...)` 失效子树（把可用的失效入口都试一遍）；
+    //     ③ 由 `characterUpdate`（帧内）与 `characterLateUpdate`（帧末）各调一次，
+    //        保证"最后一次写"发生在引擎渲染取变换之前。
+    const gpnSpFixBodyScale = (plant) => {
+        if (!plant || !plant.__gpnSpFlip) return 0;
+        const bd = plant.body;
+        const bsc = bd && bd.scale;
+        if (!bsc || typeof bsc.x !== 'number' || bsc.x === 0) return 0;
+        const par = bd.parent || plant.node;
+        const parWS = (par && par.worldScale && typeof par.worldScale.x === 'number')
+            ? par.worldScale.x
+            : ((plant.node && plant.node.worldScale && typeof plant.node.worldScale.x === 'number')
+                ? plant.node.worldScale.x : -1);
+        // 目标世界符号 = -1（翻转）⇒ 本地期望符号 = sign(父世界) × (-1)
+        const wanted = (parWS < 0) ? 1 : -1;
+        if (Math.sign(bsc.x) === wanted) return 0;
+        const abs = Math.abs(bsc.x);
+        const y = (typeof bsc.y === 'number') ? bsc.y : abs;
+        const z = (typeof bsc.z === 'number') ? bsc.z : 1;
+        try {
+            if (typeof bd.setScale === 'function') bd.setScale(abs * wanted, y, z);   // ① setter：会标脏
+            else { bsc.x = abs * wanted; }
+        } catch (e) { try { bsc.x = abs * wanted; } catch (e2) { return 0; } }
+        // ② 主动失效子树（不同版本 API 名不同，挨个试，全部失败就交给 ③ 的帧末写入）
+        try {
+            if (typeof bd.invalidateChildren === 'function') bd.invalidateChildren(deps && deps.TransformBit ? deps.TransformBit.SCALE : 3);
+            else if (typeof bd.markForUpdate === 'function') bd.markForUpdate(deps && deps.TransformBit ? deps.TransformBit.SCALE : 3);
+        } catch (e) { /* 只影响诊断 */ }
+        // ③ 顺带把父节点的变换也刷一次（保证子节点会跟着重算）
+        try { if (par && typeof par.invalidateChildren === 'function') par.invalidateChildren(); } catch (e) { /* 忽略 */ }
+        gpnSpBodyFixTotal++;
+        gpnSpBodyFixSpots++;
+        if (!gpnSpBodyFixFirstStack) {
+            try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+            catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
+        }
+        return 1;
+    };
+
+
     //   为什么需要（2026/10/10 实机日志定位，属于帧时序竞态）：
     //     · 引擎 `Character.onEnable` 里有一句 `this.node.scale = new Vec3(d,d,d)`（把渲染缩放复位）；
     //     · 我们的翻转走 `Character.scale` setter（写 `node.scale = _scale × U × originalScale`）；
@@ -5001,6 +5044,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     //       `body.scale.x` 在结束时被写成 1 ⇒ 这就是竞态发生的窗口。
     //     · 之所以"verboseLog 开=正常、关=复现"：日志开销改变了帧内时序（巧合掩盖了竞态）。
     //   ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
+    // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
     const baseCharUpdate = P.characterUpdate;          // 继承自 Plant；可能不存在
     P.characterUpdate = function (dt) {
         let r;
@@ -5049,49 +5093,39 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                 //     · 开大（`Plant.food()`）会把 body 摘到"开大层"（外层缩放 +1），为了保持世界观感，
                 //       引擎把 body 的本地缩放算成 `-0.42`（= 世界 -0.42 ÷ 父 +1）；这时的本地负号是**正确**的；
                 //     · 但 body 挂回 node（世界 -0.42）之后，本地缩放**没有重新计算**，仍是 `-0.42`
-                //       ⇒ 世界 = (-0.42) × (-0.42) = **+0.18 级别（正）** ⇒ **贴图与发射口双双回到未翻转态**；
-                //     · （`body.worldScale` 是**显式缓存**，写它只会造出"读数正常、画面依旧"的假象 —— 已弃用。）
-                //   ⇒ 修法：维持一条**自洽式**：
-                //         body.scale.x 的符号  =  父世界符号 × 目标世界符号
-                //      · 父 = node(-0.42)、目标负 ⇒ 本地应为**正**（1）⇒ 世界 -0.42 ⇒ 翻转 ✓
-                //      · 父 = 开大层(+1)、目标负  ⇒ 本地应为**负**（-1）⇒ 世界 -1（负） ⇒ 开大期间也保持翻转 ✓
-                //      · 未翻转的株：整段不进入（`__gpnSpFlip` 为假）⇒ 引擎怎么做都不干预 ✓
-                const bd = this.body;
-                const bsc = bd && bd.scale;
-                if (bsc && typeof bsc.x === 'number' && bsc.x !== 0) {
-                    const par = bd.parent || this.node;
-                    const parWS = (par && par.worldScale && typeof par.worldScale.x === 'number')
-                        ? par.worldScale.x
-                        : ((this.node && this.node.worldScale && typeof this.node.worldScale.x === 'number')
-                            ? this.node.worldScale.x : -1);
-                    // 目标世界符号 = -1（翻转）；本地期望符号 = sign(父世界) × (-1)
-                    const wanted = (parWS < 0) ? 1 : -1;
-                    if (Math.sign(bsc.x) !== wanted) {
-                        try {
-                            bsc.x = Math.abs(bsc.x) * wanted;
-                            gpnSpBodyFixTotal++;
-                            gpnSpBodyFixSpots++;
-                            if (!gpnSpBodyFixFirstStack) {
-                                try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
-                                catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
-                            }
-                            if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
-                                gpnSpBodyFixLastReport = Date.now();
-                                const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
-                                log('裂荚【body 本地缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
-                                    + '（期望符号 ' + wanted + '，父世界 ' + parWS + '）'
-                                    + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
-                            }
-                        } catch (e) { warn('裂荚射手：body 本地缩放纠正出错', e); }
-                    }
+                //       ⇒ 世界 = (-0.42) × (-0.42) = 正 ⇒ **贴图与发射口双双回到未翻转态**；
+                //     · （`body.worldScale` 恒正 —— Cocos 官方论坛已确认"负值会被自动纠正成正数" ⇒ 那条通路是死的。）
+                //     · 更深一层：**直接给 `scale.x` 赋值不会通知引擎重算世界变换**（脏标记/传播时机），
+                //       所以"值算对了、画面却不更新"完全可能发生 —— 这也是 `verboseLog:true` 时反而正常的原因
+                //       （日志开销把帧拉长，引擎的变换传播恰好落在我们写入之后）。
+                //   ⇒ 修法：维持自洽式符号，并**主动通知引擎**（setScale + invalidateChildren），
+                //     且在 **characterUpdate（帧内）与 characterLateUpdate（帧末）各写一次**。
+                gpnSpFixBodyScale(this);
+                if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
+                    gpnSpBodyFixLastReport = Date.now();
+                    const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
+                    log('裂荚【body 缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
+                        + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
                 }
             }
         } catch (e) { warn('裂荚射手：每帧自愈出错', e); }
         return r;
     };
     recs.push({ Cls: SplitPeaPlant, name: 'characterUpdate', original: baseCharUpdate });
+    // 帧末兜底：`Character.lateUpdate` → `characterLateUpdate`。这次写入发生在引擎渲染取变换之前，
+    //   保证"最后一次写"是我们写的（哪怕引擎在帧内又把它改回去了）。
+    const baseCharLate = P.characterLateUpdate;
+    P.characterLateUpdate = function (dt) {
+        let r;
+        if (typeof baseCharLate === 'function') r = baseCharLate.apply(this, arguments);
+        try { gpnSpFixBodyScale(this); }
+        catch (e) { warn('裂荚射手：帧末自愈出错', e); }
+        return r;
+    };
+    recs.push({ Cls: SplitPeaPlant, name: 'characterLateUpdate', original: baseCharLate });
     // 自检探针（仅供 mock 单测调用；dt 传 -1 ⇒ 不刷日志。游戏里不会被调用）
     P.__gpnSpSelfHealTick = function () { return P.characterUpdate.call(this, -1); };
+    P.__gpnSpSelfHealLateTick = function () { return P.characterLateUpdate.call(this, -1); };
 
     // ---- ⑧ 【环形时间线记录器】纯诊断：默认零输出，只在内存里滚动保留最近样本 ----
     //   为什么需要：前几轮的教训是"只看开大前后两个采样点 ⇒ 结论全错"。
