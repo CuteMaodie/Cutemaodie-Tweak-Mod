@@ -5043,33 +5043,40 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                         }
                     }
                 }
-                // ★★ 真正的 MGP 开大丢翻转根因修复（2026/10/10 由"环形时间线"实测定死）：
-                //   `node.scale.x` 全程是负的（= -0.42，我们的翻转一直在），
-                //   但【body 的本地缩放被引擎写成了负值】：
-                //     引擎 `Plant.update` 里有 `this.body.parent != this.node && (this.body.worldScale = this.node.worldScale …)`
-                //     —— 它把"世界缩放"这条信息搬给 body；而 body 的父节点就是 node（本地 −1 × 父 −0.42）
-                //     ⇒ 两个负号【相乘抵消】⇒ 骨架世界缩放变成 +0.42 ⇒ 画面回到未翻转，
-                //       发射口世界坐标也跟着跑到另一侧（时间线实测：sp1 622.879(左) → 706.225(右)）。
-                //   修法（保守版 A）：只修"坏值"——body 本地缩放为负时不可能是合法动画值
-                //   （引擎自己的出场动画用的都是正系数），所以把它归正即可恢复镜像。
+                // ★★ MGP 开大丢翻转的【最终修复】（2026/10/10 由"环形时间线 + 层级身份列"实测定死）：
+                //   开大时 `Plant.food()` 走 `this.body.setParent(开大层, true)` —— 把 body 摘到
+                //   一个外层缩放为 **+1** 的容器（时间线里显示为 `bodyP=New Node  pid=4(pws=1)`）；
+                //   为了让观感不变，引擎把 body 的【世界缩放】显式写成 `node.worldScale`（`Plant.update` 里
+                //   `body.parent != node && (body.worldScale = node.worldScale)`）。
+                //   问题：`worldScale` 是**显式持久化**的值 —— body 挂回 node 之后**不会自动重算**，
+                //   于是最终停留在 `bodyS=1`（本地）却 `bodyws=+0.42`（世界）的状态 ⇒ **画面回正**。
+                //   ⇒ 修法：翻转态下把 body 的**世界缩放**直接钉成负值（用引擎自己的语义，不猜本地值）。
+                //      · body 挂在 node 下       ⇒ 世界 -0.42 ⇒ 贴图/发射口镜像恢复
+                //      · body 正挂在开大层下     ⇒ 同样强制 -0.42 ⇒ **开大期间也保持翻转**
+                //      · 引擎的弹性动画（jump/fall/grow）改的是本地缩放，其形变仍然保留（本地会被自动反算）
                 const bd = this.body;
-                const bsx = bd && bd.scale && bd.scale.x;
-                if (typeof bsx === 'number' && bsx < 0) {
-                    try {
-                        bd.scale.x = 1;                 // 消除双重负号 ⇒ 骨架世界缩放回到 -0.42
-                        gpnSpBodyFixTotal++;
-                        gpnSpBodyFixSpots++;
-                        if (!gpnSpBodyFixFirstStack) {
-                            try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
-                            catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
-                        }
-                        if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
-                            gpnSpBodyFixLastReport = Date.now();
-                            const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
-                            log('裂荚【body 自愈汇总】最近一次统计内修正 ' + n2 + ' 次（body 本地缩放被写成负 ⇒ 双重翻转抵消）'
-                                + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
-                        }
-                    } catch (e) { warn('裂荚射手：body 缩放纠正出错', e); }
+                const bws = bd && bd.worldScale;
+                if (bws && typeof bws.x === 'number') {
+                    const nws = (this.node && this.node.worldScale && typeof this.node.worldScale.x === 'number')
+                        ? Math.abs(this.node.worldScale.x) : 0.42;
+                    if (bws.x >= 0) {                      // 期望符号是负；只要不是负就纠正
+                        try {
+                            bws.x = -nws;
+                            gpnSpBodyFixTotal++;
+                            gpnSpBodyFixSpots++;
+                            if (!gpnSpBodyFixFirstStack) {
+                                try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+                                catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
+                            }
+                            if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
+                                gpnSpBodyFixLastReport = Date.now();
+                                const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
+                                log('裂荚【body 世界缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
+                                    + '（body 世界缩放被写成正 ⇒ 双重翻转抵消）'
+                                    + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
+                            }
+                        } catch (e) { warn('裂荚射手：body 世界缩放纠正出错', e); }
+                    }
                 }
             }
         } catch (e) { warn('裂荚射手：每帧自愈出错', e); }
