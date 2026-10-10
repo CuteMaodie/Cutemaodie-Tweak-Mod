@@ -4666,109 +4666,42 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
  *        影子在 followShade 里按 this.scale 算 ⇒ 自动跟着翻 ✓
  * ========================================================================== */
 
-/**
- * 翻转后的【发射口】：跟着贴图走。
- *  引擎 _shoot() 用的是 this.peaSpawnpoint（植物根节点下的子节点 ⇒ 会随 scale 一起镜像）。
- *  ⇒ 朝【机械前方】那发要用【镜像后的位置】：2×植物x − spawn.x（也就是翻过来的那个嘴）
- *  ⇒ 朝【机械后方】那发直接用镜像后的 spawn.x（那个嘴本身就是翻过来的）
- *  并且【不再】用引擎 _shootBack 的 -50 偏移 —— 因为偏移的前提是"发射口还在原来的前面"。
- */
-function gpnSpSpawnFor(plant, dir) {
-    const sp = plant && plant.peaSpawnpoint;
-    const wp = sp && sp.worldPosition;
-    if (!wp || typeof wp.x !== 'number' || typeof plant.worldPositionX !== 'number') return null;
-    const x = (dir > 0) ? (2 * plant.worldPositionX - wp.x) : wp.x;
-    return { worldPosition: { x: x, y: wp.y } };
-}
-
-/** 翻转时朝指定方向发一颗（dir：+1 朝前 / -1 朝后） */
-function gpnSpFireDir(baseShoot, plant, dir, o, n, type, i, a, sp) {
-    const spawn = gpnSpSpawnFor(plant, dir) || sp;
-    const pr = baseShoot.call(plant, o, n, type, i, a, spawn);
-    if (dir < 0 && pr && typeof pr.then === 'function') {
-        return pr.then((pea) => {
-            try { if (pea && pea.linearVelocity) pea.linearVelocity.x *= -1; }
-            catch (e) { /* 不是子弹对象就算了 */ }
-            return pea;
-        });
-    }
-    return pr;
-}
-
-/**
- * 【裂荚射手 · 自建索敌】—— 取代引擎的 detectEnemySplit()
+/* ==========================================================================
+ * 翻转适配（**1.5.5 口径**，2026/10/10 据实机 bundle 逐字核对）
  *
- * 为什么必须自建（**0.15.0 / GP-Next 1.5.4 实测暴露**，2026/10/10；当时官方指南已到 1.5.5）：
- *   引擎原版是「① 索敌判前后 → ② 播 ShootR/ShootL 动画 → ③ 动画事件触发 _shoot/_shootBack」三段。
- *   我们的翻转做法是【② 的 1↔2 交换】+【③ 两个方法方向整体对调】= 两次对调，
- *   在 0.14.0 上成立，是因为那代原版探测器 `createRectangleCenter((prjX.x+prjX.y)/2, y), 11×格宽)`
- *   是【以植物为中心】的 —— 左右两侧的僵尸都能进统计，bit1/bit2 都能取到。
- *   1.5.4 起该几何/坐标语义变了 ⇒「左侧有僵尸」进不了统计 ⇒ 原版只可能返回 0 或 1，
- *   两次对调就露馅：表现为「翻转后，只有原右侧（机械后方）有僵尸时才开火」（用户实测 · 必现）。
- *   ⇒ 修法 = 索敌不再依赖引擎的探测器几何，只用【僵尸自身的判定框】+【本株的 worldPositionX】判左右。
- *
- * 口径与引擎一致：
- *   · 僵尸侧判定框 = 僵尸的 bodyRecForShooter（引擎里所有"打僵尸"的索敌都用它，例如狙击豌豆/椰子炮）
- *   · 左右比较用【公开属性 worldPositionX】（引擎内部用的是私有 _worldPositionX，同值但更脆弱）
- *   · 返回位序沿用引擎语义：bit1 = 靠房子那一侧（游戏里右边），bit2 = 另一侧（左边）
- *   · 障碍物（墓碑等）走 tombPool() + bodyRec，与引擎一致
- * 失败兜底：拿不到僵尸池 / 位置字段时，退回引擎原版实现，绝不静默变成"永不开火"。
+ * 引擎事实（1.5.5 的 SplitPea，已从 `game-main-bundle.js` 抠出原文）：
+ *   · `_shoot(o, n, e, i, a, s)`：弹种 e / 速度 i / **方向向量 a** / **发射口节点 s** 都是【参数】
+ *     （默认 a = new Vec2(1,0)、s = this.peaSpawnpoint），最终速度 = `a.normalize().multiplyScalar(i)`
+ *   · `_shootBack(o,e,a)` = `this._shoot(o, e, a, 8, new d(-1,0), this.peaBackPoint)` ⇒ 后方只是"翻参数"
+ *   · `detectEnemySplit()` 返回 **`{Left, Right}` 对象**（不再是 0/1/2/3 数字），
+ *     `specialPlantUpdate` 里读 `a.Left || a.Right`，并**动态拼动画名** `"Shoot" + "R"/"L"`
+ *   ⇒ 所以本模组的翻转**只要两件事**：
+ *     ① 索敌【交给引擎】（它同时给 Left/Right，本来就是对的）
+ *     ② 发射时把**方向向量取反**；发射口**不动**（peaSpawnpoint / peaBackPoint 是植物根节点的子节点，
+ *        会随 `scale = -1` 一起镜像，世界坐标自动落到翻过来的那一侧）
+ * ========================================================================== */
+
+/** 翻转时把方向参数取反（不改发射口）
+ *  ⚠️ 关键：`_shoot()` 经常**不带参数**调用（动画帧事件就是 `this._shoot()`），
+ *     引擎内部对方向的默认值是 `new Vec2(1, 0)`（朝前）。
+ *     ⇒ 传进来的 `a` 是 `undefined/0/null` 时，我们要**补一个朝后**的方向，
+ *       而且**必须用引擎自己的 Vec2**（副本类型不匹配可能被下游拒绝）—— 由 `cx` 传进来。
  */
-function gpnSpDetectSplit(plant, fallback) {
-    const res = { bits: 0, left: false, right: false, fell: false };
-    try {
-        const lane = plant && plant.inLane;
-        if (!lane || typeof lane.zombiePool !== 'function') throw new Error('no lane/zombiePool');
-        const px = plant.worldPositionX;
-        if (typeof px !== 'number' || !isFinite(px)) throw new Error('no worldPositionX');
-
-        // 引擎口径：矩形在 x 轴上的投影 prjX()，其 .y = 最大边、.x = 最小边
-        //   —— 引擎自己就是拿 `bodyRecForShooter.prjX().y > this.worldPositionX` 判"靠房子那一侧"
-        const zx = (z) => {
-            try {
-                const r = z && (z.bodyRecForShooter || z.bodyRec);
-                if (r && typeof r.prjX === 'function') {
-                    const p = r.prjX();
-                    if (p && typeof p.y === 'number' && isFinite(p.y)) return p.y;
-                }
-                if (r) {
-                    const lo = (typeof r.left === 'number') ? r.left : r.x;
-                    if (typeof lo === 'number' && isFinite(lo)) return lo + (r.width || 0);
-                }
-            } catch (e) { /* 取不到就算了 */ }
-            return null;
-        };
-
-        const walk = (pool) => {
-            if (!pool || typeof pool.forEach !== 'function') return;
-            pool.forEach((t) => {
-                if (!t || (res.left && res.right)) return;
-                try { if (typeof t.isAlive === 'function' && !t.isAlive()) return; } catch (e) { /* 没这方法就继续 */ }
-                const x = zx(t);
-                if (x === null) return;
-                if (x > px) res.right = true; else res.left = true;   // 位序 1/2 与引擎一致
-            });
-        };
-        walk(lane.zombiePool());
-        if (!(res.left && res.right) && typeof lane.tombPool === 'function') walk(lane.tombPool());
-
-        if (!res.left && !res.right) res.bits = 0;
-        else if (res.right && res.left) res.bits = 3;
-        else if (res.right) res.bits = 1;      // bit1 = 右边（原版"前"）
-        else res.bits = 2;                     // bit2 = 左边（原版"后"）
-        return res;
-    } catch (e) {
-        res.fell = true;
-        try {
-            const b = (typeof fallback === 'function') ? fallback.call(plant) : 0;
-            res.bits = (b === 1 || b === 2 || b === 3) ? b : 0;
-            res.right = (b === 1);
-            res.left = (b === 2);
-            if (b === 3) { res.right = true; res.left = true; }
-        } catch (e2) { res.bits = 0; }
-        return res;
-    }
+function gpnSpFlipVec(vec, cx) {
+    const New = (x) => {
+        try { if (cx && typeof cx === 'function') return new cx(x, 0); } catch (e) { /* 忽略 */ }
+        return null;
+    };
+    const make = (x) => {
+        try { if (vec && typeof vec.clone === 'function') { const c = vec.clone(); c.x = x; return c; } } catch (e) { /* 忽略 */ }
+        return New(x);
+    };
+    let out = make(-(vec && typeof vec.x === 'number' ? vec.x : 1));
+    if (!out) out = { x: -1, y: 0 };          // 极端兜底（引擎的 normalize() 可能不吃普通对象，但不至于崩）
+    if (typeof out.y !== 'number') { try { out.y = 0; } catch (e) { /* 忽略 */ } }
+    return out;
 }
+
 
 function makeSplitPeaPatch(SplitPeaPlant, deps) {
     const recs = [];
@@ -4777,6 +4710,9 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     const C = CFG.splitpea;
     const baseShoot = P._shoot;                 // 继承自 PeashooterPlant；先抓住原版再包
     if (typeof baseShoot !== 'function') { warn('跳过裂荚射手：拿不到 _shoot（对调会失效）'); return null; }
+    // 引擎的 Vec2（用来造"取反后的方向"；deps.cc.Vec2 就是引擎那个）
+    const Vec2Ctor = (deps && deps.cc && typeof deps.cc.Vec2 === 'function') ? deps.cc.Vec2 : null;
+    if (!Vec2Ctor) warn('裂荚射手：拿不到 cc.Vec2（翻转后的方向向量会退化为普通对象）');
 
     /** 翻转 = 引擎自己的 scale 符号（x 带符号 ⇒ 整株镜像；装扮 / 动画 / 影子都跟着走） */
     const applyFlip = (plant, on) => {
@@ -4806,36 +4742,32 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push({ Cls: SplitPeaPlant, name: 'onMouseDown', original: baseOnMouseDown });
 
-    // ---- ② 方向整体对调（前 ⇄ 后）----
+    // ---- ② 翻转时把【方向参数】取反（1.5.5 口径：方向 = `_shoot` 的第 5 个参数）----
+    //   说明：_shootBack 现在只是 `this._shoot(o,e,a,8,vec(-1,0),this.peaBackPoint)` 的薄封装，
+    //   所以【只包 _shoot 一处】即可覆盖前/后两个口（包 _shootBack 会双重调用）。
+    //   发射口参数【不动】：peaSpawnpoint / peaBackPoint 是植物根节点子节点，随 scale=-1 一起镜像。
     const recShoot = methodRecord(SplitPeaPlant, '_shoot');
     P._shoot = function (o, n, e, i, a, sp) {
-        if (this.__gpnSpFlip) return gpnSpFireDir(baseShoot, this, -1, o, n, e, i, a, sp);   // 朝后
+        if (this.__gpnSpFlip) {
+            const hadDir = !!(a && typeof a.x === 'number');
+            const flipped = gpnSpFlipVec(a, Vec2Ctor);       // 参数缺省时也补成"朝后"
+            if (C.debugLog) {
+                try {
+                    log('裂荚：翻转发射 → 方向 ' + (hadDir ? a.x : '缺省(1)') + ' → '
+                        + (flipped && typeof flipped.x === 'number' ? flipped.x : '?')
+                        + (hadDir ? '' : '（补方向）') + '，速度=' + i);
+                } catch (e2) { /* 只影响日志 */ }
+            }
+            return recShoot.original.call(this, o, n, e, i, flipped, sp);
+        }
         return recShoot.original.apply(this, arguments);
     };
     recs.push(recShoot);
 
-    const recBack = methodRecord(SplitPeaPlant, '_shootBack');
-    P._shootBack = function (o, n, e, i, a, sp) {
-        if (this.__gpnSpFlip) return gpnSpFireDir(baseShoot, this, 1, o, n, e, i, a, sp);    // 朝前
-        return recBack.original.apply(this, arguments);
-    };
-    recs.push(recBack);
-
-    // ---- ③ 索敌：**不再用引擎的 detectEnemySplit**（自建版，理由见 gpnSpDetectSplit 上方大注释）----
-    const fallbackDetect = (typeof P.detectEnemySplit === 'function') ? P.detectEnemySplit : null;
-    if (!fallbackDetect) warn('裂荚射手：引擎没有 detectEnemySplit（自建索敌仍会接管，但失去兜底）');
-    P.detectEnemySplit = function () {
-        const out = gpnSpDetectSplit(this, fallbackDetect);
-        if (C.debugLog) {
-            try {
-                log('裂荚：索敌 → bits=' + out.bits + '（左=' + out.left + ' 右=' + out.right
-                    + '，翻转=' + !!this.__gpnSpFlip + '，本株x=' + Math.round(this.worldPositionX)
-                    + (out.fell ? '，已退回引擎原版' : '') + '）');
-            } catch (e) { /* 只影响日志 */ }
-        }
-        return out.bits;
-    };
-    recs.push({ Cls: SplitPeaPlant, name: 'detectEnemySplit', original: fallbackDetect });
+    // ---- ③ 索敌：**完全交还引擎**（1.5.5 原版 `detectEnemySplit()` 返回 `{Left, Right}`，本来就是对的）
+    //   历史教训：我们曾在 0.14.0 时代 hook 它并交换 1↔2；1.5.5 改成返回对象后，
+    //   我们继续返回数字 ⇒ 调用方 `a.Left || a.Right` 全为 undefined ⇒ 整株【永不开火】。
+    //   ⇒ 现在【不再 hook detectEnemySplit】，一行都不碰。
 
     // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化）----
     if (typeof P.specialPlantOnSquareChange === 'function') {

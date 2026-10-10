@@ -7,7 +7,7 @@
   "description": "23 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。",
   "packFormatVersion": 1,
   "minGpNextVersion": "1.4.6",
-  "_字段说明": "版本字段按『新旧并存』写，只为了在不改任何字段的前提下兼容两代 GP-Next。① 旧字段 formatversion / gameversion / gpNextVersion 是 0.14.0 时代（GP-Next 1.4.6）的写法 —— 同代参考模组 Vanilla Enhance Mod 用的也是这三个，我们照抄；② 新字段 packFormatVersion / minGpNextVersion 是官方指南（GP-Next 1.5.x / 游戏 0.15.0 起）的写法；③ ⚠️ 按 1.5.2 官方文档：清单里只要存在 gpNextVersion，就忽略 min/max ⇒ 本文件里的 minGpNextVersion 在新版是『不生效』的（旧版行为未知、1.4.6 源码未能取得实证）；④ 版本不匹配只会提示『可能不兼容』，不会阻止加载；⑤ js.reloadable 仅在同时声明 js.startup:true 的启动模组上生效，我们不开 startup ⇒ 该键目前不起作用。改动此文件前请先读 CTM\\0.14.X\\官方规范审计.md 的 A2 段。",
+  "_字段说明": "版本字段按『新旧并存』写，只为了在不改任何字段的前提下兼容两代 GP-Next。① 旧字段 formatversion / gameversion / gpNextVersion 是 0.14.0 时代（GP-Next 1.4.6）的写法 —— 同代参考模组 Vanilla Enhance Mod 用的也是这三个，我们照抄；② 新字段 packFormatVersion / minGpNextVersion 是官方指南（GP-Next 1.5.x / 游戏 0.15.0 起）的写法；③ ⚠️ 按官方文档：清单里只要存在 gpNextVersion，就忽略 min/max ⇒ 本文件里的 minGpNextVersion 在新版是『不生效』的（旧版行为未知、1.4.6 源码未能取得实证）；④ 版本不匹配只会提示『可能不兼容』，不会阻止加载；⑤ ⚠️⚠️ 【js.reloadable 绝对不要加】—— 官方原文是「js.reloadable: false 仅用于同时声明 js.startup: true 的启动模组」；我们不开 startup，加了它 GP-Next 1.5.5 会直接判整包失败：『Non-reloadable JS mods are not supported; setup must be fully disposable』（2026/10/10 实机踩过）。改动此文件前请先读 CTM\\0.14.X\\官方规范审计.md 的 A2 段。",
   "formatversion": 1,
   "gameversion": "0.14.0",
   "gpNextVersion": ">=1.0.0",
@@ -17,7 +17,6 @@
     "json"
   ],
   "js": {
-    "entry": "scripts/main.js",
-    "reloadable": false
+    "entry": "scripts/main.js"
   }
 }
