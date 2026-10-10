@@ -1532,6 +1532,11 @@ let gpnSpTickTotal = 0;                        // characterUpdate 钩子被调�
 const gpnSpTL = [];                            // 【环形时间线】最近若干条样本（纯诊断；见 gpnSpSample）
 const gpnSpTLCaps = { max: 900, dumped: 0 };   // 上限 900 条；dumped = 已输出过几次
 let gpnSpLastDumpAt = 0;                       // 上次自动 dump 的时间戳（见 characterUpdate 里的保险丝）
+// body 缩放纠正（MGP 开大丢翻转的真因修复）的统计
+let gpnSpBodyFixTotal = 0;
+let gpnSpBodyFixSpots = 0;
+let gpnSpBodyFixFirstStack = '';
+let gpnSpBodyFixLastReport = 0;
 let gpnSpBodyIds = null, gpnSpBodyIdNext = 1;  // 给 body 对象分配稳定 id（用来判断"是否换了对象/换装"）
 
 /** 【诊断】把 body 对象映射成一个稳定 id（新对象 ⇒ 新 id） */
@@ -5025,6 +5030,34 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                         }
                     }
                 }
+                // ★★ 真正的 MGP 开大丢翻转根因修复（2026/10/10 由"环形时间线"实测定死）：
+                //   `node.scale.x` 全程是负的（= -0.42，我们的翻转一直在），
+                //   但【body 的本地缩放被引擎写成了负值】：
+                //     引擎 `Plant.update` 里有 `this.body.parent != this.node && (this.body.worldScale = this.node.worldScale …)`
+                //     —— 它把"世界缩放"这条信息搬给 body；而 body 的父节点就是 node（本地 −1 × 父 −0.42）
+                //     ⇒ 两个负号【相乘抵消】⇒ 骨架世界缩放变成 +0.42 ⇒ 画面回到未翻转，
+                //       发射口世界坐标也跟着跑到另一侧（时间线实测：sp1 622.879(左) → 706.225(右)）。
+                //   修法（保守版 A）：只修"坏值"——body 本地缩放为负时不可能是合法动画值
+                //   （引擎自己的出场动画用的都是正系数），所以把它归正即可恢复镜像。
+                const bd = this.body;
+                const bsx = bd && bd.scale && bd.scale.x;
+                if (typeof bsx === 'number' && bsx < 0) {
+                    try {
+                        bd.scale.x = 1;                 // 消除双重负号 ⇒ 骨架世界缩放回到 -0.42
+                        gpnSpBodyFixTotal++;
+                        gpnSpBodyFixSpots++;
+                        if (!gpnSpBodyFixFirstStack) {
+                            try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+                            catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
+                        }
+                        if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
+                            gpnSpBodyFixLastReport = Date.now();
+                            const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
+                            log('裂荚【body 自愈汇总】最近一次统计内修正 ' + n2 + ' 次（body 本地缩放被写成负 ⇒ 双重翻转抵消）'
+                                + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
+                        }
+                    } catch (e) { warn('裂荚射手：body 缩放纠正出错', e); }
+                }
             }
         } catch (e) { warn('裂荚射手：每帧自愈出错', e); }
         return r;
@@ -5070,6 +5103,8 @@ export default {
     _gpnSpTimeline: () => ({ ticks: gpnSpTickTotal, len: gpnSpTL.length, max: gpnSpTLCaps.max, dumped: gpnSpTLCaps.dumped, last: gpnSpTL[gpnSpTL.length - 1] || null }),  // 诊断用：环形时间线状态
     _gpnSpDump: (why) => gpnSpDump(why || '自检'),          // 诊断用：把时间线打出来
     _gpnSpTimelineClear: () => { gpnSpTL.length = 0; },     // 自检用来清缓冲
+    _gpnSpBodyFixState: () => ({ total: gpnSpBodyFixTotal, spots: gpnSpBodyFixSpots, stack: gpnSpBodyFixFirstStack }),  // 诊断用：body 缩放纠正统计
+    _gpnSpBodyFixReset: () => { gpnSpBodyFixTotal = 0; gpnSpBodyFixSpots = 0; gpnSpBodyFixFirstStack = ''; },          // 自检用来清零
     _gpnSpSelfHealReset: () => { gpnSpSelfHealTotal = 0; gpnSpSelfHealSpots = 0; gpnSpSelfHealFirstStack = ''; },          // 自检用来清零
     _gpnNullWriteReset: () => { gpnNullWriteTotal = 0; gpnNullWriteDetail = 0; gpnNullWriteQuiet = false; },  // 同上：自检用来把统计清零
     _starCanReach: gpnStarCanReach,   // 追击的"能不能打到"判定（纯函数，便于单测）
