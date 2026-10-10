@@ -4764,10 +4764,33 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push(recShoot);
 
-    // ---- ③ 索敌：**完全交还引擎**（1.5.5 原版 `detectEnemySplit()` 返回 `{Left, Right}`，本来就是对的）
-    //   历史教训：我们曾在 0.14.0 时代 hook 它并交换 1↔2；1.5.5 改成返回对象后，
-    //   我们继续返回数字 ⇒ 调用方 `a.Left || a.Right` 全为 undefined ⇒ 整株【永不开火】。
-    //   ⇒ 现在【不再 hook detectEnemySplit】，一行都不碰。
+    // ---- ③ 索敌结果也要跟着翻转（**1.5.5：把 {Left,Right} 交换**）----
+    //   引擎事实（1.5.5，逐字）：`detectEnemySplit()` 返回的 Left/Right 是【屏幕左右】，
+    //   调用处 `specialPlantUpdate` 用它决定播哪支动画：
+    //       a.Right ⇒ r = "Shoot"+"R"（原版"前"，1 帧事件 = 1 颗）
+    //       a.Left  ⇒ r = "Shoot"+"L"（原版"后"，2 帧事件 = 2 颗）
+    //   ⇒ 贴图一翻，屏幕左右与"植物的前后"就对调了。若只翻发射方向（② 那段）而不翻这里，
+    //     就会"往对的方向发射，但用的还是原来那支动画/那套前后数量" ⇒ 表现为【索敌没翻】。
+    //   ⇒ 因此翻转时把 {Left, Right} 交换；**必须返回对象**（返回数字会让 a.Left/a.Right 变 undefined ⇒ 永不开火）。
+    const baseDetect = P.detectEnemySplit;      // 引擎原版；可能不存在（别的植物类型）
+    if (typeof baseDetect === 'function') {
+        P.detectEnemySplit = function () {
+            const r = baseDetect.apply(this, arguments);
+            if (!this.__gpnSpFlip) return r;
+            if (!r || typeof r !== 'object') return r;          // 形状不对就原样返回，绝不破坏引擎判读
+            const out = { Left: !!r.Right, Right: !!r.Left };    // 屏幕左右 ⇄ 植物前后
+            if (C.debugLog) {
+                try {
+                    log('裂荚：索敌翻转 → 引擎{Left=' + !!r.Left + ',Right=' + !!r.Right + '} ⇒ 用于动画'
+                        + '{Left=' + out.Left + ',Right=' + out.Right + '}');
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return out;
+        };
+        recs.push({ Cls: SplitPeaPlant, name: 'detectEnemySplit', original: baseDetect });
+    } else {
+        warn('裂荚射手：引擎没有 detectEnemySplit（翻转后动画前后不会对调）');
+    }
 
     // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化）----
     if (typeof P.specialPlantOnSquareChange === 'function') {
