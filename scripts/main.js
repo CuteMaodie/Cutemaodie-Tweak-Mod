@@ -2953,46 +2953,6 @@ function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
 }
 
 /* ============================================================================
- * 【临时诊断探针】弄臣僵尸反弹甜椒弹 —— 纯日志，绝不改变任何行为
- *
- * 要回答的唯一问题：**被伞叶挡住的那发，`enemyType` 到底是 plant 还是 zombie？**
- *   · plant  ⇒ 它确实是被反弹过的（引擎反弹时把阵营翻成 plant）⇒ 争议在"该不该挡"（语义问题）
- *   · zombie ⇒ 它是普通甜椒弹 ⇒ 我们的 `enemyType === plant` 判据串了（另有原因）
- *
- * 顺带记录：`canbeJesterReversed`（这颗弹能不能被弄臣反弹）、`bodyLinearVelocity`
- *（引擎的伞叶判定看它是否 < 0）、伤害类型、所在阵营……
- * 只有 CFG.pepperpult.debugLog / verboseLog 打开时才输出（默认完全静默）。
- * 排查结束后连同调用点一起删除。
- * ========================================================================== */
-function gpnPepperProbe(shot, tag, ctx) {
-    try {
-        if (!dbgOn(CFG.pepperpult.debugLog)) return;
-        if (!shot || !shot.__gpnBurnRatio) return;          // 只管我们的甜椒弹
-        const num = (v) => (typeof v === 'number' && isFinite(v)) ? Math.round(v * 1000) / 1000 : v;
-        const g = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
-        const et = shot.enemyType;
-        // ⚠️ 这里在模块级、拿不到 deps ⇒ 直接按引擎的 CharacterType 数值判断
-        //   （plant = 1 / zombie = 0；若原版改过枚举，日志里会显示 raw 原值，不影响判断）
-        const etName = (et === 1) ? 'plant' : (et === 0 ? 'zombie' : String(et));
-        // 僵尸信息（只有打僵尸那一侧才有）
-        const zType = ctx && ctx.Zombie_Type ? String(ctx.Zombie_Type) : (ctx && ctx.objdataOwn && ctx.objdataOwn.Zombie_Type ? String(ctx.objdataOwn.Zombie_Type) : '-');
-        const zRot = ctx && typeof ctx.rotating === 'boolean' ? ctx.rotating : '-';
-        const zCaught = ctx && Array.isArray(ctx.caughtPrjs) ? ctx.caughtPrjs.length : '-';
-        log('甜椒【反弹探针·' + tag + '】'
-            + ' 阵营=' + etName + '(raw ' + et + ')'
-            + '｜可被弄臣反弹=' + shot.canbeJesterReversed
-            + '｜bodyLV=' + num(g(() => shot.bodyLinearVelocity, '?'))
-            + '｜linearV=' + num(g(() => shot.linearVelocity.x, '?')) + ',' + num(g(() => shot.linearVelocity.y, '?'))
-            + '｜gravity=' + num(g(() => shot.gravity, '?'))
-            + '｜伤害类型=' + num(g(() => shot.damageType, '?'))
-            + '｜已挡标记=' + !!shot.__gpnUmbrellaBlocked
-            + '｜已烧标记=' + !!shot.__gpnBurned
-            + '｜僵尸=' + zType + '(旋转中=' + zRot + ' 抛接数=' + zCaught + ')'
-            + '｜位置x=' + num(g(() => shot.worldPositionX, '?')) + ' y=' + num(g(() => shot.worldPositionY, '?')));
-    } catch (e) { /* 诊断绝不影响游戏 */ }
-}
-
-/* ============================================================================
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
  *
  * 引擎的伞叶吸收只认"投掷物"，而"是不是投掷物"是这么算的（`CommonShot.detectPlant`）：
@@ -3012,13 +2972,7 @@ function gpnPepperProbe(shot, tag, ctx) {
 function gpnPepperEnforceReflect(shot) {
     try {
         if (!shot || shot.__gpnReflectBy !== 'juggler') return;
-        if (shot.bodyLinearVelocity !== 0) {
-            if (dbgOn(CFG.pepperpult.debugLog)) {
-                log('甜椒【弄臣反弹兜底】把 bodyLinearVelocity ' + shot.bodyLinearVelocity
-                    + ' 钉成 0 ⇒ 引擎不再把它当投掷物（伞叶/回旋镖挡不住它）');
-            }
-            shot.bodyLinearVelocity = 0;
-        }
+        if (shot.bodyLinearVelocity !== 0) shot.bodyLinearVelocity = 0;
     } catch (e) { /* 绝不影响游戏 */ }
 }
 
@@ -3129,7 +3083,6 @@ function makePepperBurnPatch(CommonShot, deps) {
         const rec = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
             gpnPepperEnforceReflect(this);   // 【修 BUG】同上（兜底：任何命中入口都保证已归零）
-            if (isDirect !== false) gpnPepperProbe(this, '打中僵尸', z);   // 【临时诊断】
             const r = rec.original.apply(this, arguments);
             try {
                 // isDirect === false 的是溅射伤害，不重复烧
@@ -3183,18 +3136,13 @@ function makePepperBurnPatch(CommonShot, deps) {
             return null;
         } catch (e) { return null; }
     };
-    const gpnMarkReflect = (shot, owner, who) => {
+    const gpnMarkReflect = (shot, owner) => {
         try {
             if (!shot || !owner) return;
             shot.__gpnReflectBy = owner;
-            if (dbgOn(CFG.pepperpult.debugLog)) {
-                log('甜椒【反弹标记】这一发由' + (owner === 'juggler' ? '弄臣僵尸' : '三节棍僵尸') + '反弹'
-                    + '（识别依据：' + (who || '?') + '）'
-                    + ' ⇒ ' + (owner === 'juggler' ? '不再算投掷物（不吃伞叶/回旋镖）' : '仍算投掷物（照旧可被挡下）'));
-            }
         } catch (e) { /* 只影响诊断 */ }
     };
-    /** 给一个僵尸类挂"反弹标记钩子"：调用原函数之后，把它碰过的子弹按 Zombie_Type 打上 owner */
+    /** 给一个僵尸类挂"反弹标记钩子"：调用原函数之后，把它碰过的子弹按类名/Zombie_Type 打上 owner */
     const gpnHookReflector = (Cls, methName) => {
         try {
             const P2 = Cls && Cls.prototype;
@@ -3204,11 +3152,7 @@ function makePepperBurnPatch(CommonShot, deps) {
                 const r = recR.original.apply(this, arguments);
                 try {
                     const owner = gpnReflectOwner(this);
-                    if (owner) {
-                        const who = 'Zombie_Type=' + String(this.Zombie_Type == null ? '(空)' : this.Zombie_Type)
-                            + ' 类名=' + (_gpnSpClassName(this) || '(空)');
-                        for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner, who);
-                    }
+                    if (owner) for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner);
                 } catch (e) { /* 只影响诊断 */ }
                 return r;
             };
@@ -3218,37 +3162,10 @@ function makePepperBurnPatch(CommonShot, deps) {
     };
     (() => {
         const okJ = gpnHookReflector(deps && deps.DarkJesterZombieCls, 'commonShotPopOnTouch');
-        const okS = gpnHookReflector(deps && deps.Abbot3SectionStaffCls, 'reverseCSs');
-        if (dbgOn(CFG.pepperpult.debugLog)) {
-            log('甜椒【反弹标记】安装结果：弄臣钩子=' + okJ + ' / 三节棍钩子=' + okS
-                + '（三节棍只做"仍算投掷物"的标记，行为不变）');
-        }
+        gpnHookReflector(deps && deps.Abbot3SectionStaffCls, 'reverseCSs');   // 三节棍：只打标记，行为不变
+        // 只在"真的挂不上"时留一条警告（正常游戏不输出）：挂不上 ⇒ 弄臣反弹的弹仍可能被伞叶挡
         if (!okJ) warn('甜椒反弹标记：没能挂上弄臣僵尸的 commonShotPopOnTouch（反弹弹可能仍被伞叶挡）');
     })();
-
-    // ---- 【临时诊断】阵营翻转捕手：抓"是谁把这一发的 enemyType 翻成 plant 的" ----
-    //   引擎的反弹（弄臣 / 三节棍）就是靠改 `enemyType` + 速度实现的 ⇒ 这里在最外层加一道
-    //   "值监视"属性，一旦阵营发生变化就打一行探针（含调用栈），就能确认反弹到底发生了没有、
-    //   以及是引擎哪条路径做的。**只记录、不改行为**；排查结束随探针一起删除。
-    try {
-        const _bnPatchPoison = CommonShot.prototype.enemyType;   // 读取原型上有没有定义（仅用于日志参考）
-        Object.defineProperty(CommonShot.prototype, 'enemyType', {
-            configurable: true,
-            get() { return this.__gpnET; },
-            set(v) {
-                const prev = this.__gpnET;
-                this.__gpnET = v;
-                if (prev !== v && this.__gpnBurnRatio) {
-                    let stack = '';
-                    try { stack = String((new Error()).stack || '').split('\n').slice(1, 4).join(' | '); } catch (e) { stack = '(无栈)'; }
-                    gpnPepperProbe(this, '阵营翻转 ' + ((prev === 0) ? 'zombie' : (prev === 1 ? 'plant' : String(prev)))
-                        + '→' + ((v === 0) ? 'zombie' : (v === 1 ? 'plant' : String(v))), null);
-                    if (dbgOn(CFG.pepperpult.debugLog)) { try { log('   翻转调用栈：' + stack); } catch (e) { /* 忽略 */ } }
-                }
-            },
-        });
-        log('甜椒【反弹探针】已安装"阵营翻转捕手"（原型上原本 enemyType=' + _bnPatchPoison + '）');
-    } catch (e) { warn('甜椒反弹探针：安装阵营翻转捕手失败', e); }
 
     // 触地 -> 烧（引擎在 hitFloor 里调 specialOnGroundHit）
     if (typeof CommonShot.prototype.specialOnGroundHit === 'function') {
@@ -3325,7 +3242,6 @@ function makePepperBurnPatch(CommonShot, deps) {
             const jugglerReflected = (this.__gpnReflectBy === 'juggler');
             const isLobbedHostile = !jugglerReflected && this.__gpnBurnRatio > 0 && deps.CharacterType
                 && this.enemyType === deps.CharacterType.plant;
-            if (isLobbedHostile) gpnPepperProbe(this, '打中植物（会被伞叶判定的那一发）', null);   // 【临时诊断】
             if (isLobbedHostile && !this.__gpnUmbrellaBlocked && gpnUmbrellaAbsorbs(plant)) {
                 this.__gpnUmbrellaBlocked = true;     // 这一发已被挡下 ⇒ 落地 / 打障碍物也都不会再铺火
                 if (dbgOn(CFG.pepperpult.debugLog)) log('甜椒灼烧：这一发被伞叶 / 回旋镖射手挡下（不打伤害、不铺火）');
