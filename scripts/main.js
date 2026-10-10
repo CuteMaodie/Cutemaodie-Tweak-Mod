@@ -1964,6 +1964,7 @@ function makePiercePatch(CommonShot, CharacterType, ZombieDamageDetails, ZombieE
                 this.__gpnBurnRatio = (raw && raw[BURN_RATIO_KEY] != null) ? raw[BURN_RATIO_KEY] : 0;
                 this.__gpnBurned = false;   // 池化复用：每发子弹只烧一次
                 this.__gpnUmbrellaBlocked = false;  // 池化复用：这一发被伞叶挡下的标记必须复位
+                this.__gpnReflectBy = null;         // 池化复用：「是谁反弹的」标记必须复位（弄臣/三节棍）
                 this.__gpnStarKind = (raw && raw[STAR_KIND_KEY]) ? String(raw[STAR_KIND_KEY]) : '';
                 this.__gpnDandelionKind = (raw && raw[DANDELION_KIND_KEY]) ? String(raw[DANDELION_KIND_KEY]) : '';
                 this.__gpnPierce = null;    // 弹道有对象池，穿透状态必须复位
@@ -2732,15 +2733,19 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {
     //   伤害口径（总伤害 = 攻击力 x 40%、1 秒）和外观（3x3 地面火）两边完全一样。
     const plantSide = !!(deps.CharacterType && shot.enemyType === deps.CharacterType.plant);
 
-    // ★★ 伞叶 / 回旋镖射手：被弹反的甜椒弹是【投掷物】，本来就该被它们挡住。
-    //    引擎为什么挡不住：`Plant.dealDamage` 里那条"伞叶吸收"只在【伤害类型 1】时才走，
-    //    而类型是这么定的 —— `this.bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
-    //    可弹反（三节棍 / 小丑）偏偏会 `bodyLinearVelocity *= -1` ⇒ 下落的弹变成"上升" ⇒ 类型 2 ⇒ 伞叶判定整条被跳过。
-    //    这里把两条判定都补回来（只有 plantSide = 被弹反的投掷物才查，直线弹一律不查）：
-    //      ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开（只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）
-    //      ② 按植物：由调用方（dealDamageToPlant 钩子）先查"目标植物 3×3 内有没有 umbrella()" ⇒ 见 gpnUmbrellaAbsorbs
-    //    一旦被挡：打上标记 ⇒ 后面所有入口（再撞植物 / 落地 / 打障碍物）都不再产生任何火。
-    if (plantSide) {
+    // ★★ 伞叶 / 回旋镖射手 对"被反弹的甜椒弹"的判定（**按弹反来源区分**，2026/10/10 用户口径）：
+    //    · **弄臣僵尸**（dark_juggler / birthday_juggler）反弹的 ⇒ **不再算投掷物** ⇒
+    //      **不该**被伞叶 / 回旋镖挡下（也就不该被"按位置"弹开）；
+    //    · **三节棍僵尸**（abbot_3section_staff）反弹的 ⇒ **仍算投掷物** ⇒ 照旧可被挡（保持原行为）。
+    //   两条判定的由来（当初为"补引擎漏判"而加，逐字核对过引擎）：
+    //     ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开
+    //        （只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）；
+    //     ② 按植物：由调用方（dealDamageToPlant 钩子）查"目标植物 3×3 内有没有 umbrella()"。
+    //   为什么需要 ② 之外的引擎兜底：`Plant.dealDamage` 那条"伞叶吸收"只在【伤害类型 1】时才走
+    //   —— 而类型是 `bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
+    //   ⚠️ 所以"弄臣反弹的弹不被挡"必须【主动】做到：见 gpnPepperEnforceReflect（把它的
+    //      bodyLinearVelocity 钉成 0 ⇒ 引擎判不出"下落" ⇒ 不吸收；同时也跳过我们的 ①②）。
+    if (plantSide && !(shot.__gpnReflectBy === 'juggler')) {
         const byPos = gpnUmbrellaBlocksByPos(shot, deps.Umbrellas);
         if (byPos || shot.__gpnUmbrellaBlocked) {
             shot.__gpnUmbrellaBlocked = true;
@@ -2987,6 +2992,36 @@ function gpnPepperProbe(shot, tag, ctx) {
     } catch (e) { /* 诊断绝不影响游戏 */ }
 }
 
+/* ============================================================================
+ * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
+ *
+ * 引擎的伞叶吸收只认"投掷物"，而"是不是投掷物"是这么算的（`CommonShot.detectPlant`）：
+ *     var n = o.bodyLinearVelocity < 0 && e.haveUmbrellaNearby();
+ *     o.dealDamageToPlant(e) && ( n || o.dealSplashDamage(...), o.pop() )
+ * 其中 `bodyLinearVelocity` 会被"反弹"改掉（弄臣抛接 / 三节棍翻速度）⇒ 判定飘忽。
+ *
+ * 用户口径：**弄臣僵尸反弹的弹不再算投掷物** ⇒ 我们把它钉成 `0`：
+ *     bodyLinearVelocity = 0  ⇒  `0 < 0` 为假 ⇒ 引擎判定"不是投掷物" ⇒ 伞叶不吸收。
+ * 这样：
+ *   · 伞叶 / 回旋镖**挡不住**弄臣反弹的甜椒弹（要的效果）；
+ *   · **普通**甜椒弹（仍是 zombie 阵营、正常下落）完全不受影响；
+ *   · **三节棍**反弹的弹（`__gpnReflectBy === 'staff'`）**照样**是投掷物 ⇒ 可被挡（保持原行为）。
+ * ⚠️ 只动这一发的 `bodyLinearVelocity`（它只用于"抛接/下落"的观感与上面那条判定），
+ *    不改速度、伤害、火焰、阵营 —— 反弹弹该有的伤害与铺火一律保留。
+ * ========================================================================== */
+function gpnPepperEnforceReflect(shot) {
+    try {
+        if (!shot || shot.__gpnReflectBy !== 'juggler') return;
+        if (shot.bodyLinearVelocity !== 0) {
+            if (dbgOn(CFG.pepperpult.debugLog)) {
+                log('甜椒【弄臣反弹兜底】把 bodyLinearVelocity ' + shot.bodyLinearVelocity
+                    + ' 钉成 0 ⇒ 引擎不再把它当投掷物（伞叶/回旋镖挡不住它）');
+            }
+            shot.bodyLinearVelocity = 0;
+        }
+    } catch (e) { /* 绝不影响游戏 */ }
+}
+
 /* ---------------- 植物阵营的火（被弹反的甜椒弹专用） ----------------
  *  引擎里的"僵尸方火焰"是怎么写的（逐行核对过 0.14.0 的引擎）：
  *    · 住持火把僵尸 AbbotTorchZombie.detectPlant（喷火）：
@@ -3093,6 +3128,7 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const rec = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
+            gpnPepperEnforceReflect(this);   // 【修 BUG】同上（兜底：任何命中入口都保证已归零）
             if (isDirect !== false) gpnPepperProbe(this, '打中僵尸', z);   // 【临时诊断】
             const r = rec.original.apply(this, arguments);
             try {
@@ -3105,6 +3141,68 @@ function makePepperBurnPatch(CommonShot, deps) {
     } else {
         warn('跳过甜椒灼烧：commonShot 上没有 dealDamageToZombie');
     }
+
+    // ---- 【修 BUG】记录"是谁反弹的"：弄臣 vs 三节棍，两者行为要求【不同】 ----
+    //   用户口径（2026/10/10 补充）：
+    //     · **弄臣僵尸**（`dark_juggler` 及其节日变种 `birthday_juggler`）反弹的子弹
+    //       ⇒ **不再算投掷物** ⇒ 不该被伞叶 / 回旋镖射手挡下；
+    //     · **三节棍僵尸**（`abbot_3section_staff`）反弹的子弹 ⇒ **仍算投掷物** ⇒ 该被挡（保持现状，不动它）。
+    //   为什么必须打标记：**两者在引擎里都只是把 `enemyType` 翻成 `plant`**
+    //   （`DarkJesterZombie` / `Abbot3SectionStaffZombie.reverseCSs`），光看阵营分不出来。
+    //   两条路径完全不同（逐字核对 1.5.5 bundle）：
+    //     · 弄臣：`DarkJesterZombie.commonShotPopOnTouch(shot)` 先把子弹"接住抛接"（返回 false 阻止 pop）；
+    //     · 三节棍：`Abbot3SectionStaffZombie.reverseCSs()`（该类独有，无 commonShotPopOnTouch）直接翻速度+阵营。
+    //   ⚠️ 两处都是"调用原函数【之后】补一个我们自己的标记"，**不改变引擎任何行为**。
+    //   ⚠️ 这两个类是【独立模块】（`chunks:///_virtual/DarkJesterZombie.ts` 等），所以从 setup 的
+    //      IMPORTS 里导入后传进来（见 `deps.DarkJesterZombieCls` / `Abbot3SectionStaffCls`）。
+    const _gpnSpShort = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const gpnReflectOwner = (z) => {
+        try {
+            if (!z) return null;
+            const t = _gpnSpShort(z.Zombie_Type);                 // 例：'dark_juggler' / 'abbot_3section_staff'
+            if (!t) return null;
+            if (t.indexOf('juggler') !== -1) return 'juggler';    // 含节日变种 birthday_juggler
+            if (t.indexOf('3section') !== -1) return 'staff';
+            return null;
+        } catch (e) { return null; }
+    };
+    const gpnMarkReflect = (shot, owner) => {
+        try {
+            if (!shot || !owner) return;
+            shot.__gpnReflectBy = owner;
+            if (dbgOn(CFG.pepperpult.debugLog)) {
+                log('甜椒【反弹标记】这一发由' + (owner === 'juggler' ? '弄臣僵尸' : '三节棍僵尸') + '反弹'
+                    + ' ⇒ ' + (owner === 'juggler' ? '不再算投掷物（不吃伞叶/回旋镖）' : '仍算投掷物（照旧可被挡下）'));
+            }
+        } catch (e) { /* 只影响诊断 */ }
+    };
+    /** 给一个僵尸类挂"反弹标记钩子"：调用原函数之后，把它碰过的子弹按 Zombie_Type 打上 owner */
+    const gpnHookReflector = (Cls, methName) => {
+        try {
+            const P2 = Cls && Cls.prototype;
+            if (!P2 || typeof P2[methName] !== 'function') return false;
+            const recR = methodRecord(Cls, methName);
+            P2[methName] = function () {
+                const r = recR.original.apply(this, arguments);
+                try {
+                    const owner = gpnReflectOwner(this);
+                    if (owner) for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner);
+                } catch (e) { /* 只影响诊断 */ }
+                return r;
+            };
+            recs.push(recR);
+            return true;
+        } catch (e) { return false; }
+    };
+    (() => {
+        const okJ = gpnHookReflector(deps && deps.DarkJesterZombieCls, 'commonShotPopOnTouch');
+        const okS = gpnHookReflector(deps && deps.Abbot3SectionStaffCls, 'reverseCSs');
+        if (dbgOn(CFG.pepperpult.debugLog)) {
+            log('甜椒【反弹标记】安装结果：弄臣钩子=' + okJ + ' / 三节棍钩子=' + okS
+                + '（三节棍只做"仍算投掷物"的标记，行为不变）');
+        }
+        if (!okJ) warn('甜椒反弹标记：没能挂上弄臣僵尸的 commonShotPopOnTouch（反弹弹可能仍被伞叶挡）');
+    })();
 
     // ---- 【临时诊断】阵营翻转捕手：抓"是谁把这一发的 enemyType 翻成 plant 的" ----
     //   引擎的反弹（弄臣 / 三节棍）就是靠改 `enemyType` + 速度实现的 ⇒ 这里在最外层加一道
@@ -3199,8 +3297,11 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToPlant === 'function') {
         const rec5 = methodRecord(CommonShot, 'dealDamageToPlant');
         CommonShot.prototype.dealDamageToPlant = function (plant) {
+            gpnPepperEnforceReflect(this);   // 【修 BUG】弄臣反弹的弹先"去投掷物化"，再让引擎判伞叶
             // 只对【被弹反的投掷物】生效：enemyType 翻成 plant 且带灼烧标记（= 我们的甜椒弹）
-            const isLobbedHostile = this.__gpnBurnRatio > 0 && deps.CharacterType
+            // ⚠️ 但**弄臣僵尸反弹的**不算投掷物 ⇒ 完全不走我们这两条伞叶判定（也不播格挡动画）
+            const jugglerReflected = (this.__gpnReflectBy === 'juggler');
+            const isLobbedHostile = !jugglerReflected && this.__gpnBurnRatio > 0 && deps.CharacterType
                 && this.enemyType === deps.CharacterType.plant;
             if (isLobbedHostile) gpnPepperProbe(this, '打中植物（会被伞叶判定的那一发）', null);   // 【临时诊断】
             if (isLobbedHostile && !this.__gpnUmbrellaBlocked && gpnUmbrellaAbsorbs(plant)) {
@@ -5233,6 +5334,8 @@ export default {
             'chunks:///_virtual/SplitPea.ts',         // 32
             'chunks:///_virtual/Zombies.ts',          // 33（ZombieEnum：三种护盾实体按 ID 认）
             'chunks:///_virtual/PerfumeShroom.ts',     // 34（香水菇本体：把香水火时长 9 → 13.5 秒）
+            'chunks:///_virtual/DarkJesterZombie.ts',  // 35（弄臣僵尸：反弹甜椒弹时打"来源=弄臣"标记）
+            'chunks:///_virtual/Abbot3SectionStaffZombie.ts', // 36（三节棍僵尸：只打"来源=三节棍"标记，行为不变）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -5251,7 +5354,8 @@ export default {
                 nodePoolsMod = mods[23], frontYardMod = mods[24], hurrikaleMod = mods[25],
                 phatbeetMod = mods[26], cardsMod = mods[27], plantsMod = mods[28], snowPeaMod = mods[29],
                 redStingerMod = mods[30], murkadamiaMod = mods[31], splitPeaMod = mods[32],
-                zombiesMod = mods[33], perfumeShroomMod = mods[34];
+                zombiesMod = mods[33], perfumeShroomMod = mods[34],
+            darkJesterMod = mods[35], abbot3Mod = mods[36];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -5449,6 +5553,10 @@ export default {
                     ZombieDamageType: charMgrMod.ZombieDamageType,
                     // 伞叶注册表（CharacterManager 上的静态数组）：被弹反的甜椒弹落地时按位置判定用
                     Umbrellas: charMgrMod.Umbrellas,
+                    // 「是谁反弹的」两个类（独立模块）：只用来给子弹打来源标记 ⇒
+                    //   弄臣反弹的 ⇒ 不再算投掷物（不吃伞叶）；三节棍反弹的 ⇒ 仍算投掷物（照旧可挡）
+                    DarkJesterZombieCls: darkJesterMod && (darkJesterMod.DarkJesterZombie || darkJesterMod.default),
+                    Abbot3SectionStaffCls: abbot3Mod && (abbot3Mod.Abbot3SectionStaffZombie || abbot3Mod.default),
                 });
                 if (burn) recs.push(...burn);
                 // 卸载时把还没烧完的"植物阵营火"清掉（否则会留着已经销毁的格子引用）
