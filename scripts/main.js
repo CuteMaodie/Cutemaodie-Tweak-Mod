@@ -4703,6 +4703,29 @@ function gpnSpFlipVec(vec, cx) {
 }
 
 
+/** 【诊断用】取渲染层实际值（只在 debugLog 打开时调用）
+ *  为什么要它：`Character.scale` 是**逻辑值**（我们的翻转写的就是它），而"贴图朝哪边"最终
+ *  由 `node.scale` 决定 —— 引擎完全可以只改 `node.scale` 而不经过 setter（那样逻辑值仍是 -1，
+ *  但画面已经不翻了）。所以排查"翻转丢失"必须看渲染节点本身。
+ */
+function gpnSpDiag(plant) {
+    const g = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+    const num = (v) => (typeof v === 'number' ? Math.round(v * 1000) / 1000 : v);
+    const node = plant && plant.node;
+    const body = plant && plant.body;
+    const par = g(() => (body && body.parent && body.parent.name) || null, null);
+    const nodeName = g(() => (node && node.name) || null, null);
+    return 'scale=' + num(g(() => plant.scale, '?'))
+        + '，node.scale.x=' + num(g(() => node.scale.x, '?'))
+        + '，body.scale.x=' + num(g(() => body.scale.x, '?'))
+        + '，body.parent=' + (par === null ? '?' : par) + (par === nodeName ? '(=node)' : '')
+        + '，body.世界x=' + num(g(() => body.worldPosition.x, '?'))
+        + '，本株x=' + num(g(() => plant.worldPositionX, '?'))
+        + '，枪口2.世界x=' + num(g(() => (plant.peaSpawnpoint2 && plant.peaSpawnpoint2.worldPosition.x), '无'))
+        + '，前口.世界x=' + num(g(() => (plant.peaSpawnpoint && plant.peaSpawnpoint.worldPosition.x), '无'))
+        + '，gatlingSlots=' + g(() => (plant.gatlingSlots ? plant.gatlingSlots.length : '无'), '无');
+}
+
 function makeSplitPeaPatch(SplitPeaPlant, deps) {
     const recs = [];
     const P = SplitPeaPlant && SplitPeaPlant.prototype;
@@ -4723,7 +4746,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         if (dbgOn(C.debugLog)) {
             try {
                 log('裂荚【翻转】→ ' + (on ? '翻' : '回正') + '：scale ' + before + ' → ' + plant.scale
-                    + '，是否 MGP=' + !!plant.isMGP);
+                    + '，是否 MGP=' + !!plant.isMGP + ' ｜ ' + gpnSpDiag(plant));
             } catch (e) { /* 只影响日志 */ }
         }
     };
@@ -4827,7 +4850,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                 try {
                     log('裂荚【OnEnable 复位】← 引擎调用了 specialPlantOnEnable：'
                         + '原 flip=' + wasFlip + '，scale ' + scaleBefore + ' → ' + this.scale
-                        + '，是否 MGP=' + !!this.isMGP + '（若出现在开大过程中，就是翻转丢失的原因）');
+                        + '，是否 MGP=' + !!this.isMGP + ' ｜ ' + gpnSpDiag(this));
                 } catch (e) { /* 只影响日志 */ }
             }
             return rec.original.apply(this, arguments);
@@ -4845,7 +4868,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                 try {
                     log('裂荚【开大开始】specialPlantFood：flip=' + !!this.__gpnSpFlip
                         + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
-                        + '，upgraded=' + !!this.upgraded + '，gunned=' + !!this.gunned);
+                        + '，upgraded=' + !!this.upgraded + '，gunned=' + !!this.gunned
+                        + ' ｜ ' + gpnSpDiag(this));
                 } catch (e) { /* 只影响日志 */ }
             }
             return recFood.original.apply(this, arguments);
@@ -4859,7 +4883,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚【开大结束】specialPlantFoodEnd：flip=' + !!this.__gpnSpFlip
-                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP);
+                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
+                        + ' ｜ ' + gpnSpDiag(this));
                 } catch (e) { /* 只影响日志 */ }
             }
             return r;
