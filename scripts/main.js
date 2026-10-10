@@ -1523,6 +1523,7 @@ let gpnZoyTableLogged = false;               // 腐尸豆荚召唤表是【静�
 let gpnNullWriteTotal = 0;                     // 「有人写 null」被拦下的累计次数（护栏统计）
 let gpnNullWriteDetail = 0;                    // 已经打过【详细】日志（含写入者堆栈）的条数
 let gpnNullWriteQuiet = false;                 // 是否已经打过「后续不再逐条打印」那句
+let gpnSpSelfHealTotal = 0;                    // 裂荚「每帧自愈」把渲染缩放重新翻回来的累计次数（诊断用）
 const GPN_NULL_WRITE_DETAIL_MAX = 2;           // 前几条打详细；之后只累计（要全量时把这个数字调大）
 /** 现场诊断用：把一个字段"长什么样"压缩成短字符串 */
 function gpnShape(v) {
@@ -4892,6 +4893,39 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         recs.push(recFoodEnd);
     }
 
+    // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
+    //   为什么需要（2026/10/10 实机日志定位，属于帧时序竞态）：
+    //     · 引擎 `Character.onEnable` 里有一句 `this.node.scale = new Vec3(d,d,d)`（把渲染缩放复位）；
+    //     · 我们的翻转走 `Character.scale` setter（写 `node.scale = _scale × U × originalScale`）；
+    //     · 一旦引擎在"我们翻完之后"把 `node.scale` 复位，`_scale` 仍是 -1（逻辑没丢）、
+    //       但【画面已经不翻了】；只有下次 setter 被调用才会重新写负值。
+    //     · 实测证据：开大流程里 `body.parent` 会被摘走再挂回（`New Node` ⇄ 植物节点），
+    //       `body.scale.x` 在结束时被写成 1 ⇒ 这就是竞态发生的窗口。
+    //     · 之所以"verboseLog 开=正常、关=复现"：日志开销改变了帧内时序（巧合掩盖了竞态）。
+    //   ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
+    const baseCharUpdate = P.characterUpdate;          // 继承自 Plant；可能不存在
+    P.characterUpdate = function (dt) {
+        let r;
+        if (typeof baseCharUpdate === 'function') r = baseCharUpdate.apply(this, arguments);
+        try {
+            if (this.__gpnSpFlip) {
+                const cur = this.node && this.node.scale && this.node.scale.x;
+                if (typeof cur === 'number' && cur > 0) {
+                    this.scale = -1;                    // 重新写渲染缩放（自愈）
+                    gpnSpSelfHealTotal++;
+                    if (dt !== -1 && dbgOn(C.debugLog)) { // dt === -1 = 自检探针，不刷日志
+                        log('裂荚【自愈】渲染缩放被引擎回正 → 已重新翻回（第 ' + gpnSpSelfHealTotal
+                            + ' 次）｜ ' + gpnSpDiag(this));
+                    }
+                }
+            }
+        } catch (e) { warn('裂荚射手：每帧自愈出错', e); }
+        return r;
+    };
+    recs.push({ Cls: SplitPeaPlant, name: 'characterUpdate', original: baseCharUpdate });
+    // 自检探针（仅供 mock 单测调用；dt 传 -1 ⇒ 不刷日志。游戏里不会被调用）
+    P.__gpnSpSelfHealTick = function () { return P.characterUpdate.call(this, -1); };
+
     return recs;
 }
 
@@ -4903,6 +4937,7 @@ export default {
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
+    _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
     _gpnNullWriteReset: () => { gpnNullWriteTotal = 0; gpnNullWriteDetail = 0; gpnNullWriteQuiet = false; },  // 同上：自检用来把统计清零
     _starCanReach: gpnStarCanReach,   // 追击的"能不能打到"判定（纯函数，便于单测）
     id: MOD_ID,
