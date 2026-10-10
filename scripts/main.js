@@ -4716,9 +4716,16 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
 
     /** 翻转 = 引擎自己的 scale 符号（x 带符号 ⇒ 整株镜像；装扮 / 动画 / 影子都跟着走） */
     const applyFlip = (plant, on) => {
+        const before = (typeof plant.scale === 'number') ? plant.scale : '?';
         plant.__gpnSpFlip = !!on;
         try { plant.scale = on ? -1 : 1; }
         catch (e) { warn('裂荚射手：翻转出错', e); }
+        if (C.debugLog) {
+            try {
+                log('裂荚【翻转】→ ' + (on ? '翻' : '回正') + '：scale ' + before + ' → ' + plant.scale
+                    + '，是否 MGP=' + !!plant.isMGP);
+            } catch (e) { /* 只影响日志 */ }
+        }
     };
 
     // ---- ① 左键：左右翻转（引擎只在"手上没拿卡"时才调 onMouseDown ⇒ 不抢种植左键）----
@@ -4805,14 +4812,59 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     }
 
     // ---- ⑤ 池化复用：新种一株默认不翻转 ----
+    //   ⚠️ 待查（0.15.0 融合植物 splitpea_mgp 的开大丢翻转）：引擎每次 OnEnable 都会调
+    //   `specialPlantOnEnable`，而 `Character.onEnable` 会把 node.scale 重置 ⇒ 这个"复位"钩子
+    //   有可能在**植物存活期间**被触发，从而把我们的翻转清掉。下面加了诊断日志，先用实机日志确认
+    //   （日志只在 CFG.splitpea.debugLog 打开时打，不改任何行为）。
     if (typeof P.specialPlantOnEnable === 'function') {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnEnable');
         P.specialPlantOnEnable = function () {
+            const wasFlip = !!this.__gpnSpFlip;
+            const scaleBefore = (typeof this.scale === 'number') ? this.scale : '?';
             try { this.__gpnSpFlip = false; this.scale = 1; }
             catch (e) { warn('裂荚射手：复位出错', e); }
+            if (C.debugLog) {
+                try {
+                    log('裂荚【OnEnable 复位】← 引擎调用了 specialPlantOnEnable：'
+                        + '原 flip=' + wasFlip + '，scale ' + scaleBefore + ' → ' + this.scale
+                        + '，是否 MGP=' + !!this.isMGP + '（若出现在开大过程中，就是翻转丢失的原因）');
+                } catch (e) { /* 只影响日志 */ }
+            }
             return rec.original.apply(this, arguments);
         };
         recs.push(rec);
+    }
+
+    // ---- ⑥ 诊断（只打日志、不改行为）：开大流程的进出场与缩放 ----
+    //   目的：定位"普攻概率开大"后翻转丢在哪一步（引擎的 Plant.food() 会重置 body 缩放，
+    //   MGP 的 specialPlantFood 还会 upgrade()/gunup()）。①/②/⑤ 三处日志连起来看顺序即可定论。
+    if (typeof P.specialPlantFood === 'function') {
+        const recFood = methodRecord(SplitPeaPlant, 'specialPlantFood');
+        P.specialPlantFood = function () {
+            if (C.debugLog) {
+                try {
+                    log('裂荚【开大开始】specialPlantFood：flip=' + !!this.__gpnSpFlip
+                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
+                        + '，upgraded=' + !!this.upgraded + '，gunned=' + !!this.gunned);
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return recFood.original.apply(this, arguments);
+        };
+        recs.push(recFood);
+    }
+    if (typeof P.specialPlantFoodEnd === 'function') {
+        const recFoodEnd = methodRecord(SplitPeaPlant, 'specialPlantFoodEnd');
+        P.specialPlantFoodEnd = function () {
+            const r = recFoodEnd.original.apply(this, arguments);
+            if (C.debugLog) {
+                try {
+                    log('裂荚【开大结束】specialPlantFoodEnd：flip=' + !!this.__gpnSpFlip
+                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP);
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return r;
+        };
+        recs.push(recFoodEnd);
     }
 
     return recs;
