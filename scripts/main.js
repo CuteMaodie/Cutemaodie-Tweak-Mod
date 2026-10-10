@@ -1539,17 +1539,20 @@ let gpnSpBodyFixFirstStack = '';
 let gpnSpBodyFixLastReport = 0;
 let gpnSpBodyIds = null, gpnSpBodyIdNext = 1;  // 给 body 对象分配稳定 id（用来判断"是否换了对象/换装"）
 
-/** 【诊断】把 body 对象映射成一个稳定 id（新对象 ⇒ 新 id） */
-function gpnSpBodyId(b) {
-    if (!b) return 0;
+/** 【诊断】把任意对象映射成一个稳定 id（区分"同名但不同对象"） */
+function gpnSpObjId(o) {
+    if (!o) return 0;
     try {
         if (!gpnSpBodyIds) { try { gpnSpBodyIds = new WeakMap(); } catch (e) { gpnSpBodyIds = null; } }
-        if (!gpnSpBodyIds) return -1;                 // 没有 WeakMap 就退化为 -1
-        let id = gpnSpBodyIds.get(b);
-        if (!id) { id = gpnSpBodyIdNext++; gpnSpBodyIds.set(b, id); }
+        if (!gpnSpBodyIds) return -1;
+        let id = gpnSpBodyIds.get(o);
+        if (!id) { id = gpnSpBodyIdNext++; gpnSpBodyIds.set(o, id); }
         return id;
     } catch (e) { return -2; }
 }
+
+/** 【诊断】把 body 对象映射成一个稳定 id（新对象 ⇒ 新 id） */
+function gpnSpBodyId(b) { return gpnSpObjId(b); }
 
 /** 【诊断】采样一帧（只在这株处于翻转态时被调用；只读属性，绝不改动游戏状态） */
 function gpnSpSample(plant) {
@@ -1565,6 +1568,10 @@ function gpnSpSample(plant) {
         const body = g(() => plant.body || null, null);
         let det = '?';
         try { const o = plant.detectEnemySplit(); det = (o && typeof o === 'object') ? ((o.Left ? 'L' : '-') + (o.Right ? 'R' : '-')) : String(o); } catch (e) { det = 'err'; }
+        // ★ 层级身份：body 的父/祖父到底是什么对象（用 id 区分"同名不同对象"），以及 node 自己的 id
+        const bodyParent = g(() => (body && body.parent) || null, null);
+        const bodyGrand = g(() => (bodyParent && bodyParent.parent) || null, null);
+        const nws = g(() => (node && node.worldScale) ? node.worldScale.x : '?', '?');
         const rec = 'F' + gpnSpTickTotal
             + ' flip=' + (plant.__gpnSpFlip ? 1 : 0)
             + ' obj=' + n3(g(() => plant.scale, '?'))
@@ -1575,6 +1582,12 @@ function gpnSpSample(plant) {
             + ' bodyP=' + g(() => (body && body.parent && body.parent.name) || '?', '?')
             + ' bodyS=' + n3(g(() => body.scale.x, '?'))
             + ' bodyws=' + n3(g(() => (body && body.worldScale) ? body.worldScale.x : '?', '?'))
+            + ' nid=' + gpnSpObjId(node)
+            + ' bid=' + gpnSpObjId(body)
+            + ' pid=' + gpnSpObjId(bodyParent) + '(pws=' + n3(g(() => (bodyParent && bodyParent.worldScale) ? bodyParent.worldScale.x : '?', '?')) + ')'
+            + ' gid=' + gpnSpObjId(bodyGrand) + '(gws=' + n3(g(() => (bodyGrand && bodyGrand.worldScale) ? bodyGrand.worldScale.x : '?', '?')) + ')'
+            + ' pidIsNid=' + (gpnSpObjId(bodyParent) === gpnSpObjId(node))
+            + ' nws=' + n3(nws)
             + ' px=' + n3(px)
             + ' sp1=' + (typeof sp1 === 'number' ? n3(sp1) : sp1) + '(' + (typeof sp1 === 'number' && typeof px === 'number' ? (sp1 < px ? '左' : '右') : '?') + ')'
             + ' spB=' + (typeof spB === 'number' ? n3(spB) : spB) + '(' + (typeof spB === 'number' && typeof px === 'number' ? (spB < px ? '左' : '右') : '?') + ')'
