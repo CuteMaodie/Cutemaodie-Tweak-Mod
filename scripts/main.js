@@ -1524,6 +1524,10 @@ let gpnNullWriteTotal = 0;                     // 「有人写 null」被拦下�
 let gpnNullWriteDetail = 0;                    // 已经打过【详细】日志（含写入者堆栈）的条数
 let gpnNullWriteQuiet = false;                 // 是否已经打过「后续不再逐条打印」那句
 let gpnSpSelfHealTotal = 0;                    // 裂荚「每帧自愈」把渲染缩放重新翻回来的累计次数（诊断用）
+let gpnSpSelfHealSpots = 0;                    // 自愈"待上报"的计数（每 5 秒清零并汇总一行）
+let gpnSpSelfHealFirstStack = '';              // 首次复位时的调用栈（只抓一次；用于"是谁把翻转清掉的"）
+let gpnSpSelfHealQuiet = false;                // 一次汇总后短暂静音（避免同一帧内连打多行）
+let gpnSpSelfHealLastReport = 0;               // 上次汇总的时间戳
 const GPN_NULL_WRITE_DETAIL_MAX = 2;           // 前几条打详细；之后只累计（要全量时把这个数字调大）
 /** 现场诊断用：把一个字段"长什么样"压缩成短字符串 */
 function gpnShape(v) {
@@ -4911,11 +4915,25 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (this.__gpnSpFlip) {
                 const cur = this.node && this.node.scale && this.node.scale.x;
                 if (typeof cur === 'number' && cur > 0) {
+                    // ★ 零开销路径：只计数 + 首帧抓一次调用栈；【不打任何日志】
+                    //   （这样一来时序与 verboseLog:false 时完全一致，能复现、又能拿到证据）
                     this.scale = -1;                    // 重新写渲染缩放（自愈）
-                    gpnSpSelfHealTotal++;
-                    if (dt !== -1 && dbgOn(C.debugLog)) { // dt === -1 = 自检探针，不刷日志
-                        log('裂荚【自愈】渲染缩放被引擎回正 → 已重新翻回（第 ' + gpnSpSelfHealTotal
-                            + ' 次）｜ ' + gpnSpDiag(this));
+                    gpnSpSelfHealTotal++;               // 累计（永不归零；自检/诊断用）
+                    gpnSpSelfHealSpots++;               // 本次汇总窗口内计数（每 5 秒清零）
+                    if (!gpnSpSelfHealFirstStack) {
+                        try { gpnSpSelfHealFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+                        catch (e) { gpnSpSelfHealFirstStack = '(拿不到调用栈)'; }
+                    }
+                    // 汇总：静默攒着，最多每 5 秒打一行（先清再用 ⇒ 只有真的有新增才打一条）
+                    if (dt !== -1 && !gpnSpSelfHealQuiet && dbgOn(C.debugLog)) {
+                        const now = Date.now();
+                        if (now - gpnSpSelfHealLastReport > 5000) {
+                            gpnSpSelfHealLastReport = now;
+                            const n = gpnSpSelfHealSpots; gpnSpSelfHealSpots = 0;
+                            gpnSpSelfHealQuiet = true;
+                            log('裂荚【自愈汇总】最近一次统计内自愈 ' + n + ' 次；首次复位的调用栈：' + gpnSpSelfHealFirstStack);
+                            setTimeout(() => { gpnSpSelfHealQuiet = false; }, 50);
+                        }
                     }
                 }
             }
@@ -4938,6 +4956,8 @@ export default {
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
+    _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
+    _gpnSpSelfHealReset: () => { gpnSpSelfHealTotal = 0; gpnSpSelfHealSpots = 0; gpnSpSelfHealFirstStack = ''; },          // 自检用来清零
     _gpnNullWriteReset: () => { gpnNullWriteTotal = 0; gpnNullWriteDetail = 0; gpnNullWriteQuiet = false; },  // 同上：自检用来把统计清零
     _starCanReach: gpnStarCanReach,   // 追击的"能不能打到"判定（纯函数，便于单测）
     id: MOD_ID,
