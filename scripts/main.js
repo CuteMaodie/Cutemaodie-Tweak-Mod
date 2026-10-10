@@ -688,15 +688,68 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     return false;
                 }
                 const d = hit.o;
+                // 【诊断】图鉴追加的"零输出记账"（只在 dump 时输出一次）：
+                //   记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
+                //   用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
+                gpnAlmAppendCalls++;
+                const _zhBefore = (typeof d.zh === 'string') ? d.zh : '';
+                const _zhHitBefore = (typeof zhSuffix === 'string') ? (_zhBefore.indexOf(zhSuffix) !== -1) : null;
+                gpnAlmAppendLog.push({
+                    n: gpnAlmAppendCalls,
+                    path: hit.path,
+                    needle: hitNeedle,
+                    hitBefore: _zhHitBefore,
+                    lenBefore: _zhBefore.length,
+                    tail: _zhBefore.slice(-24),
+                });
                 if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
                     track(d, 'zh'); d.zh = d.zh + zhSuffix;
+                    gpnAlmAppendWrites++;
                 }
                 if (typeof enSuffix === 'string' && typeof d.en === 'string'
                     && d.en.indexOf(enSuffix) === -1) {
                     track(d, 'en'); d.en = d.en + enSuffix;
                 }
-                if (dbgOn(CFG.splitpea.debugLog)) log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加');
+                if (dbgOn(CFG.splitpea.debugLog)) log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加'
+                    + '（第 ' + gpnAlmAppendCalls + ' 次进入，判据"已含后缀"=' + _zhHitBefore
+                    + '，此前长度 ' + _zhBefore.length + '，本次实际写入=' + (gpnAlmAppendWrites > 0 ? '是' : '否') + '）');
                 return true;
+            };
+
+            // 【诊断】把图鉴追加的记账打出来（唯一输出点；只打前 5 条明细 + 汇总）
+            const gpnAlmDump = (why) => {
+                try {
+                    log('图鉴【记账 dump】原因：' + why
+                        + '；apply() 累计调用 ' + gpnAlmApplyCalls + ' 次'
+                        + '；appendLoc 进入 ' + gpnAlmAppendCalls + ' 次'
+                        + '；实际写入 zh ' + gpnAlmAppendWrites + ' 次');
+                    gpnAlmAppendLog.slice(0, 5).forEach((x) => {
+                        log('   #' + x.n + ' path=' + x.path + ' needle=' + x.needle
+                            + ' 进入时"已含后缀"=' + x.hitBefore + ' 长度=' + x.lenBefore
+                            + ' 尾部="…' + x.tail + '"');
+                    });
+                    // ★ 关键验证：现在再读一次那份文案，看"我们写的还在不在"
+                    //   （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
+                    const arr = (typeof findAl === 'function') ? findAl('splitpea') : null;
+                    const obj = arr && arr.objdata;
+                    let readBack = '(取不到)';
+                    if (obj) {
+                        const walk2 = (o) => {
+                            if (!o || typeof o !== 'object') return null;
+                            if (typeof o.zh === 'string' && o.zh.indexOf('向后方两倍') !== -1) return o;
+                            if (Array.isArray(o)) { for (const x of o) { const r2 = walk2(x); if (r2) return r2; } return null; }
+                            for (const k of Object.keys(o)) { const r2 = walk2(o[k]); if (r2) return r2; }
+                            return null;
+                        };
+                        const t2 = walk2(obj);
+                        if (t2) {
+                            const hasIt = (typeof CFG.splitpea.extraZh === 'string') && t2.zh.indexOf(CFG.splitpea.extraZh) !== -1;
+                            readBack = '长度 ' + t2.zh.length + '，是否仍含我们追加的后缀=' + hasIt
+                                + '，出现次数=' + (t2.zh.split(CFG.splitpea.extraZh).length - 1);
+                        } else { readBack = '(找不到含该关键词的文案)'; }
+                    }
+                    log('   回读验证（splitpea）：' + readBack);
+                } catch (e) { /* 只影响诊断 */ }
             };
 
             // ---- 巴豆（追加"所有啃食者一起倒下"）----
@@ -940,6 +993,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     const apply = () => {
+        // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
+        gpnAlmApplyCalls++;
+        const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
         // 钢地刺：降价 + 打击次数 3 -> 9
         if (featOn('spikerock')) {
             setField('PlantProps', 'spikerock', 'SunCost', CFG.spikerock.sunCost);
@@ -1182,6 +1238,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 else { track(e.objdata, PIERCE_KEY); delete e.objdata[PIERCE_KEY]; }
             }
         }
+        // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
+        //   排查完把 gpnAlmTempVerbose 改回 false 即静默）
+        _almDumpTail('apply() 结束');
         return undo.length > 0;
     };
 
@@ -1537,6 +1596,14 @@ let gpnSpBodyFixTotal = 0;
 let gpnSpBodyFixSpots = 0;
 let gpnSpBodyFixFirstStack = '';
 let gpnSpBodyFixLastReport = 0;
+// 【诊断】图鉴追加的零输出记账（默认不输出，只在 dump 时打一次）
+let gpnAlmApplyCalls = 0;      // dataPatch.apply() 被调用次数
+let gpnAlmAppendCalls = 0;     // appendLoc() 进入次数（= 命中并走到写入分支）
+let gpnAlmAppendWrites = 0;    // 其中"判据通过、真的写了 zh"的次数
+const gpnAlmAppendLog = [];    // 前若干条明细
+// ⚠️【临时诊断开关】排查"图鉴文案重复 50 次"期间置 true ⇒ 每次 apply() 后打一次记账+dump。
+//   查完请改回 false（或删除本行与相关记账）。它不依赖 verboseLog，所以能在复现态（false）下拿到数据。
+let gpnAlmTempVerbose = true;
 let gpnSpBodyIds = null, gpnSpBodyIdNext = 1;  // 给 body 对象分配稳定 id（用来判断"是否换了对象/换装"）
 
 /** 【诊断】把任意对象映射成一个稳定 id（区分"同名但不同对象"） */
