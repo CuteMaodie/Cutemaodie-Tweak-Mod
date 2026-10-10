@@ -1528,6 +1528,71 @@ let gpnSpSelfHealSpots = 0;                    // 自愈"待上报"的计数（�
 let gpnSpSelfHealFirstStack = '';              // 首次复位时的调用栈（只抓一次；用于"是谁把翻转清掉的"）
 let gpnSpSelfHealQuiet = false;                // 一次汇总后短暂静音（避免同一帧内连打多行）
 let gpnSpSelfHealLastReport = 0;               // 上次汇总的时间戳
+let gpnSpTickTotal = 0;                        // characterUpdate 钩子被调用的总次数（证实"钩子在不在跑"）
+const gpnSpTL = [];                            // 【环形时间线】最近若干条样本（纯诊断；见 gpnSpSample）
+const gpnSpTLCaps = { max: 900, dumped: 0 };   // 上限 900 条；dumped = 已输出过几次
+let gpnSpLastDumpAt = 0;                       // 上次自动 dump 的时间戳（见 characterUpdate 里的保险丝）
+let gpnSpBodyIds = null, gpnSpBodyIdNext = 1;  // 给 body 对象分配稳定 id（用来判断"是否换了对象/换装"）
+
+/** 【诊断】把 body 对象映射成一个稳定 id（新对象 ⇒ 新 id） */
+function gpnSpBodyId(b) {
+    if (!b) return 0;
+    try {
+        if (!gpnSpBodyIds) { try { gpnSpBodyIds = new WeakMap(); } catch (e) { gpnSpBodyIds = null; } }
+        if (!gpnSpBodyIds) return -1;                 // 没有 WeakMap 就退化为 -1
+        let id = gpnSpBodyIds.get(b);
+        if (!id) { id = gpnSpBodyIdNext++; gpnSpBodyIds.set(b, id); }
+        return id;
+    } catch (e) { return -2; }
+}
+
+/** 【诊断】采样一帧（只在这株处于翻转态时被调用；只读属性，绝不改动游戏状态） */
+function gpnSpSample(plant) {
+    try {
+        const g = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+        const n3 = (v) => (typeof v === 'number' && isFinite(v)) ? Math.round(v * 1000) / 1000 : v;
+        const px = plant.worldPositionX;
+        const sp1 = g(() => plant.peaSpawnpoint.worldPosition.x, null);
+        const spB = g(() => plant.peaBackPoint.worldPosition.x, null);
+        const node = plant.node;
+        // 关键：db.node = 真正渲染骨架的节点（ArmatureDisplay 的 node），它的 worldScale 才是"看上去有没有镜像"
+        const dbNode = g(() => (plant.db && plant.db.node) || null, null);
+        const body = g(() => plant.body || null, null);
+        let det = '?';
+        try { const o = plant.detectEnemySplit(); det = (o && typeof o === 'object') ? ((o.Left ? 'L' : '-') + (o.Right ? 'R' : '-')) : String(o); } catch (e) { det = 'err'; }
+        const rec = 'F' + gpnSpTickTotal
+            + ' flip=' + (plant.__gpnSpFlip ? 1 : 0)
+            + ' obj=' + n3(g(() => plant.scale, '?'))
+            + ' node=' + n3(g(() => node.scale.x, '?'))
+            + ' nodews=' + n3(g(() => node.worldScale.x, '?'))
+            + ' dbws=' + n3(g(() => (dbNode && dbNode.worldScale) ? dbNode.worldScale.x : '无', '无'))
+            + ' body#' + gpnSpBodyId(body)
+            + ' bodyP=' + g(() => (body && body.parent && body.parent.name) || '?', '?')
+            + ' bodyS=' + n3(g(() => body.scale.x, '?'))
+            + ' bodyws=' + n3(g(() => (body && body.worldScale) ? body.worldScale.x : '?', '?'))
+            + ' px=' + n3(px)
+            + ' sp1=' + (typeof sp1 === 'number' ? n3(sp1) : sp1) + '(' + (typeof sp1 === 'number' && typeof px === 'number' ? (sp1 < px ? '左' : '右') : '?') + ')'
+            + ' spB=' + (typeof spB === 'number' ? n3(spB) : spB) + '(' + (typeof spB === 'number' && typeof px === 'number' ? (spB < px ? '左' : '右') : '?') + ')'
+            + ' det=' + det;
+        gpnSpTL.push(rec);
+        while (gpnSpTL.length > gpnSpTLCaps.max) gpnSpTL.shift();
+    } catch (e) { /* 采样失败绝不影响游戏 */ }
+}
+
+/** 【诊断】把环形缓冲打出来（唯一输出点）。reason = 触发原因 */
+function gpnSpDump(reason) {
+    try {
+        gpnSpTLCaps.dumped++;
+        log('裂荚【时间线 dump #' + gpnSpTLCaps.dumped + '】原因：' + reason
+            + '；共 ' + gpnSpTL.length + ' 条（上限 ' + gpnSpTLCaps.max + '）'
+            + '；characterUpdate 钩子累计调用 ' + gpnSpTickTotal + ' 次'
+            + '；自愈累计 ' + gpnSpSelfHealTotal + ' 次'
+            + (gpnSpSelfHealFirstStack ? ('；首次自愈调用栈：' + gpnSpSelfHealFirstStack) : '；自愈从未触发'));
+        // 只打"最后 60 条"（大约一屏/1 秒），避免刷爆控制台
+        const from = Math.max(0, gpnSpTL.length - 60);
+        for (let i = from; i < gpnSpTL.length; i++) log('  时间线[' + i + '] ' + gpnSpTL[i]);
+    } catch (e) { /* 只影响诊断 */ }
+}
 const GPN_NULL_WRITE_DETAIL_MAX = 2;           // 前几条打详细；之后只累计（要全量时把这个数字调大）
 /** 现场诊断用：把一个字段"长什么样"压缩成短字符串 */
 function gpnShape(v) {
@@ -4849,6 +4914,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         P.specialPlantOnEnable = function () {
             const wasFlip = !!this.__gpnSpFlip;
             const scaleBefore = (typeof this.scale === 'number') ? this.scale : '?';
+            // ★ 如果这次复位发生在"翻转态"下 ⇒ 很可能是翻转被清掉的那一刻：先把时间线打出来
+            if (wasFlip) { try { gpnSpDump('翻转态下触发了 specialPlantOnEnable（复位/重启用）'); } catch (e) { /* 只影响诊断 */ } }
             try { this.__gpnSpFlip = false; this.scale = 1; }
             catch (e) { warn('裂荚射手：复位出错', e); }
             if (dbgOn(C.debugLog)) {
@@ -4920,7 +4987,20 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     P.characterUpdate = function (dt) {
         let r;
         if (typeof baseCharUpdate === 'function') r = baseCharUpdate.apply(this, arguments);
+        // ① 无条件计数：用来证实/证伪"我们的钩子到底有没有被每帧调用"
+        gpnSpTickTotal++;
         try {
+            // ② 环形时间线：只在这株"处于翻转态"时采样（正常游戏不采样、零输出）
+            if (this.__gpnSpFlip && dt !== -1) gpnSpSample(this);
+            // ②b 保险丝：翻转期间每 12 秒自动 dump 一次（最多 5 次）
+            //     —— 万一键盘 P 被游戏吃掉，也一定拿得到时间线；总共最多 5 条 + 每条 60 行
+            if (this.__gpnSpFlip && dt !== -1 && gpnSpTLCaps.dumped < 5) {
+                const now2 = Date.now();
+                if (now2 - gpnSpLastDumpAt > 12000) {
+                    gpnSpLastDumpAt = now2;
+                    gpnSpDump('翻转期间自动 dump（每 12 秒一次，最多 5 次）');
+                }
+            }
             if (this.__gpnSpFlip) {
                 const cur = this.node && this.node.scale && this.node.scale.x;
                 if (typeof cur === 'number' && cur > 0) {
@@ -4953,6 +5033,27 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     // 自检探针（仅供 mock 单测调用；dt 传 -1 ⇒ 不刷日志。游戏里不会被调用）
     P.__gpnSpSelfHealTick = function () { return P.characterUpdate.call(this, -1); };
 
+    // ---- ⑧ 【环形时间线记录器】纯诊断：默认零输出，只在内存里滚动保留最近样本 ----
+    //   为什么需要：前几轮的教训是"只看开大前后两个采样点 ⇒ 结论全错"。
+    //   设计要点：
+    //     · 采样只在【这株处于翻转态】时进行 ⇒ 正常游戏不采样（零开销）
+    //     · 一切数值都归一化成「3 位小数」或「符号/布尔」⇒ 记录串很短
+    //     · 只保留最近 caps.max 条（跨所有裂荚株共享）⇒ 内存有上限
+    //     · 【绝不自动 write】—— 用 P 键或"翻转被关掉的那一刻"才把缓冲打出来
+    //   dump 触发方式：
+    //     1) 键盘 P 键（游戏里按一下，打最近一屏）
+    //     2) 某株的翻转被关掉时（翻回/复位）自动打一次
+    try {
+        if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+            document.addEventListener('keydown', (ev) => {
+                try {
+                    const k = ev && (ev.key || ev.code);
+                    if (k === 'p' || k === 'P' || k === 'KeyP') gpnSpDump('手动按 P 键');
+                } catch (e) { /* 只影响诊断 */ }
+            });
+        }
+    } catch (e) { /* 只影响诊断 */ }
+
     return recs;
 }
 
@@ -4966,6 +5067,9 @@ export default {
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
     _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
+    _gpnSpTimeline: () => ({ ticks: gpnSpTickTotal, len: gpnSpTL.length, max: gpnSpTLCaps.max, dumped: gpnSpTLCaps.dumped, last: gpnSpTL[gpnSpTL.length - 1] || null }),  // 诊断用：环形时间线状态
+    _gpnSpDump: (why) => gpnSpDump(why || '自检'),          // 诊断用：把时间线打出来
+    _gpnSpTimelineClear: () => { gpnSpTL.length = 0; },     // 自检用来清缓冲
     _gpnSpSelfHealReset: () => { gpnSpSelfHealTotal = 0; gpnSpSelfHealSpots = 0; gpnSpSelfHealFirstStack = ''; },          // 自检用来清零
     _gpnNullWriteReset: () => { gpnNullWriteTotal = 0; gpnNullWriteDetail = 0; gpnNullWriteQuiet = false; },  // 同上：自检用来把统计清零
     _starCanReach: gpnStarCanReach,   // 追击的"能不能打到"判定（纯函数，便于单测）
