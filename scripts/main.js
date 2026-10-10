@@ -5043,25 +5043,32 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                         }
                     }
                 }
-                // ★★ MGP 开大丢翻转的【最终修复】（2026/10/10 由"环形时间线 + 层级身份列"实测定死）：
-                //   开大时 `Plant.food()` 走 `this.body.setParent(开大层, true)` —— 把 body 摘到
-                //   一个外层缩放为 **+1** 的容器（时间线里显示为 `bodyP=New Node  pid=4(pws=1)`）；
-                //   为了让观感不变，引擎把 body 的【世界缩放】显式写成 `node.worldScale`（`Plant.update` 里
-                //   `body.parent != node && (body.worldScale = node.worldScale)`）。
-                //   问题：`worldScale` 是**显式持久化**的值 —— body 挂回 node 之后**不会自动重算**，
-                //   于是最终停留在 `bodyS=1`（本地）却 `bodyws=+0.42`（世界）的状态 ⇒ **画面回正**。
-                //   ⇒ 修法：翻转态下把 body 的**世界缩放**直接钉成负值（用引擎自己的语义，不猜本地值）。
-                //      · body 挂在 node 下       ⇒ 世界 -0.42 ⇒ 贴图/发射口镜像恢复
-                //      · body 正挂在开大层下     ⇒ 同样强制 -0.42 ⇒ **开大期间也保持翻转**
-                //      · 引擎的弹性动画（jump/fall/grow）改的是本地缩放，其形变仍然保留（本地会被自动反算）
+                // ★★ MGP 开大丢翻转的【正确修复】（2026/10/10 由"环形时间线 + 用户肉眼判定 B"定死）
+                //   事实链：
+                //     · 贴图与发射口的镜像，最终由 **body 的本地缩放符号**决定（骨架自己用的就是它）；
+                //     · 开大（`Plant.food()`）会把 body 摘到"开大层"（外层缩放 +1），为了保持世界观感，
+                //       引擎把 body 的本地缩放算成 `-0.42`（= 世界 -0.42 ÷ 父 +1）；这时的本地负号是**正确**的；
+                //     · 但 body 挂回 node（世界 -0.42）之后，本地缩放**没有重新计算**，仍是 `-0.42`
+                //       ⇒ 世界 = (-0.42) × (-0.42) = **+0.18 级别（正）** ⇒ **贴图与发射口双双回到未翻转态**；
+                //     · （`body.worldScale` 是**显式缓存**，写它只会造出"读数正常、画面依旧"的假象 —— 已弃用。）
+                //   ⇒ 修法：维持一条**自洽式**：
+                //         body.scale.x 的符号  =  父世界符号 × 目标世界符号
+                //      · 父 = node(-0.42)、目标负 ⇒ 本地应为**正**（1）⇒ 世界 -0.42 ⇒ 翻转 ✓
+                //      · 父 = 开大层(+1)、目标负  ⇒ 本地应为**负**（-1）⇒ 世界 -1（负） ⇒ 开大期间也保持翻转 ✓
+                //      · 未翻转的株：整段不进入（`__gpnSpFlip` 为假）⇒ 引擎怎么做都不干预 ✓
                 const bd = this.body;
-                const bws = bd && bd.worldScale;
-                if (bws && typeof bws.x === 'number') {
-                    const nws = (this.node && this.node.worldScale && typeof this.node.worldScale.x === 'number')
-                        ? Math.abs(this.node.worldScale.x) : 0.42;
-                    if (bws.x >= 0) {                      // 期望符号是负；只要不是负就纠正
+                const bsc = bd && bd.scale;
+                if (bsc && typeof bsc.x === 'number' && bsc.x !== 0) {
+                    const par = bd.parent || this.node;
+                    const parWS = (par && par.worldScale && typeof par.worldScale.x === 'number')
+                        ? par.worldScale.x
+                        : ((this.node && this.node.worldScale && typeof this.node.worldScale.x === 'number')
+                            ? this.node.worldScale.x : -1);
+                    // 目标世界符号 = -1（翻转）；本地期望符号 = sign(父世界) × (-1)
+                    const wanted = (parWS < 0) ? 1 : -1;
+                    if (Math.sign(bsc.x) !== wanted) {
                         try {
-                            bws.x = -nws;
+                            bsc.x = Math.abs(bsc.x) * wanted;
                             gpnSpBodyFixTotal++;
                             gpnSpBodyFixSpots++;
                             if (!gpnSpBodyFixFirstStack) {
@@ -5071,11 +5078,11 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                             if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
                                 gpnSpBodyFixLastReport = Date.now();
                                 const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
-                                log('裂荚【body 世界缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
-                                    + '（body 世界缩放被写成正 ⇒ 双重翻转抵消）'
+                                log('裂荚【body 本地缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
+                                    + '（期望符号 ' + wanted + '，父世界 ' + parWS + '）'
                                     + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
                             }
-                        } catch (e) { warn('裂荚射手：body 世界缩放纠正出错', e); }
+                        } catch (e) { warn('裂荚射手：body 本地缩放纠正出错', e); }
                     }
                 }
             }
