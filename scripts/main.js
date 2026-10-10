@@ -4534,13 +4534,13 @@ function gpnMkTick(plant, deps) {
         plant.setPlanternHidden(1);                           // 续期（引擎内部取 max）
         if (!plant.__gpnMkHidden) {
             plant.__gpnMkHidden = true;
-            if (C.debugLog) log('夏威夷果：暗影物质被打光 → 上真隐身（僵尸看不见）');
+            if (dbgOn(C.debugLog)) log('夏威夷果：暗影物质被打光 → 上真隐身（僵尸看不见）');
         }
     } else if (plant.__gpnMkHidden) {
         // 只清我们自己那 1 秒的续期值；路灯花大招给的 3 秒不碰
         if (!(plant.PlanternHidden > 1)) plant.PlanternHidden = 0;
         plant.__gpnMkHidden = false;
-        if (C.debugLog) log('夏威夷果：暗影物质回血 → 解除隐身');
+        if (dbgOn(C.debugLog)) log('夏威夷果：暗影物质回血 → 解除隐身');
     }
     // ---- ① 本体半透明（盾牌在的时候不做）----
     const wantFade = !!(plant.ShadowPowered && !plant.dead
@@ -4720,7 +4720,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         plant.__gpnSpFlip = !!on;
         try { plant.scale = on ? -1 : 1; }
         catch (e) { warn('裂荚射手：翻转出错', e); }
-        if (C.debugLog) {
+        if (dbgOn(C.debugLog)) {
             try {
                 log('裂荚【翻转】→ ' + (on ? '翻' : '回正') + '：scale ' + before + ' → ' + plant.scale
                     + '，是否 MGP=' + !!plant.isMGP);
@@ -4740,7 +4740,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (ev.getButton() !== 0) return r;                 // 只认左键
             const next = !this.__gpnSpFlip;
             applyFlip(this, next);
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 log('裂荚射手：' + (next ? '已翻转（前方 2 颗 / 后方 1 颗）' : '已翻回（前方 1 颗 / 后方 2 颗）'));
             }
             return true;                                        // 告诉引擎"这次点击我处理了"
@@ -4758,7 +4758,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         if (this.__gpnSpFlip) {
             const hadDir = !!(a && typeof a.x === 'number');
             const flipped = gpnSpFlipVec(a, Vec2Ctor);       // 参数缺省时也补成"朝后"
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚：翻转发射 → 方向 ' + (hadDir ? a.x : '缺省(1)') + ' → '
                         + (flipped && typeof flipped.x === 'number' ? flipped.x : '?')
@@ -4786,7 +4786,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (!this.__gpnSpFlip) return r;
             if (!r || typeof r !== 'object') return r;          // 形状不对就原样返回，绝不破坏引擎判读
             const out = { Left: !!r.Right, Right: !!r.Left };    // 屏幕左右 ⇄ 植物前后
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚：索敌翻转 → 引擎{Left=' + !!r.Left + ',Right=' + !!r.Right + '} ⇒ 用于动画'
                         + '{Left=' + out.Left + ',Right=' + out.Right + '}');
@@ -4823,7 +4823,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             const scaleBefore = (typeof this.scale === 'number') ? this.scale : '?';
             try { this.__gpnSpFlip = false; this.scale = 1; }
             catch (e) { warn('裂荚射手：复位出错', e); }
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚【OnEnable 复位】← 引擎调用了 specialPlantOnEnable：'
                         + '原 flip=' + wasFlip + '，scale ' + scaleBefore + ' → ' + this.scale
@@ -4841,7 +4841,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     if (typeof P.specialPlantFood === 'function') {
         const recFood = methodRecord(SplitPeaPlant, 'specialPlantFood');
         P.specialPlantFood = function () {
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚【开大开始】specialPlantFood：flip=' + !!this.__gpnSpFlip
                         + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
@@ -4856,7 +4856,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         const recFoodEnd = methodRecord(SplitPeaPlant, 'specialPlantFoodEnd');
         P.specialPlantFoodEnd = function () {
             const r = recFoodEnd.original.apply(this, arguments);
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 try {
                     log('裂荚【开大结束】specialPlantFoodEnd：flip=' + !!this.__gpnSpFlip
                         + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP);
