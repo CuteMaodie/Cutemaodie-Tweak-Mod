@@ -600,6 +600,25 @@ function normalizeType(t) {
 }
 
 /** 打补丁前先登记原方法 + 它是不是自有属性 */
+/* ============================================================================
+ * 【开关门禁】统一包装器：把"关掉开关 ⇒ 完全不插手"收敛到**这一处**
+ *   用法：Cls.prototype.m = gpnGatedBody(original, 'featKey', function () { …补丁体… });
+ *   开着 ⇒ 走补丁体；关掉 ⇒ 直接 original.apply ⇒ 与"没打补丁"完全等价
+ *   为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
+ *   __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
+ * ========================================================================== */
+const gpnGateStats = { bodies: 0, calls: 0, bypass: 0 };
+function gpnGatedBody(original, featKey, body) {
+    const wrapped = function () {
+        gpnGateStats.calls++;
+        if (!featOn(featKey)) { gpnGateStats.bypass++; return original.apply(this, arguments); }
+        return body.apply(this, arguments);
+    };
+    try { wrapped.__gpnGated = featKey; } catch (e) { /* 忽略 */ }
+    gpnGateStats.bodies++;
+    return wrapped;
+}
+
 function methodRecord(Cls, name) {
     return {
         Cls,
@@ -1412,7 +1431,10 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         if (this.__gpnQuiet) { quietKill(this); return; }
         return originals.fart.call(this, stunDuration, poison);
     };
-    Zombie.prototype.chilibeanFart = patchedFart;
+    // 包装后的函数存成变量：下面 isImmune 用「是否重写过 chilibeanFart」判天然免疫，
+    // 必须与挂在原型上的那个函数是同一个引用（否则所有僵尸都会被判成免疫）。
+    const gatedFart = gpnGatedBody(originals.fart, 'chilibean', patchedFart);
+    Zombie.prototype.chilibeanFart = gatedFart;
     recs.push({ Cls: Zombie, name: 'chilibeanFart', original: originals.fart });
 
     /** 对巴豆免疫吗？判据一：重写过 chilibeanFart（引擎的原生免疫机制）；判据二：补漏名单 */
@@ -1420,7 +1442,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
     const arbiterRe = /arbiter/i;
     const isImmune = (z) => {
         if (!z || typeof z.chilibeanFart !== 'function') return true;
-        if (z.chilibeanFart !== patchedFart) return true;
+        if (z.chilibeanFart !== gatedFart) return true;
         const code = z.Zombie_Type || '';
         return extraMechRe.test(code) || arbiterRe.test(code);
     };
@@ -1448,7 +1470,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         return true;
     };
 
-    ChiliBean.prototype.specialPlantOnEaten = function (dmg, zombie, hpBefore, hpAfter) {
+    ChiliBean.prototype.specialPlantOnEaten = gpnGatedBody(originals.onEaten, 'chilibean', function (dmg, zombie, hpBefore, hpAfter) {
         if (!(hpAfter <= 0) || !zombie) return;              // 和原版一致：只有被啃死才触发
 
         const factor = (this.MintBoosted && this.objdataOwn.MintStunDurationFactor > 0)
@@ -1485,7 +1507,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
                 eaters[i].__gpnQuiet = false;
             }
         }
-    };
+    });
     recs.push({ Cls: ChiliBean, name: 'specialPlantOnEaten', original: originals.onEaten });
 
     return { recs };
@@ -1502,7 +1524,7 @@ function makeSpikerockPatch(SpikerockPlant) {
     }
     const original = SpikerockPlant.prototype.setSpikeSlot;
 
-    SpikerockPlant.prototype.setSpikeSlot = function (remain) {
+    SpikerockPlant.prototype.setSpikeSlot = gpnGatedBody(original, 'spikerock', function (remain) {
         const max = (this._objdataOwn && this._objdataOwn.MaxSpike) || CFG.spikerock.maxSpike;
         if (remain === undefined || remain === null) remain = max;
         remain = Math.ceil(remain);
@@ -1515,7 +1537,7 @@ function makeSpikerockPatch(SpikerockPlant) {
         const r = original.call(this, stage >= teeth ? max : stage);
         if (remain > 0) this.spikeLeft = remain;                    // 修正回真实剩余次数
         return r;
-    };
+    });
     return { Cls: SpikerockPlant, name: 'setSpikeSlot', original };
 }
 
@@ -1574,7 +1596,7 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
     }
     const original = NightShadePlant.prototype._shoot;
 
-    NightShadePlant.prototype._shoot = function (isFood) {
+    NightShadePlant.prototype._shoot = gpnGatedBody(original, 'nightshade', function (isFood) {
         const self = this;
         // 原版 _shoot 是 async 且没有返回值，这里保持行为一致，只多打一个标记
         return (async () => {
@@ -1616,7 +1638,7 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
             }
             return shot;
         })();
-    };
+    });
     return { Cls: NightShadePlant, name: '_shoot', original };
 }
 
@@ -2513,7 +2535,7 @@ function makeNoctarinePatch(NoctarinePlant) {
     if (typeof NoctarinePlant.prototype.explode !== 'function') { warn('跳过暗影油桃：没有 explode'); return null; }
 
     const rec = methodRecord(NoctarinePlant, 'explode');
-    NoctarinePlant.prototype.explode = function () {
+    NoctarinePlant.prototype.explode = gpnGatedBody(rec.original, 'noctarine', function () {
         const od = this.objdataOwn;
         if (od) {
             if (CFG.noctarine.normalLifespan > 0) od.NormalLifespan = CFG.noctarine.normalLifespan;
@@ -2526,7 +2548,7 @@ function makeNoctarinePatch(NoctarinePlant) {
             }
         }
         return rec.original.apply(this, arguments);
-    };
+    });
     return rec;
 }
 
@@ -2543,7 +2565,7 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
     if (typeof ZoybeanPodPlant.prototype.summon !== 'function') { warn('跳过腐尸豆荚：没有 summon'); return null; }
 
     const rec = methodRecord(ZoybeanPodPlant, 'summon');
-    ZoybeanPodPlant.prototype.summon = function () {
+    ZoybeanPodPlant.prototype.summon = gpnGatedBody(rec.original, 'zoybeanpod', function () {
         const od = this.objdataOwn;
         if (od) {
             // 每次都重写（不依赖上次的状态，池化复用也安全）
@@ -2557,7 +2579,7 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
             }
         }
         return rec.original.apply(this, arguments);
-    };
+    });
     return rec;
 }
 
@@ -5451,6 +5473,7 @@ export default {
     _featDefaults: gpnFeatDefaults,     // 同上：出厂默认
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
+    _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
@@ -6388,7 +6411,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-baseline-1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-r1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
