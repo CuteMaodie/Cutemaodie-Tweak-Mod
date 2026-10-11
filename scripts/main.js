@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -5604,7 +5604,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v21';
+                const gpnCfgV = 'v22';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5699,17 +5699,10 @@ function findSprite(n) {
                 function buildEntryRow(ccg) {
                     const row = ccg.instantiate(entryTemplate);
                     row.name = 'gpnConfigRow';
-                    killChildren(row, true);                  // 先只留 ToolTip（行名）
-                    // ★ 蓝色齿轮在 website 节点内 ⇒ 必须保留它（此前误删 ⇒ 齿轮消失）
-                    try {
-                        const keepG = (entryTemplate.children || []).filter((k) => String(k.name || '').indexOf('website') === 0);
-                        keepG.forEach((src) => {
-                            const g = ccg.instantiate(src);
-                            clearClicks(g);                       // 保险：不带原版"打开网页"的点击事件
-                            row.addChild(g);
-                        });
-                        clog('入口行：保留齿轮节点 ' + keepG.length + ' 个');
-                    } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
+                    killChildren(row, true);                  // 只留 ToolTip（行名）
+                    // 【v22】按用户要求：入口行**不放蓝色齿轮**（只留「配置界面」文字，整行可点）。
+                    //   说明：原版那颗齿轮在 website 节点里，点击是"打开键位说明网页"，容易让玩家误解，
+                    //   所以干脆不放。若将来想加回来：从 entryTemplate 里 clone 名为 website 的子节点挂到这里即可。
                     clearClicks(row);
                     setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
                     let locked = 0;
@@ -5736,7 +5729,7 @@ function findSprite(n) {
                             const blocked = !!(e.master && !featOn(e.master));
                             if (e.sprite) e.sprite.color = blocked ? GREY : (on ? GREEN : RED);
                             if (e.labelNode) {
-                                if (blocked) { setText(e.labelNode, '父项关闭'); setRightAlign(e.labelNode, true); }
+                                if (blocked) { setText(e.labelNode, '关'); setRightAlign(e.labelNode, true); }
                                 else { setRightAlign(e.labelNode, false); setText(e.labelNode, on ? '开' : '关'); }
                             }
                             if (i < 3) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
