@@ -5589,197 +5589,163 @@ export default {
                 log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；每 6 秒自动切一次钢地刺并打印表值/活对象');
             } catch (e) { warn('【验证】安装失败', e); }
 
-            // ---- 1d.【临时探查】往【原版设置窗】最底部加一条空占位行（方案 B′ 可行性）----
-            //   ⚠️ 上一版教训：原版设置窗是**用 node.active 开关的**（不是"常显只是被遮"），
-            //      所以"轮询＋最多试 30 次"会在玩家真正打开设置窗之前就收工 ⇒ 什么都没发生。
-            //   ⇒ 本版改成**挂到 SettingWindow 组件的 onEnable**（引擎把节点设为 active 时会触发）
-            //      ⇒ 玩家一打开设置窗，插入立刻执行，不会再错过。
-            //   仍只验证三件事（不改任何功能）：① 加行后滚动/滚动条是否正常 ② 原版窗是否异常
-            //   ③ 克隆行按钮"自己绑点击"是否安全。
+            // ---- 1d. 配置界面：入口行（挂在原版设置窗底部）+ 我们的窗体（阶段① 骨架）----
+            //   设计（用户确认的 B′ 方案）：
+            //     · 入口：在原版【设置】窗口的 `elements` 最底部插一条「配置界面」+ 蓝色齿轮按钮；
+            //       做法 = 克隆原版 KeyBinds 行 ⇒ 只留 ToolTip（文字）+ website（齿轮）⇒ 文字改「配置界面」；
+            //     · 点击：打开【我们自己的窗体】（克隆原版窗体外壳 ⇒ 米色底/木框标题/红X/滚动条全原版外观），
+            //       内容区放我们自己的内容（本阶段先放一行占位，阶段② 换成 23 个开关）。
+            //   ⚠️ 教训（本轮踩过的坑，全部体现在下面）：
+            //     · 原版设置窗是**用 node.active 开关**的 ⇒ 必须挂它的 onEnable 才能在"打开时"插入；
+            //     · 组件识别**不能比类名字符串**（内置/自定义格式不同）⇒ 按属性特征判断（clickEvents/string）；
+            //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
+            //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                let gpnRowProbeDone = false;
-                let gpnRowProbeWin = null;
-                let gpnRowMissLog = 0;      // "找不到 elements"最多打印 3 次（避免刷屏）
-                let gpnRowHookLog = 0;
-                const gpnRowTryInsert = (why) => {
+                const gpnCfgV = 'v7';
+                let gpnCfgRowDone = false;
+                let gpnCfgWin = null;
+                let gpnCfgWinRow = null;
+                let gpnCfgOrigWin = null;
+                const gpnCfgLog = (s) => { try { log('【配置界面·' + gpnCfgV + '】' + s); } catch (e) { /* 忽略 */ } };
+                const findByName = (root, want, depth) => {
                     try {
-                        if (gpnRowProbeDone) return;
-                        const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
-                        const win = gpnRowProbeWin;
-                        if (!ccg || !win) return;
-                        if (win.active === false) return;                 // 还没打开
-                        if (!win.isValid) { log('【探查】窗节点已失效（' + why + '）'); return; }
-                        // ⚠️ 实测：cc.find('elements', win) 找不到（路径写法不对）⇒ 改为自己沿子节点树找
-                        const findByName = (root, want, depth) => {
-                            try {
-                                if (!root || depth > 6) return null;
-                                if (String(root.name || '') === want) return root;
-                                const ks = root.children || [];
-                                for (let i = 0; i < ks.length; i++) {
-                                    const r = findByName(ks[i], want, depth + 1);
-                                    if (r) return r;
-                                }
-                            } catch (e) { /* 忽略 */ }
-                            return null;
-                        };
-                        const elements = findByName(win, 'elements', 0);
-                        if (!elements) {
-                            if (gpnRowMissLog < 3) {
-                                gpnRowMissLog++;
-                                log('【探查】找不到 elements 节点（' + why + '）⇒ 打印设置窗内部结构：');
-                                try {
-                                    const dump = (n, d) => {
-                                        if (!n || d > 4) return;
-                                        let cs = '';
-                                        try { cs = (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+'); } catch (e) { cs = '?'; }
-                                        log('【探查】  树 ' + '|--'.repeat(Math.min(d, 8)) + n.name + ' [组件:' + cs + '] (子' + ((n.children || []).length) + ')');
-                                        (n.children || []).forEach((k) => dump(k, d + 1));
-                                    };
-                                    dump(win, 0);
-                                } catch (e) { log('【探查】  打印结构失败'); }
+                        if (!root || depth > 7) return null;
+                        if (String(root.name || '') === want) return root;
+                        const ks = root.children || [];
+                        for (let i = 0; i < ks.length; i++) { const r = findByName(ks[i], want, depth + 1); if (r) return r; }
+                    } catch (e) { /* 忽略 */ }
+                    return null;
+                };
+                /** 清掉一棵子树里所有 Button 的点击事件（原版事件指向原窗口组件，绝不能让它们跟着克隆体） */
+                const clearClickEvents = (n) => {
+                    let n0 = 0;
+                    try {
+                        for (const c of (n.components || [])) {
+                            if (c && Array.isArray(c.clickEvents)) { n0 += c.clickEvents.length; c.clickEvents.length = 0; }
+                        }
+                    } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { n0 += clearClickEvents(k); });
+                    return n0;
+                };
+                /** 把一棵子树里的 Label 文字改掉（按属性特征识别 Label：有 string 字段） */
+                const setAllText = (n, str) => {
+                    let n0 = 0;
+                    try {
+                        for (const c of (n.components || [])) {
+                            if (c && typeof c.string === 'string' && c.string !== '') { c.string = str; n0++; }
+                        }
+                    } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { n0 += setAllText(k, str); });
+                    return n0;
+                };
+                /** 造我们的窗体（克隆原版外壳） */
+                const gpnCfgBuildWin = (origWin, ccg) => {
+                    try {
+                        if (gpnCfgWin && gpnCfgWin.isValid) return gpnCfgWin;
+                        const clone = ccg.instantiate(origWin);
+                        clone.name = 'gpnConfigWindow';
+                        // ① 移除克隆体上的 SettingWindow 组件（它会读存档、刷它自己那 20 个引用、跑原版逻辑）
+                        let removed = 0;
+                        try {
+                            for (const c of (clone.components || []).slice()) {
+                                if (c && c.node === clone) { try { c.destroy(); removed++; } catch (e) { /* 忽略 */ } }
                             }
-                            return;
+                        } catch (e) { /* 忽略 */ }
+                        // ② 清掉所有原版点击事件（点我们的窗绝不能改原版设置）
+                        const cleared = clearClickEvents(clone);
+                        // ③ 标题改「模组设置」
+                        const titleNode = findByName(clone, 'Title', 0);
+                        const titleChanged = titleNode ? setAllText(titleNode, '模组设置') : 0;
+                        // ④ 清空内容区，放一行我们自己的占位
+                        const elements = findByName(clone, 'elements', 0);
+                        let rowsBefore = 0;
+                        if (elements) {
+                            rowsBefore = (elements.children || []).length;
+                            (elements.children || []).slice().forEach((k) => { try { k.removeFromParent(); k.destroy(); } catch (e) { /* 忽略 */ } });
+                            // 用原版 KeyBinds 行做模板造一行「配置界面」占位内容（阶段② 换成真开关）
+                            const tpl = gpnCfgWinRow;
+                            if (tpl) {
+                                const r = ccg.instantiate(tpl);
+                                r.name = 'gpnCfgPlaceholder';
+                                clearClickEvents(r);
+                                setAllText(r, '（开关列表将在下一阶段填入）');
+                                elements.addChild(r);
+                            }
+                            if (elements.updateLayout) elements.updateLayout();
                         }
-                        const kids = elements.children || [];
-                        if (kids.some((k) => k && k.name === 'gpnConfigRowProbe')) { gpnRowProbeDone = true; return; }
-                        log('【探查】原版设置窗 elements：共 ' + kids.length + ' 行（触发=' + why + '）');
-                        kids.forEach((k, i) => {
-                            let desc = '';
-                            try {
-                                desc = (k.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+');
-                            } catch (e) { desc = '?'; }
-                            let sub = '';
-                            try { sub = (k.children || []).map((c2) => c2.name + '(' + (c2.children || []).length + ')').join(','); } catch (e) { /* 忽略 */ }
-                            log('【探查】  行[' + i + '] ' + k.name + ' [组件: ' + desc + '] 子: ' + sub);
-                        });
-                        // ★ 模板固定为 KeyBinds 行（它右侧就是蓝色齿轮按钮 website）；找不到再退回其它含 website 的行
-                        const hasWebsite = (k) => (k.children || []).some((c2) => String(c2.name || '').indexOf('website') === 0);
-                        let tpl = kids.find((k) => String(k.name) === 'KeyBinds')
-                            || kids.find((k) => hasWebsite(k))
-                            || kids[kids.length - 1];
-                        if (!tpl) { log('【探查】没找到可作模板的行'); return; }
-                        log('【探查】用作模板的行 = ' + tpl.name);
-                        const clone = ccg.instantiate(tpl);
-                        clone.name = 'gpnConfigRowProbe';
-                        // ★ 只保留 ToolTip（文字）+ website（蓝色齿轮按钮），去掉 import / export
-                        //   ⚠️ 上一版教训：removeFromParent() 的报错被 try/catch 吞掉 ⇒ 日志说"裁剪成功"，
-                        //      实际 export 仍在（行树里 子=3）⇒ 这次每一步都打印结果，并做兜底隐藏。
-                        try {
-                            const origKids = (clone.children || []).slice();
-                            origKids.forEach((c2) => {
-                                const nm = String(c2.name || '');
-                                if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
-                                let okR = '未执行', errR = '';
-                                try { c2.removeFromParent(); okR = 'removeFromParent OK'; }
-                                catch (e1) { errR = String(e1); okR = 'removeFromParent 失败'; }
-                                try { c2.destroy(); } catch (e3) { errR += ' | destroy 失败:' + e3; }
-                                try { c2.active = false; okR += ' | active=false'; } catch (e4) { errR += ' | active 失败:' + e4; }
-                                log('【探查】裁剪『' + nm + '』⇒ ' + okR + (errR ? (' ｜ 错误: ' + errR) : ''));
-                            });
-                            const after = (clone.children || []).map((k) => k.name);
-                            log('【探查】裁剪后实际子节点：[' + after.join(', ') + '] 共 ' + after.length + ' 个（期望只剩 ToolTip + website）');
-                        } catch (e) { warn('【探查】裁剪子节点出错', e); }
-                        // ⚠️ 教训：用"类名字符串"判断组件不可靠（内置组件与自定义组件的类名格式不同）
-                        //   ⇒ 一律**按属性特征**识别：clickEvents = Button；string = Label。
-                        // ★ 先递归 dump 克隆整行（层级 / active / 组件 / Sprite 帧名）⇒ 看清 ▲▼ 到底在哪
-                        try {
-                            const sfName = (c) => {
+                        // ⑤ 自己绑"关闭"（红 X 的原版事件已被清掉，否则点它没反应）
+                        const exitNode = findByName(clone, 'buttonExit', 0);
+                        let exitBound = 0;
+                        if (exitNode) {
+                            const closeWin = (ev) => {
                                 try {
-                                    const a = c && (c.spriteFrame || (c.spriteFrame_ !== undefined ? c.spriteFrame_ : null));
-                                    if (a && typeof a === 'object') {
-                                        if (a.name) return String(a.name);
-                                        if (a._name) return String(a._name);
-                                        return '(无名帧)';
-                                    }
-                                } catch (e) { /* 忽略 */ }
-                                return '';
+                                    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+                                    clone.active = false;
+                                    if (gpnCfgOrigWin) gpnCfgOrigWin.active = true;   // 关我们的窗 ⇒ 回到原版设置窗
+                                    gpnCfgLog('已关闭我们的配置窗体（回到原版设置窗）');
+                                } catch (e) { warn('【配置界面】关闭窗体出错', e); }
                             };
-                            const shape = (c) => {
-                                const out = [];
-                                try {
-                                    if (c && Array.isArray(c.clickEvents)) out.push('clickEvents=' + c.clickEvents.length);
-                                    if (c && typeof c.string === 'string') out.push('string="' + String(c.string).slice(0, 14) + '"');
-                                    const s = sfName(c);
-                                    if (s) out.push('frame=' + s);
-                                } catch (e) { /* 忽略 */ }
-                                return out.length ? ('(' + out.join(' ') + ')') : '';
-                            };
-                            const dumpTree = (n, d) => {
-                                if (!n || d > 4) return;
-                                let cs = '';
-                                try { cs = (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?') + shape(c)).join(' + '); } catch (e) { cs = '?'; }
-                                log('【探查】  行树 ' + '|--'.repeat(Math.min(d, 8)) + n.name
-                                    + ' act=' + (n.active !== false) + ' 子=' + ((n.children || []).length)
-                                    + ' [' + cs + ']');
-                                (n.children || []).forEach((k) => dumpTree(k, d + 1));
-                            };
-                            dumpTree(clone, 0);
-                        } catch (e) { warn('【探查】dump 行树出错', e); }
-                        let cleared = 0;
-                        const clearBtns = (n) => {
-                            try {
-                                for (const c of (n.components || [])) {
-                                    if (c && Array.isArray(c.clickEvents)) {
-                                        if (c.clickEvents.length) cleared += c.clickEvents.length;
-                                        c.clickEvents.length = 0;
-                                    }
-                                }
-                            } catch (e) { /* 忽略 */ }
-                            (n.children || []).forEach(clearBtns);
-                        };
-                        clearBtns(clone);
-                        // ★ 上一版的错误：按名字含 arrow 隐藏 ⇒ 连 website 里的"Gear 帧"节点一起藏了（齿轮消失）。
-                        //   正解：▲▼ 由 export 节点负责（已在上面整颗删掉）；website 内部**原样保留**。
-                        let texts = 0;
-                        const setText = (n, str) => {
-                            try {
-                                for (const c of (n.components || [])) {
-                                    if (c && typeof c.string === 'string' && c.string !== '') { c.string = str; texts++; }
-                                }
-                            } catch (e) { /* 忽略 */ }
-                            (n.children || []).forEach((k) => setText(k, str));
-                        };
-                        setText(clone, '配置界面-占位');
-                        const bindLog = (n, tag) => {
-                            try {
-                                if (n && n.on) n.on('touch-end', () => log('【探查】点到了 ' + tag + '（' + n.name + '）—— 若原版设置没被改动，说明"自己绑点击"可行'));
-                            } catch (e) { /* 忽略 */ }
-                        };
-                        bindLog(clone, '占位行');
-                        (clone.children || []).forEach((c2) => bindLog(c2, '行内子节点'));
-                        elements.addChild(clone);
-                        if (elements.updateLayout) elements.updateLayout();
-                        gpnRowProbeDone = true;
-                        log('【探查】已插入占位行（清空点击 ' + cleared + ' 处、改写文字 ' + texts + ' 处）⇒ 请观察：'
-                            + '① 能否滚到最底、末行是否被裁 ② 滚动条长度 ③ 点按钮是否只打日志、不改原版设置');
-                    } catch (e) { warn('【探查】插入占位行出错', e); }
+                            if (exitNode.on) { exitNode.on('touch-end', closeWin); exitBound++; }
+                            (exitNode.children || []).forEach((k) => { try { if (k.on) { k.on('touch-end', closeWin); exitBound++; } } catch (e) { /* 忽略 */ } });
+                        }
+                        // ⑥ 挂到原窗的父节点（同一个 Canvas），初始隐藏
+                        const parent = origWin.parent;
+                        clone.active = false;
+                        parent.addChild(clone);
+                        gpnCfgWin = clone;
+                        gpnCfgLog('窗体已建：组件清理 ' + removed + ' 个 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleChanged + ' 处 / 关闭按钮绑 ' + exitBound + ' 处');
+                        gpnCfgLog('内容区：原有行 ' + rowsBefore + ' 行已清空，放入占位 ' + (elements ? ((elements.children || []).length) : '?') + ' 行');
+                        return clone;
+                    } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
                 };
-                const hookOne = (comp) => {
+                /** 插入入口行（幂等：已插过就不重复） */
+                const gpnCfgTryInsert = (origWin, ccg) => {
                     try {
-                        const proto = Object.getPrototypeOf(comp);
-                        const origOn = proto.onEnable;
-                        const origOff = proto.onDisable;
-                        if (typeof origOn !== 'function') { log('【探查】原型上没有 onEnable，无法挂钩（改用轮询）'); return false; }
-                        proto.onEnable = function () {
-                            const r = origOn.apply(this, arguments);
+                        if (gpnCfgRowDone || !origWin || origWin.active === false) return;
+                        const elements = findByName(origWin, 'elements', 0);
+                        if (!elements) return;
+                        const kids = elements.children || [];
+                        if (kids.some((k) => k && k.name === 'gpnConfigRow')) { gpnCfgRowDone = true; return; }
+                        const tpl = kids.find((k) => String(k.name) === 'KeyBinds') || kids[kids.length - 1];
+                        if (!tpl) { gpnCfgLog('找不到可作模板的入口行'); return; }
+                        const row = ccg.instantiate(tpl);
+                        row.name = 'gpnConfigRow';
+                        gpnCfgWinRow = tpl;
+                        // 只留 ToolTip + website（齿轮），其余（import/export 的▲▼）整颗删掉
+                        let cut = 0;
+                        (row.children || []).slice().forEach((c2) => {
+                            const nm = String(c2.name || '');
+                            if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
+                            try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
+                            try { c2.destroy(); } catch (e3) { /* 忽略 */ }
+                            cut++;
+                        });
+                        const cleared = clearClickEvents(row);
+                        const texts = setAllText(findByName(row, 'ToolTip', 0) || row, '配置界面');
+                        // 自己绑点击：打开我们的窗体
+                        const onClick = (ev) => {
                             try {
-                                gpnRowProbeWin = this.node;
-                                log('【探查】设置窗 onEnable（打开了）⇒ 准备插入占位行');
-                                setTimeout(() => gpnRowTryInsert('onEnable+300ms'), 300);
-                            } catch (e) { /* 忽略 */ }
-                            return r;
+                                if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+                                const ccg2 = (typeof cc !== 'undefined' && cc) ? cc : null;
+                                const w = gpnCfgWin || gpnCfgBuildWin(gpnCfgOrigWin, ccg2);
+                                if (!w) { gpnCfgLog('窗体创建失败'); return; }
+                                gpnCfgOrigWin.active = false;   // 关掉原版设置窗
+                                w.active = true;                // 打开我们的窗
+                                gpnCfgLog('已打开我们的配置窗体');
+                            } catch (e) { warn('【配置界面】打开窗体出错', e); }
                         };
-                        if (typeof origOff === 'function') {
-                            proto.onDisable = function () {
-                                const r = origOff.apply(this, arguments);
-                                try { log('【探查】设置窗 onDisable（关闭了）｜ 本轮是否已插入=' + gpnRowProbeDone); } catch (e) { /* 忽略 */ }
-                                return r;
-                            };
-                        }
-                        return true;
-                    } catch (e) { warn('【探查】挂钩失败', e); return false; }
+                        try { if (row.on) row.on('touch-end', onClick); } catch (e) { /* 忽略 */ }
+                        const web = findByName(row, 'website', 0);
+                        try { if (web && web.on) web.on('touch-end', onClick); } catch (e) { /* 忽略 */ }
+                        elements.addChild(row);
+                        if (elements.updateLayout) elements.updateLayout();
+                        gpnCfgRowDone = true;
+                        gpnCfgLog('入口行已插入：删掉 ' + cut + ' 个多余子节点、清点击 ' + cleared + ' 处、文字改写 ' + texts + ' 处');
+                        const after = (elements.children || []).map((k) => k.name);
+                        gpnCfgLog('插入后 elements 子节点：[' + after.join(', ') + ']');
+                    } catch (e) { warn('【配置界面】插入入口行出错', e); }
                 };
-                // 找一次组件并挂钩（设置窗关着也能找到组件实例）
+                /** 找到原版设置窗并挂 onEnable（挂上后：开设置窗 ⇒ 插入口行 + 顺手把窗体建出来） */
                 let hooked = false;
                 const findAndHook = () => {
                     try {
@@ -5787,7 +5753,7 @@ export default {
                         const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
                         const dir = ccg && ccg.director;
                         const scene = dir && dir.getScene ? dir.getScene() : null;
-                        if (!scene) return false;
+                        if (!scene || !ccg) return false;
                         let comp = null;
                         const walk = (n) => {
                             if (!n || comp) return;
@@ -5801,27 +5767,38 @@ export default {
                         };
                         walk(scene);
                         if (!comp) return false;
-                        gpnRowProbeWin = comp.node;
-                        hooked = hookOne(comp);
-                        if (hooked) log('【探查】已挂上 SettingWindow.onEnable 钩子（打开设置窗时插入占位行）');
-                        return hooked;
-                    } catch (e) { warn('【探查】查找/挂钩出错', e); return false; }
+                        gpnCfgOrigWin = comp.node;
+                        const proto = Object.getPrototypeOf(comp);
+                        const origOn = proto.onEnable;
+                        if (typeof origOn !== 'function') { gpnCfgLog('原型没有 onEnable，无法挂钩'); return false; }
+                        proto.onEnable = function () {
+                            const r = origOn.apply(this, arguments);
+                            try {
+                                gpnCfgOrigWin = this.node;
+                                gpnCfgRowDone = false;        // 每次打开都确保入口行在位（幂等判断会跳过已存在的）
+                                setTimeout(() => gpnCfgTryInsert(gpnCfgOrigWin, (typeof cc !== 'undefined' && cc) ? cc : null), 300);
+                            } catch (e) { /* 忽略 */ }
+                            return r;
+                        };
+                        hooked = true;
+                        gpnCfgLog('已挂上原版设置窗的 onEnable（打开设置窗时插入入口行）');
+                        return true;
+                    } catch (e) { warn('【配置界面】挂钩出错', e); return false; }
                 };
+                let tries = 0;
                 setInterval(() => {
                     try {
                         if (!hooked && !findAndHook()) {
-                            gpnRowHookLog++;
-                            if (gpnRowHookLog % 10 === 1) log('【探查】还没找到 SettingWindow 组件（第 ' + gpnRowHookLog + ' 次；设置窗未打开也应该能找到）');
+                            tries++;
+                            if (tries % 10 === 1) gpnCfgLog('还没找到原版 SettingWindow 组件（第 ' + tries + ' 次）');
                             return;
                         }
-                        // 兜底：万一 onEnable 钩子没触发，也每 2 秒试一次（只打首条，避免刷屏）
-                        gpnRowTryInsert('轮询兜底');
+                        // 兜底：万一 onEnable 没触发，也在窗已打开时补插一次
+                        gpnCfgTryInsert(gpnCfgOrigWin, (typeof cc !== 'undefined' && cc) ? cc : null);
                     } catch (e) { /* 忽略 */ }
                 }, 2000);
-                log('【探查】代码版本 = v6（裁剪 export 且逐步可见；website 齿轮原样保留；看不到这行=旧代码）');
-                log('【探查】已就绪：挂 onEnable 钩子 + 2 秒轮询兜底（打开原版设置窗即插入占位行）');
-            } catch (e) { warn('【探查】安装失败', e); }
-
+                gpnCfgLog('代码版本 = ' + gpnCfgV + '（入口行=配置界面+蓝齿轮；点它打开我们的窗体）');
+            } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
                 const chili = makeChiliPatches(chiliMod.ChiliBean, zombieMod.Zombie, zombieMod.ZombiePoison);
