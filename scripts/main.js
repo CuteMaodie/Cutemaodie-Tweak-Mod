@@ -2953,6 +2953,73 @@ function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
 }
 
 /* ============================================================================
+ * 【临时诊断】UI 结构侦查（为"游戏内配置界面"做前置调查）—— **纯只读打印，不改任何东西**
+ *
+ * 要回答的问题：
+ *   ① 主菜单（`mainScene`）的 UI 根节点/层级长什么样 —— 入口按钮要注入到哪一层？
+ *   ② 原版"设置"按钮在哪个节点、兄弟节点有哪些（好照着做邻居）？
+ *   ③ `SettingWindow` 窗体的节点树（行容器 / 一行里有哪些 Sprite/Label / 行高）—— 仿外观要知道从哪借样式；
+ *   ④ `*Window*` 节点上挂了哪些组件（`Button` / `Label` / `Sprite` / 自定义）—— 判断能否安全接管点击事件。
+ *
+ * 触发：切场景时自动 dump 一次（延时 1.5s 等场景构建完）；任意时刻按 `O` 键 dump 当前场景。
+ * 输出：场景树最多 500 节点 / 60 行（超出标注"已截断"），另附"Window 节点 + 组件"一节。
+ * ⚠️ 调查结束请连同 `gpnUiProbeDump` / `gpnUiProbeLastScene` 与其调用点一起删除。
+ * ========================================================================== */
+function gpnUiProbeDump(why) {
+    try {
+        const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+        const dir = ccg && ccg.director;
+        if (!dir || typeof dir.getScene !== 'function') { log('UI侦查[' + why + ']：拿不到 cc.director'); return; }
+        const scene = dir.getScene();
+        if (!scene) { log('UI侦查[' + why + ']：当前没有场景'); return; }
+        const G = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+        log('===== UI侦查[' + why + '] 场景="' + G(() => scene.name, '?') + '" =====');
+        let count = 0, lines = 0;
+        const MAXN = 500, MAXL = 60;
+        const walk = (n, depth) => {
+            if (!n || count >= MAXN || lines >= MAXL) return;
+            count++;
+            const kids = G(() => n.children, []) || [];
+            const act = G(() => n.active, true) ? '' : ' [未激活]';
+            if (lines < MAXL) {
+                log('  '.repeat(Math.min(depth, 12)) + '- ' + G(() => n.name, '?') + act + ' (子' + kids.length + ')');
+                lines++;
+            }
+            for (let i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
+        };
+        walk(scene, 0);
+        log('----- 场景树：打印 ' + count + ' 个节点' + ((count >= MAXN || lines >= MAXL) ? '（已截断）' : '') + ' -----');
+        // ② 带 Window 字样的节点 + 组件清单
+        lines = 0;
+        const dumpComps = (n, depth) => {
+            if (!n || lines >= MAXL) return;
+            const kids = G(() => n.children, []) || [];
+            const nm = String(G(() => n.name, '') || '');
+            if (nm.indexOf('Window') !== -1 || nm === 'Canvas') {
+                const comps = G(() => n.components, []) || [];
+                const desc = comps.map((c) => {
+                    const cn = G(() => (c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?', '?');
+                    const extra = [];
+                    if (c && typeof c.string === 'string') extra.push('text="' + String(c.string).slice(0, 16) + '"');
+                    if (c && c.color && typeof c.color.r === 'number') extra.push('color=' + c.color.r + ',' + c.color.g + ',' + c.color.b);
+                    if (c && c.handle && c.handle.node) extra.push('slider');
+                    return cn + (extra.length ? '(' + extra.join(' ') + ')' : '');
+                }).join(' + ');
+                log('  '.repeat(Math.min(depth, 12)) + '* ' + nm + ' [组件: ' + (desc || '无') + '] (子' + kids.length + ')');
+                lines++;
+                for (let i = 0; i < kids.length && lines < MAXL; i++) dumpComps(kids[i], depth + 1);
+                return;      // 命中窗口后只看它自己，不再扫兄弟
+            }
+            for (let i = 0; i < kids.length; i++) dumpComps(kids[i], depth);
+        };
+        dumpComps(scene, 0);
+        log('===== UI侦查结束 =====');
+    } catch (e) { warn('UI侦查出错', e); }
+}
+
+let gpnUiProbeLastScene = '';
+
+/* ============================================================================
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
  *
  * 引擎的伞叶吸收只认"投掷物"，而"是不是投掷物"是这么算的（`CommonShot.detectPlant`）：
@@ -5329,6 +5396,34 @@ export default {
             } else {
                 warn('拿不到 PvZ2ObjectContainer，数值改动未生效');
             }
+
+            // ---- 1b.【临时诊断】UI 结构侦查的触发：切场景自动 dump + 按 O 键 dump ----
+            //   纯只读打印（见 gpnUiProbeDump 的说明）；调查结束整段删除。
+            //   注意：`setup()` 本就在引擎初始化之后才跑 ⇒ 这里直接安装，不去依赖
+            //   `cc.Game.EVENT_ENGINE_INITED` 之类的事件常量（写错会静默不生效）。
+            try {
+                gpnUiProbeLastScene = '';
+                if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+                    document.addEventListener('keydown', (ev) => {
+                        try {
+                            const k = ev && (ev.key || ev.code);
+                            if (k === 'o' || k === 'O' || k === 'KeyO') gpnUiProbeDump('手动按 O 键');
+                        } catch (e) { /* 只影响诊断 */ }
+                    });
+                }
+                // 切场景：轮询（0.5s）发现场景名变化就 dump 一次（延时 1.5s 等场景构建完）
+                setInterval(() => {
+                    try {
+                        const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
+                        const nm = sc ? String(sc.name || '') : '';
+                        if (nm && nm !== gpnUiProbeLastScene) {
+                            gpnUiProbeLastScene = nm;
+                            setTimeout(() => gpnUiProbeDump('场景切换 -> ' + nm), 1500);
+                        }
+                    } catch (e) { /* 只影响诊断 */ }
+                }, 500);
+                log('UI侦查：已就绪（切场景自动 dump；或按 O 键 dump 当前场景）');
+            } catch (e) { warn('UI侦查：安装失败', e); }
 
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
