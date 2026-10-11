@@ -5547,10 +5547,13 @@ export default {
                                 if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重应用'; }
                             } catch (e) { reap = '重应用出错'; }
                             const after = hit('PlantProps');
-                            const v = (after && after.objdata) ? after.objdata.SunCost : '(取不到)';
+                            const od = (after && after.objdata) ? after.objdata : null;
+                            const gv = (k) => (od && od[k] !== undefined) ? od[k] : '(无)';
                             log('【验证·钢地刺】开关 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
                                 + ' ｜ 场景=' + gpnVerScene() + ' ｜ 数据补丁 ' + reap
-                                + ' ｜ 表里 SunCost=' + v
+                                + ' ｜ 表里 SunCost=' + gv('SunCost')
+                                + ' / Cooldown=' + gv('Cooldown')
+                                + ' / MaxSpike=' + gv('MaxSpike')
                                 + ' ｜ 条目同一对象=' + (entry === after)
                                 + ' ｜ objdata 同一对象=' + (!!entry && !!after && entry.objdata === after.objdata));
                         } catch (e) { warn('【验证·钢地刺】出错', e); }
