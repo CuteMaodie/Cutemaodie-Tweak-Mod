@@ -206,6 +206,14 @@ function featLoad() {
 /* =========================================================================
  * 配置区 —— 要调数值只改这里
  * =======================================================================*/
+/** 【原版值表】"关掉开关时写回什么"的**唯一出处**。
+ *  来源：`CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`（逐字段核对过）。
+ *  为什么要有这张表：开关一旦支持"开/关两种状态"，数据补丁就必须在**关掉时写回原版值**；
+ *  若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
+const VANILLA = {
+    spikerock: { sunCost: 250, maxSpike: 3, cooldown: 5 },
+};
+
 const CFG = {
     chilibean: {
         // true  = 每只啃食者都跑一次完整的 chilibeanFart（音效/粒子/范围眩晕叠 N 遍）
@@ -216,7 +224,7 @@ const CFG = {
         sunCost: 200,      // 原 250
         maxSpike: 9,       // 原 3 —— 可承受的「滚动僵尸 / 巨人砸击」次数
         teeth: 3,          // 视觉上一共 3 颗牙
-        cooldown: 15,      // 种植冷却秒数（改成 15 秒）
+        cooldown: 15,      // 种植冷却秒数（改成 15 秒；原版 5 秒）
     },
     bloomingheart: {
         splashWidthTiles: 3,   // 1x3：以命中目标为中心，同排左右各一格
@@ -1023,9 +1031,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         //   就能立刻改回去（`setField` 就是直接赋值 ⇒ 重复 apply 幂等）。
         //   注意：**已经翻开的卡片 / 已经种下的植物**可能仍用旧值 ⇒ 界面上这类开关要标注
         //   "下次进关卡生效"（官方文档也是这个口径）。
-        setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : 250);
-        setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : 3);
-        setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : 15);
+        setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost);
+        setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : VANILLA.spikerock.maxSpike);
+        setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
         // 暗影龙葵：涨价
         if (featOn('nightshade')) {
             setField('PlantProps', 'nightshade', 'SunCost', CFG.nightshade.sunCost);
@@ -5340,6 +5348,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
 export default {
     // 给自检脚本用（GP-Next 会忽略多余字段）
     _config: CFG,
+    _vanilla: VANILLA,                 // 同上：原版值表（"关掉开关时写回什么"的唯一出处）
     _features: FEATURES,               // 同上：自检用来核对开关表
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
@@ -5517,7 +5526,7 @@ export default {
                             if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重新应用'; }
                         } catch (e) { reap = '重新应用出错：' + e; }
                         log('【验证】收到 ' + tag + ' ｜ 钢地刺 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
-                            + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : 250) + '）');
+                            + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost) + '）');
                     } catch (e) { warn('【验证】钢地刺切换失败', e); }
                 };
                 // ① 自动定时切换（核心：不需要任何输入）
