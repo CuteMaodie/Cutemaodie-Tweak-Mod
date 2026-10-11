@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -5601,10 +5601,12 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v8';
+                const gpnCfgV = 'v9';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
+                let gpnCfgRowW = 0;          // 原版行的真实宽度（实测）
+                let gpnCfgRowH = 0;          // 原版行的真实高度（实测）
                 let gpnCfgOrigWin = null;
                 const gpnCfgLog = (s) => { try { log('【配置界面·' + gpnCfgV + '】' + s); } catch (e) { /* 忽略 */ } };
                 const findByName = (root, want, depth) => {
@@ -5661,6 +5663,16 @@ export default {
                         let rowsBefore = 0;
                         if (elements) {
                             rowsBefore = (elements.children || []).length;
+                            // ★ 先"从原件量尺寸"（清空之前，最稳）：原版第一行的 contentSize 就是真实行尺寸
+                            try {
+                                const first = (elements.children || [])[0];
+                                const cs0 = first ? ((first.components || []).find((x) => x && x.contentSize) || {}).contentSize : null;
+                                if (cs0) {
+                                    gpnCfgRowW = Math.round(cs0.width);
+                                    gpnCfgRowH = Math.round(cs0.height);
+                                    gpnCfgLog('从原版第一行量得：行宽 ' + gpnCfgRowW + ' 行高 ' + gpnCfgRowH + '（第一行=' + (first ? first.name : '?') + '）');
+                                }
+                            } catch (e) { gpnCfgLog('量原版行尺寸出错：' + e); }
                             (elements.children || []).slice().forEach((k) => { try { k.removeFromParent(); k.destroy(); } catch (e) { /* 忽略 */ } });
                             // ★ 占位行必须是"精简过的干净行"（只留文字）—— 上一版直接克隆了带齿轮/▲▼的整行
                             const tpl = gpnCfgWinRow;
@@ -5699,12 +5711,17 @@ export default {
                                 }
                             } catch (e) { gpnCfgLog('量尺寸出错：' + e); }
                             // ★ 位置与宽度：Layout 已停用 ⇒ 必须自己定
-                            //   依据实测：elements 1916.4 x 1440（两列，每行约 68~72），滚动视口 1916.4 x 840
+                            //   ⚠️ 上一版把行高估成 72（我拿 1440÷21 硬算）——**算错了**：
+                            //      原版 elements 是 Layout + **两列**（Grid）⇒ 20 行只占 10 个行位
+                            //      ⇒ 真实行高 ≈ 1440÷10×2 或直接取模板行的 contentSize。
+                            //   ⇒ 本版**直接量模板行的真实高度**（gpnCfgWinRow / 第一行的 contentSize），不再估算。
                             try {
                                 const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
                                 const sz = CS(elements) || { width: 1916.4, height: 1440 };
-                                const half = Math.max(300, Math.floor(sz.width / 2) - 6);
-                                const rowH = 72;
+                                const tplSize = gpnCfgWinRow ? CS(gpnCfgWinRow) : null;
+                                const half = gpnCfgRowW || (tplSize ? Math.round(tplSize.width) : Math.max(300, Math.floor(sz.width / 2) - 6));
+                                const rowH = gpnCfgRowH || (tplSize ? Math.round(tplSize.height) : 96);
+                                gpnCfgLog('采用 行宽 ' + half + ' / 行高 ' + rowH + '（来源：' + (gpnCfgRowH ? '原版第一行实测' : '估算') + '）');
                                 (elements.children || []).forEach((k, i) => {
                                     try {
                                         const ut2 = (k.components || []).find((x) => x && x.setContentSize);
@@ -5712,6 +5729,15 @@ export default {
                                         k.setPosition(-Math.floor(sz.width / 4), -(rowH / 2) - i * rowH);
                                     } catch (e) { /* 忽略 */ }
                                 });
+                                // 内容区高度：按"每列可容纳的行数"撑开（两列 ⇒ 行数取半向上取整）
+                                try {
+                                    const rows = (elements.children || []).length;
+                                    const perCol = Math.max(1, Math.ceil(rows / 2));
+                                    const needH = Math.max(sz.height, perCol * rowH + rowH);
+                                    const ut3 = (elements.components || []).find((x) => x && x.setContentSize);
+                                    if (ut3 && ut3.setContentSize) ut3.setContentSize(sz.width, needH);
+                                    gpnCfgLog('内容区高度：' + rows + ' 行 ⇒ 每列 ' + perCol + ' 行 ⇒ 高度 ' + needH);
+                                } catch (e) { /* 忽略 */ }
                                 gpnCfgLog('已按实测尺寸摆行：行宽 ' + half + ' 行高 ' + rowH + '，共 ' + ((elements.children || []).length) + ' 行');
                             } catch (e) { gpnCfgLog('摆行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
