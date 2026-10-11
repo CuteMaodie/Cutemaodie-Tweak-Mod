@@ -5662,15 +5662,42 @@ export default {
                         if (elements) {
                             rowsBefore = (elements.children || []).length;
                             (elements.children || []).slice().forEach((k) => { try { k.removeFromParent(); k.destroy(); } catch (e) { /* 忽略 */ } });
-                            // 用原版 KeyBinds 行做模板造一行「配置界面」占位内容（阶段② 换成真开关）
+                            // ★ 占位行必须是"精简过的干净行"（只留文字）—— 上一版直接克隆了带齿轮/▲▼的整行
                             const tpl = gpnCfgWinRow;
                             if (tpl) {
                                 const r = ccg.instantiate(tpl);
                                 r.name = 'gpnCfgPlaceholder';
+                                // 精简：只留 ToolTip（文字），其余（齿轮/▲▼）整颗删掉
+                                let cut = 0;
+                                (r.children || []).slice().forEach((c2) => {
+                                    const nm = String(c2.name || '');
+                                    if (nm.indexOf('ToolTip') === 0) return;
+                                    try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
+                                    try { c2.destroy(); } catch (e3) { /* 忽略 */ }
+                                    cut++;
+                                });
                                 clearClickEvents(r);
                                 setAllText(r, '（开关列表将在下一阶段填入）');
                                 elements.addChild(r);
+                                gpnCfgLog('占位行：精简掉 ' + cut + ' 个多余子节点，实际子节点 [' + (r.children || []).map((k) => k.name).join(', ') + ']');
                             }
+                            // ★ 量一下各容器尺寸（为"正确撑开内容区"提供依据）
+                            try {
+                                const ut = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? { w: c.contentSize.width, h: c.contentSize.height } : null; } catch (e) { return null; } };
+                                const comps = (n) => (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+');
+                                const view = findByName(clone, 'view', 0);
+                                const sv = findByName(clone, 'ScrollView', 0);
+                                gpnCfgLog('尺寸：view=' + JSON.stringify(ut(view)) + ' elements=' + JSON.stringify(ut(elements))
+                                    + ' ScrollView=' + JSON.stringify(ut(sv)));
+                                gpnCfgLog('组件：view=[' + (view ? comps(view) : '?') + '] elements=[' + comps(elements) + ']');
+                                if (elements) {
+                                    const lay = (elements.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined);
+                                    if (lay) {
+                                        try { lay.enabled = false; gpnCfgLog('已停用 elements 上的 Layout（改由我们自己摆行）'); }
+                                        catch (e) { gpnCfgLog('停用 Layout 失败：' + e); }
+                                    }
+                                }
+                            } catch (e) { gpnCfgLog('量尺寸出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
                         }
                         // ⑤ 自己绑"关闭"（红 X 的原版事件已被清掉，否则点它没反应）
@@ -5722,13 +5749,19 @@ export default {
                         });
                         const cleared = clearClickEvents(row);
                         const texts = setAllText(findByName(row, 'ToolTip', 0) || row, '配置界面');
-                        // 自己绑点击：打开我们的窗体
+                        // 自己绑点击：打开我们的窗体（★ 加"同一次点击只处理一次"的守卫：
+                        //   行与齿轮都会收到 touch-end，日志里曾出现"已打开" ×2）
+                        let gpnCfgOpenLock = 0;
                         const onClick = (ev) => {
                             try {
+                                const now = Date.now();
+                                if (now - gpnCfgOpenLock < 400) return;      // 防重复
+                                gpnCfgOpenLock = now;
                                 if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
                                 const ccg2 = (typeof cc !== 'undefined' && cc) ? cc : null;
                                 const w = gpnCfgWin || gpnCfgBuildWin(gpnCfgOrigWin, ccg2);
                                 if (!w) { gpnCfgLog('窗体创建失败'); return; }
+                                if (w.active === true) { gpnCfgLog('窗体已经是打开状态（忽略重复触发）'); return; }
                                 gpnCfgOrigWin.active = false;   // 关掉原版设置窗
                                 w.active = true;                // 打开我们的窗
                                 gpnCfgLog('已打开我们的配置窗体');
