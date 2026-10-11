@@ -5673,6 +5673,40 @@ export default {
                         } catch (e) { warn('【探查】裁剪子节点出错', e); }
                         // ⚠️ 教训：用"类名字符串"判断组件不可靠（内置组件与自定义组件的类名格式不同）
                         //   ⇒ 一律**按属性特征**识别：clickEvents = Button；string = Label。
+                        // ★ 先递归 dump 克隆整行（层级 / active / 组件 / Sprite 帧名）⇒ 看清 ▲▼ 到底在哪
+                        try {
+                            const sfName = (c) => {
+                                try {
+                                    const a = c && (c.spriteFrame || (c.spriteFrame_ !== undefined ? c.spriteFrame_ : null));
+                                    if (a && typeof a === 'object') {
+                                        if (a.name) return String(a.name);
+                                        if (a._name) return String(a._name);
+                                        return '(无名帧)';
+                                    }
+                                } catch (e) { /* 忽略 */ }
+                                return '';
+                            };
+                            const shape = (c) => {
+                                const out = [];
+                                try {
+                                    if (c && Array.isArray(c.clickEvents)) out.push('clickEvents=' + c.clickEvents.length);
+                                    if (c && typeof c.string === 'string') out.push('string="' + String(c.string).slice(0, 14) + '"');
+                                    const s = sfName(c);
+                                    if (s) out.push('frame=' + s);
+                                } catch (e) { /* 忽略 */ }
+                                return out.length ? ('(' + out.join(' ') + ')') : '';
+                            };
+                            const dumpTree = (n, d) => {
+                                if (!n || d > 4) return;
+                                let cs = '';
+                                try { cs = (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?') + shape(c)).join(' + '); } catch (e) { cs = '?'; }
+                                log('【探查】  行树 ' + '|--'.repeat(Math.min(d, 8)) + n.name
+                                    + ' act=' + (n.active !== false) + ' 子=' + ((n.children || []).length)
+                                    + ' [' + cs + ']');
+                                (n.children || []).forEach((k) => dumpTree(k, d + 1));
+                            };
+                            dumpTree(clone, 0);
+                        } catch (e) { warn('【探查】dump 行树出错', e); }
                         let cleared = 0;
                         const clearBtns = (n) => {
                             try {
@@ -5681,14 +5715,27 @@ export default {
                                         if (c.clickEvents.length) cleared += c.clickEvents.length;
                                         c.clickEvents.length = 0;
                                     }
-                                    if (c && Array.isArray(c.clickEvents) && (c.transition !== undefined || c.target !== undefined)) {
-                                        try { c.enabled = false; } catch (e) { /* 忽略 */ }
-                                    }
                                 }
                             } catch (e) { /* 忽略 */ }
                             (n.children || []).forEach(clearBtns);
                         };
                         clearBtns(clone);
+                        // ★ 隐藏 ▲▼：**按名字识别**（含 arrow/up/down），不再靠"第几个"（上次就是靠下标猜错的）
+                        try {
+                            const isArrow = (nm) => {
+                                const s = String(nm || '').toLowerCase();
+                                return s.indexOf('arrow') !== -1 || s.indexOf('up') !== -1 || s.indexOf('down') !== -1;
+                            };
+                            let hid = 0;
+                            const hideArrows = (n) => {
+                                (n.children || []).forEach((k) => {
+                                    if (isArrow(k.name)) { try { k.active = false; hid++; } catch (e) { /* 忽略 */ } }
+                                    else hideArrows(k);
+                                });
+                            };
+                            hideArrows(clone);
+                            log('【探查】已按名字隐藏 ' + hid + ' 个疑似▲▼节点');
+                        } catch (e) { warn('【探查】隐藏▲▼出错', e); }
                         let texts = 0;
                         const setText = (n, str) => {
                             try {
@@ -5777,6 +5824,7 @@ export default {
                         gpnRowTryInsert('轮询兜底');
                     } catch (e) { /* 忽略 */ }
                 }, 2000);
+                log('【探查】代码版本 = v4（按名字隐藏▲▼ + 递归 dump；若看不到这行说明跑的是旧代码）');
                 log('【探查】已就绪：挂 onEnable 钩子 + 2 秒轮询兜底（打开原版设置窗即插入占位行）');
             } catch (e) { warn('【探查】安装失败', e); }
 
