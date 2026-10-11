@@ -656,6 +656,7 @@ const gpnGateRegistry = new WeakMap();
 let gpnDisposed = false;
 let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
 let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
+let gpnPlantsRef = null;                  // 由 setup 登记：plants 模块（引擎 getPlantProps 在这里）
 
 /* ★ 统一取"数据容器"。
  *   ⚠️ 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
@@ -1474,7 +1475,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             };
             let _engineSun = '?', _sameRef = '?', _typeId = '?';
             try {
-                const _PM = (typeof plantsMod !== 'undefined' && plantsMod) ? plantsMod.plants : null;
+                const _PM = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
                 if (_PM && typeof _PM.getPlantProps === 'function' && typeof CFG !== 'undefined') {
                     _typeId = CFG.nightshade.plantType;
                     const _gp = _PM.getPlantProps(_typeId);
@@ -1489,6 +1490,16 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             } catch (eE) { _engineSun = 'err:' + eE; }
             log('[数据补丁·apply] 第' + gpnApplyCount + '次 ｜ 开关: nightshade=' + featOn('nightshade')
                 + ' ｜ 我方读到=' + _findSun('nightshade') + ' ｜ 引擎读到=' + _engineSun
+                + (function () {
+                    try {
+                        const _PM2 = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
+                        if (_PM2 && typeof _PM2.getPlantProps === 'function') {
+                            const _gp2 = _PM2.getPlantProps(CFG.nightshade.plantType);
+                            return ' ｜ 引擎视角龙葵=' + (_gp2 ? _gp2.SunCost : '空');
+                        }
+                        return ' ｜ 引擎视角=拿不到 plants';
+                    } catch (e) { return ' ｜ 引擎视角=err'; }
+                })()
                 + ' ｜ 同一对象? ' + _sameRef + ' ｜ 实例=' + GPN_INSTANCE_ID);
         } catch (e) { /* 只影响诊断 */ }
         return undo.length > 0;
@@ -5676,6 +5687,7 @@ export default {
             // ---- 1. 数值 ----
             if (jsonMod.PvZ2ObjectContainer) {
                 try { PvZ2ObjectContainerRef = () => jsonMod.PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }
+                try { gpnPlantsRef = () => (plantsMod && plantsMod.plants) || null; } catch (e) { /* 忽略 */ }
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
                 const firstOk = dataPatch.apply();
                 log('数据补丁：首次 apply 结果 = ' + firstOk + '（false = 容器/数组还没到位，将自愈重试）');
@@ -6049,7 +6061,17 @@ function findSprite(n) {
                                     const list = box && box.PlantProps;
                                     if (!Array.isArray(list)) return alias + '=?';
                                     const hit = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0];
-                                    return alias + '=' + (hit && hit.objdata ? hit.objdata.SunCost : '?');
+                                    const _mine = (hit && hit.objdata) ? hit.objdata.SunCost : '?';
+                                    let _eng = '?';
+                                    try {
+                                        const _PM3 = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
+                                        const _cfg = CFG[alias] || CFG.nightshade;
+                                        if (_PM3 && typeof _PM3.getPlantProps === 'function' && _cfg && _cfg.plantType) {
+                                            const _gp3 = _PM3.getPlantProps(_cfg.plantType);
+                                            _eng = _gp3 ? _gp3.SunCost : '空';
+                                        } else { _eng = '拿不到'; }
+                                    } catch (e) { _eng = 'err'; }
+                                    return alias + ':我方=' + _mine + '/引擎=' + _eng;
                                 } catch (e) { return alias + '=err'; }
                             };
                             clog('数据层现值：' + show('nightshade') + ' ｜ ' + show('noctarine') + ' ｜ ' + show('spikerock'));
@@ -6619,7 +6641,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l9 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l11 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
