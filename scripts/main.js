@@ -5599,6 +5599,7 @@ export default {
             try {
                 let gpnRowProbeDone = false;
                 let gpnRowProbeWin = null;
+                let gpnRowMissLog = 0;      // "找不到 elements"最多打印 3 次（避免刷屏）
                 let gpnRowHookLog = 0;
                 const gpnRowTryInsert = (why) => {
                     try {
@@ -5608,8 +5609,37 @@ export default {
                         if (!ccg || !win) return;
                         if (win.active === false) return;                 // 还没打开
                         if (!win.isValid) { log('【探查】窗节点已失效（' + why + '）'); return; }
-                        const elements = (ccg.find) ? ccg.find('elements', win) : null;
-                        if (!elements) { log('【探查】在设置窗里找不到 elements 节点（' + why + '）'); return; }
+                        // ⚠️ 实测：cc.find('elements', win) 找不到（路径写法不对）⇒ 改为自己沿子节点树找
+                        const findByName = (root, want, depth) => {
+                            try {
+                                if (!root || depth > 6) return null;
+                                if (String(root.name || '') === want) return root;
+                                const ks = root.children || [];
+                                for (let i = 0; i < ks.length; i++) {
+                                    const r = findByName(ks[i], want, depth + 1);
+                                    if (r) return r;
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            return null;
+                        };
+                        const elements = findByName(win, 'elements', 0);
+                        if (!elements) {
+                            if (gpnRowMissLog < 3) {
+                                gpnRowMissLog++;
+                                log('【探查】找不到 elements 节点（' + why + '）⇒ 打印设置窗内部结构：');
+                                try {
+                                    const dump = (n, d) => {
+                                        if (!n || d > 4) return;
+                                        let cs = '';
+                                        try { cs = (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+'); } catch (e) { cs = '?'; }
+                                        log('【探查】  树 ' + '|--'.repeat(Math.min(d, 8)) + n.name + ' [组件:' + cs + '] (子' + ((n.children || []).length) + ')');
+                                        (n.children || []).forEach((k) => dump(k, d + 1));
+                                    };
+                                    dump(win, 0);
+                                } catch (e) { log('【探查】  打印结构失败'); }
+                            }
+                            return;
+                        }
                         const kids = elements.children || [];
                         if (kids.some((k) => k && k.name === 'gpnConfigRowProbe')) { gpnRowProbeDone = true; return; }
                         log('【探查】原版设置窗 elements：共 ' + kids.length + ' 行（触发=' + why + '）');
