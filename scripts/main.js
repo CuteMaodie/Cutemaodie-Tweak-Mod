@@ -4760,6 +4760,8 @@ function makeSnowPeaFreezePatch(SnowPeaPlant) {
     const C = CFG.snowpea;
     const rec = methodRecord(SnowPeaPlant, '_shoot');
     P._shoot = function (a0, a1, a2) {
+        // ★ 运行期开关：关掉 snowpea ⇒ 冰锥/减速完全不插手（直接走原逻辑）
+        if (!featOn('snowpea')) return rec.original.apply(this, arguments);
         try {
             const od = this._objdataOwn;
             if (od && od.PeaType && od.PeaFreezeType) {
@@ -5705,7 +5707,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v27';
+                const gpnCfgV = 'v28';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -6181,7 +6183,8 @@ let ticks = 0;
                 if (pb) recs.push(...pb);
             }
             // ---- 22. 寒冰射手：冰锥（普攻 + 大招每发独立掷，薄荷 x3）----
-            if (featOn('snowpea')) {
+            // ⚠️【即时生效改造】不再用 featOn 包住安装：补丁常驻，行为在钩子里运行期现查
+            {
                 const spf = makeSnowPeaFreezePatch(snowPeaMod && snowPeaMod.SnowPeaPlant);
                 if (spf) recs.push(...spf);
             }
@@ -6218,14 +6221,17 @@ let ticks = 0;
             try {
                 const PM0 = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
                 const res0 = PM0 && PM0.plantRes;
-                if (res0 && Array.isArray(res0.PlantFeatures)) {
+                const listPF = (res0 && res0.PlantFeatures) ? res0.PlantFeatures : [];   // ★ 快照一次
+                if (listPF && typeof listPF.length === 'number' && listPF.length > 0) {
                     const sd0 = res0.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
                     const goldW = (sd0 && sd0.OBTAINWORLD) || 'market';
                     const vanW = (res0.PlantFeatures.find((x) => x && x.CODENAME === CFG.snowpea.plantType) || {}).OBTAINWORLD;
                     gpnSnowPeaGoldApply = function () {
                         try {
                             const on = featOn('snowpea');
-                            for (const f of res0.PlantFeatures) {
+                            // ⚠️ 实机报过 "PlantFeatures is not iterable" ⇒ 不用 for...of，改下标循环
+                            for (let gi = 0; gi < listPF.length; gi++) {
+                                const f = listPF[gi];
                                 if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = on ? goldW : vanW;
                             }
                             log('寒冰射手：OBTAINWORLD -> ' + (on ? goldW + '（金卡）' : String(vanW) + '（还原）'));
@@ -6234,7 +6240,7 @@ let ticks = 0;
                     };
                     gpnSnowPeaGoldApply();          // 启动时先应用一次
                 } else {
-                    warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）');
+                    warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）｜ len=' + (listPF ? listPF.length : 'n/a'));
                 }
             } catch (e) { warn('寒冰射手：OBTAINWORLD 准备出错', e); }
             // 显示层兜底：包【植物管理类】的 getBGAnm（常驻 + 运行期现查）
