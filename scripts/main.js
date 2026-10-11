@@ -655,6 +655,20 @@ const gpnGateRegistry = new WeakMap();
 let gpnDisposed = false;
 let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
 let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
+
+/* ★ 统一取"数据容器"。
+ *   ⚠️ 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
+ *   （曾经写成 `typeof box === 'object'` ⇒ 对类永远为假 ⇒ 诊断谎报"无容器"，排查被误导很久。）
+ *   判据改成"结构判据"：有 PlantProps / ProjectileProps / PlantAlmanac 任一即可。
+ */
+function gpnResolveDataBox() {
+    const cands = [gpnDataBox, (typeof PvZ2ObjectContainerRef === 'function') ? PvZ2ObjectContainerRef() : null];
+    for (const c of cands) {
+        if (!c) continue;
+        try { if (Array.isArray(c.PlantProps) || Array.isArray(c.ProjectileProps) || Array.isArray(c.PlantAlmanac)) return c; } catch (e) { /* 忽略 */ }
+    }
+    return gpnDataBox || null;
+}
 function gpnGatedBody(original, featKey, body) {
     try {
         if (original && typeof original === 'function') {
@@ -737,7 +751,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     const setField = (listName, alias, key, value) => {
-        const Box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : PvZ2ObjectContainer;
+        const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
         const list = Box && Box[listName];
         if (!Array.isArray(list) || !list.length) return false;
         const hits = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1);
@@ -1192,7 +1206,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
 
     const apply = () => {
         // ★ 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
-        const Box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : PvZ2ObjectContainer;
+        const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
         if (!Box) { warn('数据补丁：容器不可用，这次没落下去'); return false; }
         // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
         gpnAlmApplyCalls++;
@@ -5629,6 +5643,7 @@ export default {
 
             // ---- 1. 数值 ----
             if (jsonMod.PvZ2ObjectContainer) {
+                try { PvZ2ObjectContainerRef = () => jsonMod.PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
                 const firstOk = dataPatch.apply();
                 log('数据补丁：首次 apply 结果 = ' + firstOk + '（false = 容器/数组还没到位，将自愈重试）');
@@ -5989,9 +6004,10 @@ function findSprite(n) {
                         walk(scene, 0);
                         // 同时打印数据层的真实值（用于区分：数据没改 / 界面没刷）
                         try {
-                            const box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : null;
+                            const box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : gpnDataBox;
                             const rawList = box ? box.PlantProps : null;
-                            clog('数据容器诊断：gpnDataBox=' + (box ? '有' : '无')
+                            const boxKind = (typeof box === 'function') ? '类' : (box ? typeof box : '无');
+                            clog('数据容器诊断：gpnDataBox=' + (box ? ('有(' + boxKind + ')') : '无')
                                 + ' ｜ PlantProps=' + (Array.isArray(rawList) ? (rawList.length + '条') : String(rawList))
                                 + ' ｜ 第1条键=' + (Array.isArray(rawList) && rawList[0] ? Object.keys(rawList[0]).join(',') : 'n/a')
                                 + ' ｜ 开关: nightshade=' + featOn('nightshade') + ' noctarine=' + featOn('noctarine') + ' spikerock=' + featOn('spikerock')
@@ -6555,7 +6571,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l5 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l6 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
