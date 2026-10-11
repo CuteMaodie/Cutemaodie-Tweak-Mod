@@ -5604,7 +5604,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v23';
+                const gpnCfgV = 'v24';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5769,6 +5769,9 @@ function findSprite(n) {
                         origWin.parent.addChild(clone);
                         panel = clone;
                         clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
+                        // ★ 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
+                        buildRows(ccg);
+                        clog('建窗体后立即建行：entries=' + entries.length + ' ｜ rowsBox=' + (panelRowsBox ? panelRowsBox.name : '无'));
                         return clone;
                     } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
                 }
@@ -5776,7 +5779,7 @@ function findSprite(n) {
                 /* ---------- 建 23 行（打开窗体时懒建一次） ---------- */
                 function buildRows(ccg) {
                     try {
-                        if (!panelRowsBox || entries.length) return;
+                        if (!panelRowsBox || entries.length) { clog('buildRows 跳过：rowsBox=' + !!panelRowsBox + ' 已有行=' + entries.length); return; }
                         const cols = 2;
                         const cw = Math.max(320, Math.floor(contentW / cols) - 10);
                         const ch = rowH || 140;
