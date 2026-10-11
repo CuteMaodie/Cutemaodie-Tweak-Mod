@@ -34,6 +34,11 @@
 
 const MOD_ID = 'Cutemaodies_Tweaks';
 const MOD_VERSION = '1.0.0';
+/* ★ 实例身份：每次模块被加载都会生成一个新的 ID。
+ *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
+ *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
+const GPN_INSTANCE_ID = Math.random().toString(36).slice(2, 8).toUpperCase();
+try { if (typeof window !== 'undefined' && window) { if (window.__gpnInstances === undefined) window.__gpnInstances = []; window.__gpnInstances.push(GPN_INSTANCE_ID); } } catch (e) { /* 忽略 */ }
 
 
 /* =========================================================================
@@ -5523,6 +5528,10 @@ export default {
 
     setup(ctx) {
         try { gpnCtx = ctx; } catch (e) { /* 忽略 */ }   // 供配置界面/生命周期使用
+        try {
+            const all = (typeof window !== 'undefined' && window && window.__gpnInstances) ? window.__gpnInstances : [];
+            log('[CTM] INSTANCE=' + GPN_INSTANCE_ID + ' ｜ 本进程已加载过的实例: ' + (all.length ? all.join(',') : '(无)') + (all.length > 1 ? '  ★★ 这是多实例！' : ''));
+        } catch (e) { /* 忽略 */ }
         const IMPORTS = [
             'chunks:///_virtual/JSONs.ts',            // 0
             'chunks:///_virtual/Zombie.ts',           // 1
@@ -5949,6 +5958,12 @@ function findSprite(n) {
                         // 同时打印数据层的真实值（用于区分：数据没改 / 界面没刷）
                         try {
                             const box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : null;
+                            const rawList = box ? box.PlantProps : null;
+                            clog('数据容器诊断：gpnDataBox=' + (box ? '有' : '无')
+                                + ' ｜ PlantProps=' + (Array.isArray(rawList) ? (rawList.length + '条') : String(rawList))
+                                + ' ｜ 第1条键=' + (Array.isArray(rawList) && rawList[0] ? Object.keys(rawList[0]).join(',') : 'n/a')
+                                + ' ｜ 开关: nightshade=' + featOn('nightshade') + ' noctarine=' + featOn('noctarine') + ' spikerock=' + featOn('spikerock')
+                                + ' ｜ 实例=' + GPN_INSTANCE_ID);
                             const show = (alias) => {
                                 try {
                                     const list = box && box.PlantProps;
@@ -6508,7 +6523,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l3 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-trace1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
