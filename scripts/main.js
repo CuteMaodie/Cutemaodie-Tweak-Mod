@@ -38,6 +38,7 @@ const MOD_VERSION = '1.0.0';
  *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
 const GPN_INSTANCE_ID = Math.random().toString(36).slice(2, 8).toUpperCase();
+let gpnApplyCount = 0;                     // 诊断用：apply() 被调用了几次
 try { if (typeof window !== 'undefined' && window) { if (window.__gpnInstances === undefined) window.__gpnInstances = []; window.__gpnInstances.push(GPN_INSTANCE_ID); } } catch (e) { /* 忽略 */ }
 
 
@@ -1459,6 +1460,22 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
         //   排查完把 gpnAlmTempVerbose 改回 false 即静默）
         _almDumpTail('apply() 结束');
+        // ★ 决定性诊断：打印"apply 自己看到的开关"与"它算出来的值"
+        try {
+            gpnApplyCount = (gpnApplyCount || 0) + 1;
+            const _findSun = (alias) => {
+                try {
+                    const bx = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+                    const list = bx && bx.PlantProps;
+                    if (!Array.isArray(list)) return '?';
+                    const hit = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0];
+                    return (hit && hit.objdata) ? hit.objdata.SunCost : '?';
+                } catch (e) { return 'err'; }
+            };
+            log('[数据补丁·apply] 第' + gpnApplyCount + '次 ｜ 开关: nightshade=' + featOn('nightshade')
+                + ' spikerock=' + featOn('spikerock') + ' noctarine=' + featOn('noctarine')
+                + ' ｜ 龙葵阳光=' + _findSun('nightshade') + ' ｜ 实例=' + GPN_INSTANCE_ID);
+        } catch (e) { /* 只影响诊断 */ }
         return undo.length > 0;
     };
 
@@ -6571,7 +6588,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l6 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l7 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
