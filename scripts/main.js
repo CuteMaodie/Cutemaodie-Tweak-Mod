@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v15';
+                const gpnCfgV = 'v16';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5783,15 +5783,26 @@ let idx = 0, made = 0, tinted = 0;
                                             uiOp = (row.components || []).find((x) => x && typeof x.opacity === 'number');
                                             if (!uiOp) uiOp = row.addComponent(ccg.UIOpacity);
                                         } catch (eO) { /* 忽略 */ }
+                                                                                const gpnCfgGrey = ccg.color(110, 104, 98, 255);
+                                        const gpnCfgGreyTxt = ccg.color(150, 145, 140, 255);
                                         const applyState = (on) => {
-                                            try { if (rowSprite) { rowSprite.color = on ? GREEN : RED; tinted++; } } catch (e1) { /* 忽略 */ }
                                             const blocked = !!(masterKey && !featOn(masterKey));
-                                            try { if (uiOp) uiOp.opacity = blocked ? 110 : 255; } catch (eO2) { /* 忽略 */ }
+                                            try {
+                                                if (rowSprite) { rowSprite.color = blocked ? gpnCfgGrey : (on ? GREEN : RED); tinted++; }
+                                            } catch (e1) { /* 忽略 */ }
+                                            try { if (uiOp) uiOp.opacity = blocked ? 120 : 255; } catch (eO2) { /* 忽略 */ }
                                             try {
                                                 setAllText(stateLabel || row, blocked
                                                     ? ('需先开启' + (gpnCfgMasterLabel[masterKey] || masterKey))
                                                     : (on ? '开' : '关'));
+                                                if (stateLabel && blocked) {
+                                                    // 置灰时文字也变浅（更容易看出"不可操作"）
+                                                    try { for (const c of (stateLabel.components || [])) { if (c && c.color !== undefined) c.color = gpnCfgGreyTxt; } } catch (eT) { /* 忽略 */ }
+                                                } else if (stateLabel) {
+                                                    try { for (const c of (stateLabel.components || [])) { if (c && c.color !== undefined) c.color = ccg.color(255, 255, 255, 255); } } catch (eT2) { /* 忽略 */ }
+                                                }
                                             } catch (e2) { /* 忽略 */ }
+                                            if (blocked) gpnCfgLog("行已置灰（父关）：" + it.key + " ⇒ 颜色=暗灰");
                                             return blocked;
                                         };
                                         applyState(featOn(it.key));
@@ -5856,6 +5867,14 @@ let idx = 0, made = 0, tinted = 0;
                                         (n.children || []).forEach((k) => dumpOne(k, d + 1));
                                     };
                                     if (anyRow) dumpOne(anyRow, 0);
+                                    // 额外：看每行有几个带 string 的节点（Label），文字分别是什么
+                                    try {
+                                        const cnt = (n) => { let c = 0; try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string') c++; } } catch (e) { /* 忽略 */ } (n.children || []).forEach((k) => { c += cnt(k); }); return c; };
+                                        const texts = (n) => { let a = []; try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string') a.push(JSON.stringify(String(x.string).slice(0, 12))); } } catch (e) { /* 忽略 */ } (n.children || []).forEach((k) => { a = a.concat(texts(k)); }); return a; };
+                                        (elements.children || []).slice(0, 3).forEach((r2) => {
+                                            gpnCfgLog('  Label诊断 ' + r2.name + ' 数量=' + cnt(r2) + ' 文字=' + texts(r2).join('/'));
+                                        });
+                                    } catch (e) { /* 忽略 */ }
                                 } catch (e) { /* 忽略 */ }
                             } catch (e) { gpnCfgLog('铺行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
