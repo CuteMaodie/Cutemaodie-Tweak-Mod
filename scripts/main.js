@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v11';
+                const gpnCfgV = 'v12';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5781,6 +5781,35 @@ export default {
                                     return true;
                                 } catch (e) { warn('【配置界面】造开关控件出错（步骤=' + step + '）', e); return false; }
                             };
+                            // ===== 【构造函数探针】量清哪些操作安全（纯诊断，成功后删除）=====
+                            try {
+                                const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+                                const probe = (name, fn) => { try { const r = fn(); gpnCfgLog('探针 OK  ' + name + (r ? (' ⇒ ' + r) : '')); return r; } catch (e) { gpnCfgLog('探针 FAIL ' + name + ' ⇒ ' + e); return null; } };
+                                // ① new cc.Node
+                                const n1 = probe('① new cc.Node', () => new ccg.Node('probe1'));
+                                // ② +UITransform
+                                if (n1) probe('② +cc.UITransform', () => { const u = n1.addComponent(ccg.UITransform); u.setContentSize(200, 80); return 'size 200x80'; });
+                                // ③ +Sprite
+                                if (n1) probe('③ +cc.Sprite', () => { const s = n1.addComponent(ccg.Sprite); return 'ok'; });
+                                // ④ 克隆现成帧并赋给新建 Sprite（从原版行里的按钮节点上取）
+                                try {
+                                    const anyBtn = findByName(gpnCfgWinRow, 'website', 0) || gpnCfgWinRow;
+                                    if (anyBtn && n1) {
+                                        const srcSprite = (anyBtn.components || []).find((c) => c && c.spriteFrame);
+                                        const sp = (n1.components || []).find((c) => c && c.spriteFrame !== undefined);
+                                        if (srcSprite && sp) {
+                                            gpnCfgLog('探针信息：来源节点=' + anyBtn.name + ' 帧名=' + (srcSprite.spriteFrame && (srcSprite.spriteFrame.name || srcSprite.spriteFrame._name) || '(无名)'));
+                                            probe('④ set spriteFrame（克隆现成帧）', () => { sp.spriteFrame = srcSprite.spriteFrame; return 'ok'; });
+                                            probe('⑥ sprite.color 染色', () => { sp.color = ccg.color(120, 200, 120, 255); return 'ok'; });
+                                        } else { gpnCfgLog('探针信息：找不到带 spriteFrame 的组件（src=' + !!srcSprite + ' dst=' + !!sp + '）'); }
+                                    }
+                                } catch (e) { gpnCfgLog('探针 ④/⑥ 异常：' + e); }
+                                // ⑤ +Label
+                                const n2 = probe('⑤ new cc.Node + cc.Label', () => { const n = new ccg.Node('probe2'); n.addComponent(ccg.UITransform).setContentSize(240, 40); const l = n.addComponent(ccg.Label); l.string = '探针'; l.fontSize = 30; return 'ok'; });
+                                // 入树测试（把探针节点挂到 elements 下，看会不会渲染报错）
+                                if (n1 && elements) { probe('⑦ elements.addChild(探针节点)', () => { elements.addChild(n1); n1.setPosition(0, 400); return 'ok'; }); }
+                                if (n2 && elements) { probe('⑧ addChild(探针Label)', () => { elements.addChild(n2); n2.setPosition(0, 300); return 'ok'; }); }
+                            } catch (e) { gpnCfgLog('探针整体异常：' + e); }
                             // ★ 逐行生成并摆成 3 列网格
                             try {
                                 const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
