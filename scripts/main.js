@@ -148,6 +148,7 @@ async function gpnFeatStorageLoad(ctx) {
 }
 
 function gpnFeatStorageSaveSoon() {
+    if (gpnDisposed) return;                 // 旧运行时不写盘（避免覆盖新运行时的设置）
     if (!gpnFeatStore) return;
     try {
         if (gpnFeatSaveTimer) clearTimeout(gpnFeatSaveTimer);
@@ -167,6 +168,7 @@ function gpnFeatStorageSaveSoon() {
 }
 
 function gpnFeatStorageReset() {
+    if (gpnDisposed) return;                 // 旧运行时不再改设置
     try {
         for (const k of Object.keys(gpnFeatDefaults)) FEATURES_LIVE[k] = gpnFeatDefaults[k];
         if (gpnFeatStore) {
@@ -615,6 +617,12 @@ const gpnGateStats = { bodies: 0, calls: 0, bypass: 0, reused: 0 };
  *   而两次 setup 拿到的 o1 **是同一个函数对象** ⇒ 用 WeakMap 按 identity 缓存即可彻底幂等。
  */
 const gpnGateRegistry = new WeakMap();
+/* ★ 生命周期：模组被停用/重载后置 true。所有"会继续活动"的入口都要检查它，
+ *   否则旧运行时会与新运行时并行（实机已复现：开关错乱、保存报 AbortError）。
+ *   注意：模块级变量在**同一个模块实例**内共享；GP-NEXT 重新加载会得到新的模块实例，
+ *   所以这个标志只用来让"本实例"安静下来，不会影响新实例。 */
+let gpnDisposed = false;
+let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
 function gpnGatedBody(original, featKey, body) {
     try {
         if (original && typeof original === 'function') {
@@ -625,6 +633,7 @@ function gpnGatedBody(original, featKey, body) {
     } catch (e) { /* 忽略 */ }
     const wrapped = function () {
         gpnGateStats.calls++;
+        if (gpnDisposed) { gpnGateStats.bypass++; return original.apply(this, arguments); }   // ★ 旧运行时：不插手
         if (!featOn(featKey)) { gpnGateStats.bypass++; return original.apply(this, arguments); }
         return body.apply(this, arguments);
     };
@@ -1162,7 +1171,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
         // 暗影龙葵：涨价
         if (featOn('nightshade')) {
-            setField('PlantProps', 'nightshade', 'SunCost', CFG.nightshade.sunCost);
+            setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
         }
         // 高坚果：免疫位移。这是原版字段，vanilla 里只有 turnip(白萝卜) 和 gravebuster 开了它。
         // 注意【不要】动 canBeChied()：那个开关是「整体打断气功 + 保护身后」，不是我们要的。
@@ -1233,7 +1242,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用）----
         if (featOn('dandelion')) {
-            setField('PlantProps', 'dandelion', 'SunCost', CFG.dandelion.sunCost);
+            setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
             const DANDELION_KIND = { dandelion: 'normal', dandelion_blew: 'blew', dandelion_pf: 'pf' };
             const dlist = PvZ2ObjectContainer.ProjectileProps;
             if (Array.isArray(dlist)) {
@@ -1360,7 +1369,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
         if (featOn('noctarine')) {
-            setField('PlantProps', 'noctarine', 'SunCost', CFG.noctarine.sunCost);
+            setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
             // 注意：油桃有【两个】伤害来源 —— 数据里的 Actions 爆炸（一次性）和毒气云每跳伤害。
             // v2.5.0 只改了后者，所以实测还是掉 20。这里把爆炸也一起减半。
             const plist = PvZ2ObjectContainer.PlantProps;
@@ -5510,6 +5519,7 @@ export default {
     description: '23 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。',
 
     setup(ctx) {
+        try { gpnCtx = ctx; } catch (e) { /* 忽略 */ }   // 供配置界面/生命周期使用
         const IMPORTS = [
             'chunks:///_virtual/JSONs.ts',            // 0
             'chunks:///_virtual/Zombie.ts',           // 1
@@ -5859,6 +5869,7 @@ function findSprite(n) {
                             let gearLock = 0;
                             gear.on('touch-end', (ev) => {
                                 try {
+                                    if (gpnDisposed) return;                       // 旧运行时不响应
                                     const now = Date.now();
                                     if (now - gearLock < 500) return;
                                     gearLock = now;
@@ -5875,6 +5886,7 @@ function findSprite(n) {
                     let locked = 0;
                     row.on('touch-end', () => {
                         try {
+                            if (gpnDisposed) return;                       // 旧运行时不响应
                             const now = Date.now();
                             if (now - locked < 400) return;
                             locked = now;
@@ -6021,6 +6033,7 @@ function findSprite(n) {
                                 let lock = 0;
                                 row.on('touch-end', () => {
                                     try {
+                                        if (gpnDisposed) return;                       // 旧运行时不响应
                                         const now = Date.now();
                                         if (now - lock < 300) return;
                                         lock = now;
@@ -6146,8 +6159,10 @@ function hookWin() {
 }
 
 let ticks = 0;
-                setInterval(() => {
+                let gpnCfgTimer = null;
+                gpnCfgTimer = setInterval(() => {
                     try {
+                        if (gpnDisposed) { clearInterval(gpnCfgTimer); return; }
                         if (!hookWin()) { ticks++; return; }
                         // 兜底轮询：入口行可能被原版窗体重建而丢失
                         ensureEntry();
@@ -6156,6 +6171,22 @@ let ticks = 0;
                     } catch (e) { /* 忽略 */ }
                 }, 1000);
                 clog('已就绪（版本 ' + gpnCfgV + '：入口行=配置界面+蓝齿轮；点它打开配置窗体）');
+                // ★ 注册官方生命周期清理：GP-NEXT「保存并重载」会 dispose 本运行时的 ctx，
+                //   届时必须让本实例安静下来（停轮询 / 停存盘 / 停响应点击），
+                //   否则旧实例会与新实例并行 —— 实机表现为「改一个开关、另一个也跟着变」。
+                try {
+                    const RT = gpnCtx && gpnCtx.runtime;
+                    if (RT && typeof RT.onDispose === 'function') {
+                        RT.onDispose(() => {
+                            if (gpnDisposed) return;
+                            gpnDisposed = true;
+                            try { if (gpnCfgTimer) clearInterval(gpnCfgTimer); } catch (e) { /* 忽略 */ }
+                            try { entries.length = 0; panelRowsBox = null; } catch (e) { /* 忽略 */ }
+                            try { if (panel && panel.isValid) panel.active = false; } catch (e) { /* 忽略 */ }
+                            try { clog('收到 onDispose：本实例已停止活动'); } catch (e) { /* 忽略 */ }
+                        }, '配置界面');
+                    } else { clog('ctx.runtime.onDispose 不可用 ⇒ 仅靠 setup 返回值清理'); }
+                } catch (eR) { clog('注册 onDispose 失败：' + eR); }
             } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
@@ -6429,7 +6460,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-r1a ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
@@ -6489,6 +6520,11 @@ let ticks = 0;
                 + '推植物跳过挡路者(' + (CFG.pushPlant.skipBlockers ? '开' : '关') + ')');
 
             return function cleanup() {
+                // ★ 先停下"本实例的活动"（轮询 / 点击 / 存盘），再做原型还原。
+                //   为什么关键：GP-NEXT「保存并重载」时旧运行时会被 dispose，但我们没注册清理，
+                //   旧代码会继续跑（继续操作界面、继续存盘）⇒ 与新运行时并行 ⇒ 开关错乱。
+                gpnDisposed = true;
+                try { if (typeof gpnCfgTimer !== 'undefined' && gpnCfgTimer) clearInterval(gpnCfgTimer); } catch (e) { /* 忽略 */ }
                 // !! 必须【倒序】还原：同一个方法可能被多个补丁层层包裹
                 //    （例如 commonShot.dealDamageToZombie 被"甜椒灼烧"和"星星果追击"各包了一层），
                 //    正序还原会把先包的那层包装重新装回去 = 卸载后补丁还在。
