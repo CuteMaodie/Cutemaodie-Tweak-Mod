@@ -5662,16 +5662,22 @@ export default {
                         const clone = ccg.instantiate(tpl);
                         clone.name = 'gpnConfigRowProbe';
                         // ★ 只保留 ToolTip（文字）+ website（蓝色齿轮按钮），去掉 import / export
+                        //   ⚠️ 上一版教训：removeFromParent() 的报错被 try/catch 吞掉 ⇒ 日志说"裁剪成功"，
+                        //      实际 export 仍在（行树里 子=3）⇒ 这次每一步都打印结果，并做兜底隐藏。
                         try {
-                            const keep = [];
-                            (clone.children || []).forEach((c2) => {
+                            const origKids = (clone.children || []).slice();
+                            origKids.forEach((c2) => {
                                 const nm = String(c2.name || '');
-                                if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) keep.push(c2);
-                                else { try { c2.removeFromParent(); c2.destroy(); } catch (e) { /* 忽略 */ } }
+                                if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
+                                let okR = '未执行', errR = '';
+                                try { c2.removeFromParent(); okR = 'removeFromParent OK'; }
+                                catch (e1) { errR = String(e1); okR = 'removeFromParent 失败'; }
+                                try { c2.destroy(); } catch (e3) { errR += ' | destroy 失败:' + e3; }
+                                try { c2.active = false; okR += ' | active=false'; } catch (e4) { errR += ' | active 失败:' + e4; }
+                                log('【探查】裁剪『' + nm + '』⇒ ' + okR + (errR ? (' ｜ 错误: ' + errR) : ''));
                             });
-                            // ★ 只删 export（绿▲及其绿底方框）；website（蓝色齿轮）的子节点一个都不要动！
-
-                            log('【探查】模板行保留的子节点：' + keep.map((k) => k.name).join(', '));
+                            const after = (clone.children || []).map((k) => k.name);
+                            log('【探查】裁剪后实际子节点：[' + after.join(', ') + '] 共 ' + after.length + ' 个（期望只剩 ToolTip + website）');
                         } catch (e) { warn('【探查】裁剪子节点出错', e); }
                         // ⚠️ 教训：用"类名字符串"判断组件不可靠（内置组件与自定义组件的类名格式不同）
                         //   ⇒ 一律**按属性特征**识别：clickEvents = Button；string = Label。
@@ -5812,7 +5818,7 @@ export default {
                         gpnRowTryInsert('轮询兜底');
                     } catch (e) { /* 忽略 */ }
                 }, 2000);
-                log('【探查】代码版本 = v5（删 export 绿▲、保留 website 齿轮；若看不到这行说明跑的是旧代码）');
+                log('【探查】代码版本 = v6（裁剪 export 且逐步可见；website 齿轮原样保留；看不到这行=旧代码）');
                 log('【探查】已就绪：挂 onEnable 钩子 + 2 秒轮询兜底（打开原版设置窗即插入占位行）');
             } catch (e) { warn('【探查】安装失败', e); }
 
