@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v14';
+                const gpnCfgV = 'v15';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5680,6 +5680,10 @@ export default {
                                 if (lay) { lay.enabled = false; layoutOff = true; }
                             } catch (e) { /* 忽略 */ }
                             // ★ 开关清单（key 必须与 FEATURES/features.json 一致；label 取 features.json 的 _对照 名称）
+                                                        // ★ 主从依赖：子开关在【父开关关闭】时置灰（只影响界面，值保留；逻辑层 gpnFollowMergeOn 同样会拦住）
+                            const gpnCfgDeps = { starfruitFollowMerge: 'starfruit' };
+                            const gpnCfgMasterLabel = { starfruit: '星星果系' };
+                            const gpnCfgRows = {};
                             const gpnCfgItems = [
                                 { key: 'chilibean', label: '巴豆' },
                                 { key: 'spikerock', label: '钢地刺' },
@@ -5714,7 +5718,26 @@ export default {
                                 const ch = rowH || 140;
                                 const GREEN = ccg.color(20, 255, 0, 255);      // 与引擎 SettingWindow 的 GREEN 一致
                                 const RED = ccg.color(255, 0, 0, 255);        // 同上：原版二态项 = 绿开 / 红关
-                                let idx = 0, made = 0, tinted = 0;
+                                                                // ★ 分组标题行（只显示文字、不染色、不可点）
+                                try {
+                                    const hdr = ccg.instantiate(gpnCfgWinRow);
+                                    hdr.name = 'gpnGroupHeader';
+                                    (hdr.children || []).slice().forEach((c2) => {
+                                        const nm = String(c2.name || '');
+                                        if (nm.indexOf('ToolTip') === 0) return;
+                                        try { c2.active = false; } catch (eH1) { /* 忽略 */ }
+                                        try { c2.removeFromParent(); } catch (eH2) { /* 忽略 */ }
+                                        try { c2.destroy(); } catch (eH3) { /* 忽略 */ }
+                                    });
+                                    clearClickEvents(hdr);
+                                    setAllText(findByName(hdr, 'ToolTip', 0) || hdr, '【植物】');
+                                    try { for (const c of (hdr.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eH4) { /* 忽略 */ }
+                                    const uth = (hdr.components || []).find((x) => x && x.setContentSize);
+                                    if (uth && uth.setContentSize) uth.setContentSize(cw * cols, Math.max(60, Math.floor(ch * 0.6)));
+                                    hdr.setPosition(0, 0);
+                                    elements.addChild(hdr);
+                                } catch (eH) { gpnCfgLog('造分组标题失败：' + eH); }
+let idx = 0, made = 0, tinted = 0;
                                 gpnCfgItems.forEach((it) => {
                                     try {
                                         const row = ccg.instantiate(gpnCfgWinRow);
@@ -5753,9 +5776,23 @@ export default {
                                                 stateLabel = st;
                                             }
                                         } catch (eL) { /* 忽略 */ }
+                                        // ★ 子开关的父键（有父且父关 ⇒ 本行置灰、不可点）
+                                        const masterKey = gpnCfgDeps[it.key] || null;
+                                        let uiOp = null;
+                                        try {
+                                            uiOp = (row.components || []).find((x) => x && typeof x.opacity === 'number');
+                                            if (!uiOp) uiOp = row.addComponent(ccg.UIOpacity);
+                                        } catch (eO) { /* 忽略 */ }
                                         const applyState = (on) => {
                                             try { if (rowSprite) { rowSprite.color = on ? GREEN : RED; tinted++; } } catch (e1) { /* 忽略 */ }
-                                            try { setAllText(stateLabel || row, on ? '开' : '关'); } catch (e2) { /* 忽略 */ }
+                                            const blocked = !!(masterKey && !featOn(masterKey));
+                                            try { if (uiOp) uiOp.opacity = blocked ? 110 : 255; } catch (eO2) { /* 忽略 */ }
+                                            try {
+                                                setAllText(stateLabel || row, blocked
+                                                    ? ('需先开启' + (gpnCfgMasterLabel[masterKey] || masterKey))
+                                                    : (on ? '开' : '关'));
+                                            } catch (e2) { /* 忽略 */ }
+                                            return blocked;
                                         };
                                         applyState(featOn(it.key));
                                         const col = idx % cols, rIdx = Math.floor(idx / cols);
@@ -5769,6 +5806,11 @@ export default {
                                                 if (now - tapLock < 300) return;
                                                 tapLock = now;
                                                 if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+                                                                                                // ★ 父开关关着 ⇒ 本行不可点（提示原因）
+                                                if (masterKey && !featOn(masterKey)) {
+                                                    gpnCfgLog('子开关被拦下：' + it.label + '(' + it.key + ') 需先开启 ' + (gpnCfgMasterLabel[masterKey] || masterKey));
+                                                    return;
+                                                }
                                                 const next = !featOn(it.key);
                                                 featSet(it.key, next);
                                                 // ★ 先更新界面（即便后面 apply 数据出错，界面也必须刷新）
@@ -5781,6 +5823,14 @@ export default {
                                                 gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (next ? '开(绿)' : '关(红)') + ' ｜ ' + applied);
                                             } catch (e) { warn('【配置界面】切换开关出错', e); }
                                         });
+                                                                                gpnCfgRows[it.key] = {
+                                            applyState: applyState,
+                                            masterOf: () => (masterKey ? featOn(masterKey) : true),
+                                        };
+                                        // 若本次切换的是某行的父，刷新所有子行显示
+                                        if (Object.keys(gpnCfgDeps).some((k) => gpnCfgDeps[k] === it.key)) {
+                                            try { Object.keys(gpnCfgRows).forEach((k) => { try { gpnCfgRows[k].applyState(featOn(k)); } catch (eR) { /* 忽略 */ } }); } catch (eR2) { /* 忽略 */ }
+                                        }
                                         made++; idx++;
                                     } catch (e) { gpnCfgLog('造行失败 ' + it.key + '：' + e); }
                                 });
