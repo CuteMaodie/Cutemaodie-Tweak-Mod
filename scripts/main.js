@@ -607,14 +607,31 @@ function normalizeType(t) {
  *   为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
  *   __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
  * ========================================================================== */
-const gpnGateStats = { bodies: 0, calls: 0, bypass: 0 };
+const gpnGateStats = { bodies: 0, calls: 0, bypass: 0, reused: 0 };
+/* ★ 注册表：保证"同一个原函数只被包装一次"
+ *   为什么需要（实测）：setup 跑 N 次时，第 2 次拿到的 original 是"第 1 次包装后的函数"，
+ *   于是又包一层 ⇒ 开着开关时**补丁体会被执行 N 次**（原函数仍只 1 次）。
+ *   对"只改状态"的补丁（钢地刺的 spikeLeft、甜薯回血、香水菇层数、红针花形态）就可能出怪现象。
+ *   而两次 setup 拿到的 o1 **是同一个函数对象** ⇒ 用 WeakMap 按 identity 缓存即可彻底幂等。
+ */
+const gpnGateRegistry = new WeakMap();
 function gpnGatedBody(original, featKey, body) {
+    try {
+        if (original && typeof original === 'function') {
+            if (original.__gpnGated) return original;               // 已经是包装函数 ⇒ 直接用（标记兜底）
+            const hit = gpnGateRegistry.get(original);
+            if (hit) { gpnGateStats.reused++; return hit; }         // 同一个原函数 ⇒ 复用同一层包装
+        }
+    } catch (e) { /* 忽略 */ }
     const wrapped = function () {
         gpnGateStats.calls++;
         if (!featOn(featKey)) { gpnGateStats.bypass++; return original.apply(this, arguments); }
         return body.apply(this, arguments);
     };
-    try { wrapped.__gpnGated = featKey; } catch (e) { /* 忽略 */ }
+    try {
+        wrapped.__gpnGated = featKey;                               // 标记：供兜底与自检识别
+        if (original && typeof original === 'function') gpnGateRegistry.set(original, wrapped);
+    } catch (e) { /* 忽略 */ }
     gpnGateStats.bodies++;
     return wrapped;
 }
@@ -5474,6 +5491,7 @@ export default {
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
     _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
+    _gatedBody: gpnGatedBody,            // 同上：门禁包装器本体（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
@@ -6411,7 +6429,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-r1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-r1a ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
