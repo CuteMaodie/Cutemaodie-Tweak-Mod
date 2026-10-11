@@ -310,6 +310,19 @@ function featLoad() {
  *  若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
 const VANILLA = {
     spikerock: { sunCost: 250, maxSpike: 3, cooldown: 5 },
+    // ↓ 全部来自原始数据 `CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`
+    //   （逐字段核对过；并已与用户手工提供的清单交叉验证）
+    //   ⚠️ 注意：这些条目曾在一次 `git checkout e247a7d` 回退中被意外丢掉（导致 VANILLA.nightshade
+    //      为 undefined ⇒ 关掉龙葵时 setup 抛异常）。已按原始数据重新补全。
+    splitpea: { sunCost: 125, cooldown: 5 },
+    nightshade: { sunCost: 75, cooldown: 5 },
+    tallnut: { sunCost: 125, cooldown: 20 },
+    starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
+    noctarine: { sunCost: 150, cooldown: 15 },
+    dandelion: { sunCost: 275, cooldown: 15 },
+    garlic: { sunCost: 50, cooldown: 5, eatDamage: 150 },
+    redstinger: { sunCost: 150, tier1: 0.3333333, tier2: 0.2 },
+    pepperpult: { sunCost: 200, cooldown: 20 },
 };
 
 const CFG = {
@@ -1222,10 +1235,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost);
         setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : VANILLA.spikerock.maxSpike);
         setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
-        // 暗影龙葵：涨价
-        if (featOn('nightshade')) {
-            setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
-        }
+        // 暗影龙葵：涨价 —— ★不再用 featOn 包住整段（否则关掉时这段根本不执行 ⇒ 永远不会写回 75）。
+        //   写成"每次都跑、开/关都写"的两态形式：apply() 一跑就自动还原。
+        setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
         // 高坚果：免疫位移。这是原版字段，vanilla 里只有 turnip(白萝卜) 和 gravebuster 开了它。
         // 注意【不要】动 canBeChied()：那个开关是「整体打断气功 + 保护身后」，不是我们要的。
         // 只开这个字段的效果 = 橄榄车/抛掷/舞王推/渔夫钩 全部无效，但气功照常对其它植物生效、
@@ -6623,7 +6635,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l12 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l13 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
