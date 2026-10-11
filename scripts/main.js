@@ -1605,6 +1605,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
     };
 
     const patchedFart = function (stunDuration, poison) {
+        if (!featOn('chilibean')) return originals.fart.call(this, stunDuration, poison);   // 【运行期开关】
         if (this.__gpnQuiet) { quietKill(this); return; }
         return originals.fart.call(this, stunDuration, poison);
     };
@@ -2349,6 +2350,7 @@ function makeSweetPotatoPatch(Plant) {
     // Plant.heal 是所有治疗的唯一入口（芦荟的 aloeHealingParticle、仙桃的 heal3x3 都走它）。
     // 挂在基类上 + 用 Plant_Type 判定，所以不管甜薯的预制体实际挂哪个类都会命中。
     Plant.prototype.heal = function (amount) {
+        if (!featOn('sweetpotato')) return recHeal.original.apply(this, arguments);   // 【运行期开关】
         if (this.Plant_Type === KEY) {
             const mult = CFG.sweetpotato.healReceivedMultiplier;
             if (mult > 0 && mult !== 1 && typeof amount === 'number') amount *= mult;
@@ -2359,6 +2361,7 @@ function makeSweetPotatoPatch(Plant) {
 
     // ---- B. 每秒自回血（挂在基类 characterUpdate 上，甜薯没有重写它）----
     Plant.prototype.characterUpdate = function (dt) {
+        if (!featOn('sweetpotato')) return recUpdate.original.apply(this, arguments);   // 【运行期开关】
         const r = recUpdate.original.call(this, dt);
         if (this.Plant_Type === KEY && !this.dead) {
             const rate = CFG.sweetpotato.selfHealPerSecond;
@@ -2406,6 +2409,7 @@ function makeTurnipPatch(Plant) {
     if (typeof rec.original !== 'function') { warn('跳过白萝卜：Plant 上没有 defaultDealNormalDamage'); return null; }
 
     Plant.prototype.defaultDealNormalDamage = function (dmg, type) {
+        if (!featOn('turnip')) return rec.original.apply(this, arguments);   // 【运行期开关】
         if (this.Plant_Type === KEY) {
             if (this.__gpnHitLocked) return this.health;      // 锁没解开：这次伤害整体作废
             this.__gpnHitLocked = true;
@@ -2437,6 +2441,7 @@ function makeBloomingHeartVictimPatch(Plant) {
 
     // 引擎：Plant.eat(dmg, zombie) -> this.dealDamage(dmg, 0)
     Plant.prototype.eat = function (dmg, zombie) {
+        if (!featOn('bloomingheart')) return original.call(this, dmg, zombie);   // 【运行期开关】关掉 ⇒ 原版啃食
         const mult = SCALE[normalizeType(this.Plant_Type)];
         if (mult !== undefined && typeof dmg === 'number' && dmg > 0
             && zombie && zombie.BloomingHeartDefenceRateList
@@ -2477,6 +2482,7 @@ function makePerfumeDurationPatch(PerfumeShroomPlant) {
     }
     const rec = methodRecord(PerfumeShroomPlant, 'explode');
     PerfumeShroomPlant.prototype.explode = function () {
+        if (!featOn('perfumeshroom')) return rec.original.apply(this, arguments);   // 【运行期开关】
         try {
             if (this._objdataOwn && this._objdataOwn.Duration !== want) this._objdataOwn.Duration = want;
         } catch (e) { /* 拿不到就按原版跑，不影响功能 */ }
@@ -2536,6 +2542,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     // 兜底取特效：真实心蕊命中时它会把 prefab 传进来，顺手缓存
     if (recPush) {
         Zombie.prototype.pushBloomingHeartDefenceRateList = function (list, par) {
+            if (!featOn('perfumeshroom')) return recPush.original.call(this, list, par);   // 【运行期开关】
             if (par && !buff.par) { buff.par = par; log('减防特效 prefab 已缓存（来自真实心蕊命中）'); }
             return recPush.original.call(this, list, par);
         };
@@ -2554,6 +2561,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     for (let i = 0; i < CFG.perfumeshroom.layers; i++) layerList.push(CFG.bloomingheart.debuffLayer);
 
     Fire.prototype.updateAsJalapenoFire = function (dt, rect) {
+        if (!featOn('perfumeshroom')) return recFire.original.call(this, dt, rect);   // 【运行期开关】
         const r = recFire.original.call(this, dt, rect);
         try {
             if (!this.dead && this.inLnC) {
@@ -2667,6 +2675,7 @@ function makeTallnutPatch(WallNut, PrimalWallNut) {
 
     WallNut.prototype.normalSmash = function (attacker) {
         if (normalizeType(this.Plant_Type) !== KEY) return rec.original.call(this, attacker);
+        if (!featOn('tallnut')) return rec.original.call(this, attacker);   // 【运行期开关】关掉 ⇒ 原版砸击
         if (primal) return primal.call(this, attacker);
         // 兜底内联（PrimalWallNut 没导入成功时）
         if (this.fooding || this.invincible) return;
@@ -2695,6 +2704,7 @@ function makeNoctarineGasPatch(Particle) {
     const rec = methodRecord(Particle, '_attack');
     Particle.prototype._attack = function () {
         // SlowsZombies 是暗影态标记（explode() 里赋的）
+        if (!featOn('noctarine')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版毒气伤害
         const v = this.SlowsZombies ? CFG.noctarine.shadowAttackDamage : CFG.noctarine.normalAttackDamage;
         const keep = this.AttackDamage;
         if (v > 0) this.AttackDamage = v;
@@ -2915,6 +2925,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
         const recLane = methodRecord(DandelionPlant, 'getEnemyLane');
         DandelionPlant.prototype.getEnemyLane = function () {
             try {
+                if (!featOn('dandelion')) return recLane.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版索敌
                 if (this.blew) return -2;                              // 吹风恢复期：保留引擎语义
                 if (this.isAirRaidPlant) return recLane.original.apply(this, arguments);
                 const off = gpnDandelionPickLaneFirst(this);
@@ -3489,11 +3500,13 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const rec = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
+            // 【运行期开关】关掉「甜椒投手」⇒ 不再补灼烧（下面那句"反射速度归零"的 BUG 修复保留）
+            const _pepOn = featOn('pepperpult');
             gpnPepperEnforceReflect(this);   // 【修 BUG】同上（兜底：任何命中入口都保证已归零）
             const r = rec.original.apply(this, arguments);
             try {
                 // isDirect === false 的是溅射伤害，不重复烧
-                if (isDirect !== false && this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
+                if (_pepOn && isDirect !== false && this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(命中)出错', e); }
             return r;
         };
@@ -4078,6 +4091,7 @@ function makeStarFollowPatch(CommonShot, deps) {
         const recFood = methodRecord(PlantBase, 'food');
         PlantBase.prototype.food = function () {
             const r = recFood.original.apply(this, arguments);
+            if (!featOn('starfruit')) return r;   // 【运行期开关】关掉 ⇒ 原版大招（追击不介入）
             try {
                 const od = this && this._objdataOwn;
                 if (od && gpnStarKindOf(od.PeaType) === 'base'
@@ -4301,6 +4315,7 @@ function makeHurrikalePatch(HurrikalePlant, Zombie, deps) {
         && typeof HurrikalePlant.prototype.animationListener === 'function') {
         const rec = methodRecord(HurrikalePlant, 'animationListener');
         HurrikalePlant.prototype.animationListener = function (evt) {
+            if (!featOn('hurrikale')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版飓风
             const r = rec.original.apply(this, arguments);      // ① 原版照跑
             try {
                 if (evt && evt.name === 'push') {
@@ -4790,6 +4805,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'playHitOnCharacter');
         P.playHitOnCharacter = function (target) {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 不做眩晕/击起/解除音乐
             try {
                 // ★ 命中特效资源：在这一刻把本株的 hitPar 存进缓存 —— 此刻它**必然活着**，
                 //   之后就算它死了/被铲了、被标记僵尸的持续特效也照样放得出来 ✓
@@ -4830,6 +4846,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'attack');
         P.attack = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 不解除安抚
             try {
                 const n = gpnScanPlants(this, deps, false, (p) => gpnClearSoothe(p, deps, fx, this));
                 if (n && C.debugLog) log('魔音甜菜：普攻解除安抚 ' + n + ' 株');
@@ -5162,6 +5179,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
     if (typeof P.onShadowPoweredChanged === 'function') {
         const rec = methodRecord(MurkadamiaNutPlant, 'onShadowPoweredChanged');
         P.onShadowPoweredChanged = function () {
+            if (!featOn('murkadamia')) { try { return rec.original.apply(this, arguments); } catch (e) { return undefined; } }   // 【运行期开关】
             try { gpnMkJellyTune(this); } catch (e) { warn('夏威夷果：算暗影物质数值出错', e); }
             let r;
             try { r = rec.original.apply(this, arguments); }
@@ -6687,7 +6705,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l15 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l16 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
