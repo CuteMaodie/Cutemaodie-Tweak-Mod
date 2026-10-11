@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v7';
+                const gpnCfgV = 'v8';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5698,6 +5698,22 @@ export default {
                                     }
                                 }
                             } catch (e) { gpnCfgLog('量尺寸出错：' + e); }
+                            // ★ 位置与宽度：Layout 已停用 ⇒ 必须自己定
+                            //   依据实测：elements 1916.4 x 1440（两列，每行约 68~72），滚动视口 1916.4 x 840
+                            try {
+                                const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
+                                const sz = CS(elements) || { width: 1916.4, height: 1440 };
+                                const half = Math.max(300, Math.floor(sz.width / 2) - 6);
+                                const rowH = 72;
+                                (elements.children || []).forEach((k, i) => {
+                                    try {
+                                        const ut2 = (k.components || []).find((x) => x && x.setContentSize);
+                                        if (ut2 && ut2.setContentSize) ut2.setContentSize(half, rowH);
+                                        k.setPosition(-Math.floor(sz.width / 4), -(rowH / 2) - i * rowH);
+                                    } catch (e) { /* 忽略 */ }
+                                });
+                                gpnCfgLog('已按实测尺寸摆行：行宽 ' + half + ' 行高 ' + rowH + '，共 ' + ((elements.children || []).length) + ' 行');
+                            } catch (e) { gpnCfgLog('摆行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
                         }
                         // ⑤ 自己绑"关闭"（红 X 的原版事件已被清掉，否则点它没反应）
