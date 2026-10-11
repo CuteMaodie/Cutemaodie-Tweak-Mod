@@ -5917,6 +5917,37 @@ function findSprite(n) {
                     });
                 }
 
+                /* ---------- 刷新已建卡片的阳光显示（数值类开关即时生效的关键） ---------- */
+                //  数据（objdata.SunCost）我们早就改了；但已建卡片把阳光缓存在 _SUNCOST 里，
+                //  必须按引擎自己的惯用法「自赋值」一次，才会同时更新缓存与价格文字。
+                function gpnRefreshCardSunCost() {
+                    let found = 0, done = 0, ids = [];
+                    try {
+                        const ccg = ccNode();
+                        const scene = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
+                        if (!scene) { clog('刷新卡片：拿不到场景'); return; }
+                        const seen = [];
+                        const walk = (node, depth) => {
+                            if (!node || depth > 12 || seen.length > 4000) return;
+                            seen.push(node);
+                            try {
+                                for (const c of (node.components || [])) {
+                                    if (!c) continue;
+                                    if (typeof c._SUNCOST !== 'number') continue;   // 卡片组件特征
+                                    found++;
+                                    const id = c.ID;
+                                    if (ids.indexOf(id) === -1 && ids.length < 12) ids.push(id);
+                                    try { c.SUNCOST = c.SUNCOST; done++; } catch (e) { /* 忽略 */ }
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            for (const k of (node.children || [])) walk(k, depth + 1);
+                        };
+                        walk(scene, 0);
+                        clog('刷新卡片阳光：找到 ' + found + ' 个卡片组件，成功刷新 ' + done + ' 个'
+                            + (ids.length ? ('（ID: ' + ids.join(',') + '）') : ''));
+                    } catch (e) { clog('刷新卡片阳光出错：' + e); }
+                }
+
                 /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
                 function buildPanel(ccg) {
                     try {
@@ -6042,6 +6073,7 @@ function findSprite(n) {
                                         featSet(e.key, next);
                                         renderAll();                                   // ★ 全量重画（父变 ⇒ 子立刻变灰）
                                         try { if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') gpnApplyDataPatch.apply(); } catch (eA) { /* 忽略 */ }
+                                        try { gpnRefreshCardSunCost(); } catch (eB) { /* 忽略 */ }   // 数值类：刷新已建卡片的阳光显示
                                         clog('切换：' + e.label + '(' + e.key + ') ⇒ ' + (next ? '开' : '关'));
                                     } catch (err) { warn('【配置界面】切换出错', err); }
                                 });
@@ -6460,7 +6492,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l2 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
