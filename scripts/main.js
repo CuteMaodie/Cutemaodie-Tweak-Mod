@@ -5589,442 +5589,346 @@ export default {
                 log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；每 6 秒自动切一次钢地刺并打印表值/活对象');
             } catch (e) { warn('【验证】安装失败', e); }
 
-            // ---- 1d. 配置界面：入口行（挂在原版设置窗底部）+ 我们的窗体（阶段① 骨架）----
-            //   设计（用户确认的 B′ 方案）：
-            //     · 入口：在原版【设置】窗口的 `elements` 最底部插一条「配置界面」+ 蓝色齿轮按钮；
-            //       做法 = 克隆原版 KeyBinds 行 ⇒ 只留 ToolTip（文字）+ website（齿轮）⇒ 文字改「配置界面」；
-            //     · 点击：打开【我们自己的窗体】（克隆原版窗体外壳 ⇒ 米色底/木框标题/红X/滚动条全原版外观），
-            //       内容区放我们自己的内容（本阶段先放一行占位，阶段② 换成 23 个开关）。
-            //   ⚠️ 教训（本轮踩过的坑，全部体现在下面）：
-            //     · 原版设置窗是**用 node.active 开关**的 ⇒ 必须挂它的 onEnable 才能在"打开时"插入；
-            //     · 组件识别**不能比类名字符串**（内置/自定义格式不同）⇒ 按属性特征判断（clickEvents/string）；
-            //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
-            //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
+            // ---- 1d. 配置界面（入口行挂在原版设置窗底部；点它打开我们自己的窗体）----
+            //   ⚠️ 本块是【整体重写版】：早期用"字符串打补丁"往旧代码里反复插入小补丁，导致层级/顺序反复出错
+            //      （曾出现：建行途中触发刷新、refresh 块被插到错层级、let 缩进 0 等）。现改为：
+            //        · 所有行对象存进一个数组 entries[{key,label,master,row,sprite,labelNode}]；
+            //        · **任何点击 ⇒ 改开关值 ⇒ renderAll() 全量重画**（颜色 / 文字 / 置灰一次算清）；
+            //        · 结构扁平、无嵌套陷阱，便于后续维护与排错。
+            //   实测事实（全部已在本项目验证过，勿再改）
+            //     · 原版设置窗用 node.active 开关 ⇒ 必须挂它的 onEnable 才能在"打开时"插入口行；
+            //     · 原版实测行尺寸 968x140；内容区 1916.4x1440（两列）；滚动视口 1916.4x840；
+            //     · 组件识别不能比类名字符串 ⇒ 按属性特征（clickEvents / string / spriteFrame）；
+            //     · Graphics 不可用（Error 3804）；新建节点必须"先入树再加 UITransform/Label"；
+            //     · Sprite.color 染色、Label.string 改字、node.on(touch-end) 点击 —— 均可用。
+            //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
+            //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v18';
-                let gpnCfgRowDone = false;
-                let gpnCfgWin = null;
-                let gpnCfgWinRow = null;
-                let gpnCfgRowW = 0;          // 原版行的真实宽度（实测）
-                let gpnCfgRowH = 0;          // 原版行的真实高度（实测）
-                let gpnCfgOrigWin = null;
-                const gpnCfgLog = (s) => { try { log('【配置界面·' + gpnCfgV + '】' + s); } catch (e) { /* 忽略 */ } };
-                const findByName = (root, want, depth) => {
+                const gpnCfgV = 'v20';
+                let origWin = null;          // 原版设置窗节点
+                let panel = null;            // 我们的窗体（克隆原版外壳）
+                let panelRowsBox = null;     // 我们窗体的 elements
+                let entryTemplate = null;    // 原版 KeyBinds 行（模板）
+                let rowW = 968, rowH = 140;  // 实测行尺寸
+                let contentW = 1916.4;
+                const entries = [];          // 行对象数组（唯一数据源）
+                let hooked = false, lastWinActive = false, missLog = 0;
+                const GREEN = ccColor(20, 255, 0, 255);
+                const RED = ccColor(255, 0, 0, 255);
+                const GREY = ccColor(110, 104, 98, 255);
+                const GREY_TXT = ccColor(255, 255, 255, 255);
+                const INFO = [
+                    { key: 'chilibean', label: '巴豆' },
+                    { key: 'spikerock', label: '钢地刺' },
+                    { key: 'bloomingheart', label: '心蕊' },
+                    { key: 'nightshade', label: '暗影龙葵' },
+                    { key: 'turnip', label: '白萝卜' },
+                    { key: 'sweetpotato', label: '甜薯' },
+                    { key: 'tallnut', label: '高坚果' },
+                    { key: 'perfumeshroom', label: '香水菇' },
+                    { key: 'starfruit', label: '星星果系' },
+                    { key: 'starfruitFollowMerge', label: '　└ 追击合并', master: 'starfruit' },
+                    { key: 'noctarine', label: '暗影油桃' },
+                    { key: 'zoybeanpod', label: '腐尸豆荚' },
+                    { key: 'dandelion', label: '蒲公英' },
+                    { key: 'pepperpult', label: '甜椒投手' },
+                    { key: 'hurrikale', label: '飓风甘蓝' },
+                    { key: 'phatbeet', label: '魔音甜菜' },
+                    { key: 'garlic', label: '大蒜' },
+                    { key: 'snowpea', label: '寒冰射手' },
+                    { key: 'redstinger', label: '红针花' },
+                    { key: 'murkadamia', label: '暗影夏威夷果' },
+                    { key: 'splitpea', label: '裂荚射手' },
+                    { key: 'pushPlantFix', label: '推植物修复' },
+                    { key: 'verboseLog', label: '诊断日志' },
+                ];
+
+                /* ---------- 小工具（全部只用实测可用的 API） ---------- */
+                function ccColor(r, g, b, a) {
+                    try { const ccg = (typeof cc !== 'undefined' && cc) ? cc : null; return ccg.color(r, g, b, a); }
+                    catch (e) { return { r: r, g: g, b: b, a: a }; }
+                }
+                function ccNode() { const ccg = (typeof cc !== 'undefined' && cc) ? cc : null; return ccg; }
+                function clog(s) { try { log('【配置界面·' + gpnCfgV + '】' + s); } catch (e) { /* 忽略 */ } }
+                function findDeep(n, want, depth) {
                     try {
-                        if (!root || depth > 7) return null;
-                        if (String(root.name || '') === want) return root;
-                        const ks = root.children || [];
-                        for (let i = 0; i < ks.length; i++) { const r = findByName(ks[i], want, depth + 1); if (r) return r; }
+                        if (!n || depth > 8) return null;
+                        if (String(n.name || '') === want) return n;
+                        const ks = n.children || [];
+                        for (let i = 0; i < ks.length; i++) { const r = findDeep(ks[i], want, depth + 1); if (r) return r; }
                     } catch (e) { /* 忽略 */ }
                     return null;
-                };
-                /** 清掉一棵子树里所有 Button 的点击事件（原版事件指向原窗口组件，绝不能让它们跟着克隆体） */
-                const clearClickEvents = (n) => {
-                    let n0 = 0;
+                }
+                function clearClicks(n) {
+                    let c = 0;
+                    try { for (const x of (n.components || [])) { if (x && Array.isArray(x.clickEvents)) { c += x.clickEvents.length; x.clickEvents.length = 0; } } } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { c += clearClicks(k); });
+                    return c;
+                }
+                function setText(n, str) {
+                    let c = 0;
+                    try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string' && x.string !== '') { x.string = str; c++; } } } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { c += setText(k, str); });
+                    return c;
+                }
+                function sizeOf(n) { try { const x = (n.components || []).find((y) => y && y.contentSize); return x ? x.contentSize : null; } catch (e) { return null; } }
+                function setSize(n, w, h) { try { const x = (n.components || []).find((y) => y && y.setContentSize); if (x) { x.setContentSize(w, h); return true; } } catch (e) { /* 忽略 */ } return false; }
+                function findSprite(n) {
+                    try { for (const x of (n.components || [])) { if (x && x.spriteFrame !== undefined && x.color !== undefined) return x; } } catch (e) { /* 忽略 */ }
+                    try { for (const x of (n.components || [])) { if (x && x.color !== undefined) return x; } } catch (e2) { /* 兜底 */ }
+                    return null;
+                }
+                function killChildren(n, keepTip) {
+                    (n.children || []).slice().forEach((c2) => {
+                        const nm = String(c2.name || '');
+                        if (keepTip && nm.indexOf('ToolTip') === 0) return;
+                        try { c2.active = false; } catch (e1) { /* 忽略 */ }
+                        try { c2.removeFromParent(); } catch (e2) { /* 忽略 */ }
+                        try { c2.destroy(); } catch (e3) { /* 忽略 */ }
+                    });
+                }
+                function noWidget(n) { try { for (const c of (n.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (e) { /* 忽略 */ } }
+
+                /* ---------- 入口行：克隆原版 KeyBinds 行（只留文字 + 蓝色齿轮） ---------- */
+                function buildEntryRow(ccg) {
+                    const row = ccg.instantiate(entryTemplate);
+                    row.name = 'gpnConfigRow';
+                    killChildren(row, true);                  // 只留 ToolTip（文字），删掉 ▲▼/import/export
+                    clearClicks(row);
+                    setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
+                    let locked = 0;
+                    row.on('touch-end', () => {
+                        try {
+                            const now = Date.now();
+                            if (now - locked < 400) return;
+                            locked = now;
+                            if (panel && panel.active === true) return;   // 已经开着
+                            if (!buildPanel(ccg)) return;
+                            if (origWin) origWin.active = false;
+                            panel.active = true;
+                            clog('已打开配置窗体（入口行被点击）');
+                        } catch (e) { warn('【配置界面】打开出错', e); }
+                    });
+                    return row;
+                }
+
+                /* ---------- render：唯一的状态画法（颜色 + 文字 + 置灰） ---------- */
+                function renderAll() {
+                    entries.forEach((e, i) => {
+                        try {
+                            const on = featOn(e.key);
+                            const blocked = !!(e.master && !featOn(e.master));
+                            if (e.sprite) e.sprite.color = blocked ? GREY : (on ? GREEN : RED);
+                            if (e.labelNode) {
+                                if (blocked) setText(e.labelNode, '需先开启' + (e.masterLabel || e.master));
+                                else setText(e.labelNode, on ? '开' : '关');
+                            }
+                            if (i < 3) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
+                        } catch (err) { clog('render 出错 ' + e.key + '：' + err); }
+                    });
+                }
+
+                /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
+                function buildPanel(ccg) {
                     try {
-                        for (const c of (n.components || [])) {
-                            if (c && Array.isArray(c.clickEvents)) { n0 += c.clickEvents.length; c.clickEvents.length = 0; }
-                        }
-                    } catch (e) { /* 忽略 */ }
-                    (n.children || []).forEach((k) => { n0 += clearClickEvents(k); });
-                    return n0;
-                };
-                /** 把一棵子树里的 Label 文字改掉（按属性特征识别 Label：有 string 字段） */
-                const setAllText = (n, str) => {
-                    let n0 = 0;
-                    try {
-                        for (const c of (n.components || [])) {
-                            if (c && typeof c.string === 'string' && c.string !== '') { c.string = str; n0++; }
-                        }
-                    } catch (e) { /* 忽略 */ }
-                    (n.children || []).forEach((k) => { n0 += setAllText(k, str); });
-                    return n0;
-                };
-                /** 造我们的窗体（克隆原版外壳） */
-                const gpnCfgBuildWin = (origWin, ccg) => {
-                    try {
-                        if (gpnCfgWin && gpnCfgWin.isValid) return gpnCfgWin;
+                        if (panel && panel.isValid) return panel;
                         const clone = ccg.instantiate(origWin);
                         clone.name = 'gpnConfigWindow';
-                        // ① 移除克隆体上的 SettingWindow 组件（它会读存档、刷它自己那 20 个引用、跑原版逻辑）
-                        let removed = 0;
-                        try {
-                            for (const c of (clone.components || []).slice()) {
-                                if (c && c.node === clone) { try { c.destroy(); removed++; } catch (e) { /* 忽略 */ } }
-                            }
-                        } catch (e) { /* 忽略 */ }
-                        // ② 清掉所有原版点击事件（点我们的窗绝不能改原版设置）
-                        const cleared = clearClickEvents(clone);
-                        // ③ 标题改「模组设置」
-                        const titleNode = findByName(clone, 'Title', 0);
-                        const titleChanged = titleNode ? setAllText(titleNode, '模组设置') : 0;
-                        // ④ 清空内容区，放一行我们自己的占位
-                        const elements = findByName(clone, 'elements', 0);
-                        let rowsBefore = 0;
-                        if (elements) {
-                            rowsBefore = (elements.children || []).length;
-                            // ★ 先量原版行的真实尺寸（清空前，从第一行读）
-                            let rowW = gpnCfgRowW, rowH = gpnCfgRowH;
-                            try {
-                                const first = (elements.children || [])[0];
-                                const cs0 = first ? ((first.components || []).find((x) => x && x.contentSize) || {}).contentSize : null;
-                                if (cs0) { rowW = Math.round(cs0.width); rowH = Math.round(cs0.height); }
-                                gpnCfgLog('量得原版行：行宽 ' + rowW + ' 行高 ' + rowH + '（第一行=' + (first ? first.name : '?') + '）');
-                            } catch (e) { gpnCfgLog('量行尺寸出错：' + e); }
-                            // ★ 清空原版 20 行
-                            (elements.children || []).slice().forEach((k) => { try { k.removeFromParent(); k.destroy(); } catch (e) { /* 忽略 */ } });
-                            // ★ 停用 Layout（我们自己摆 3 列网格）
-                            let layoutOff = false;
-                            try {
-                                const lay = (elements.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined);
-                                if (lay) { lay.enabled = false; layoutOff = true; }
-                            } catch (e) { /* 忽略 */ }
-                            // ★ 开关清单（key 必须与 FEATURES/features.json 一致；label 取 features.json 的 _对照 名称）
-                                                        // ★ 主从依赖：子开关在【父开关关闭】时置灰（只影响界面，值保留；逻辑层 gpnFollowMergeOn 同样会拦住）
-                            const gpnCfgDeps = { starfruitFollowMerge: 'starfruit' };
-                            const gpnCfgMasterLabel = { starfruit: '星星果系' };
-                            const gpnCfgRows = {};
-                            gpnCfgLog('依赖表 = ' + JSON.stringify(gpnCfgDeps));
-                            const gpnCfgItems = [
-                                { key: 'chilibean', label: '巴豆' },
-                                { key: 'spikerock', label: '钢地刺' },
-                                { key: 'bloomingheart', label: '心蕊' },
-                                { key: 'nightshade', label: '暗影龙葵' },
-                                { key: 'turnip', label: '白萝卜' },
-                                { key: 'sweetpotato', label: '甜薯' },
-                                { key: 'tallnut', label: '高坚果' },
-                                { key: 'perfumeshroom', label: '香水菇' },
-                                { key: 'starfruit', label: '星星果系' },
-                                { key: 'starfruitFollowMerge', label: '　└ 追击合并' },
-                                { key: 'noctarine', label: '暗影油桃' },
-                                { key: 'zoybeanpod', label: '腐尸豆荚' },
-                                { key: 'dandelion', label: '蒲公英' },
-                                { key: 'pepperpult', label: '甜椒投手' },
-                                { key: 'hurrikale', label: '飓风甘蓝' },
-                                { key: 'phatbeet', label: '魔音甜菜' },
-                                { key: 'garlic', label: '大蒜' },
-                                { key: 'snowpea', label: '寒冰射手' },
-                                { key: 'redstinger', label: '红针花' },
-                                { key: 'murkadamia', label: '暗影夏威夷果' },
-                                { key: 'splitpea', label: '裂荚射手' },
-                                { key: 'pushPlantFix', label: '推植物修复' },
-                                { key: 'verboseLog', label: '诊断日志' },
-                            ];
-                            // ★ 逐行生成并摆成 3 列网格（【整行染色】方案 —— 原版二态项同款）
-                            try {
-                                const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
-                                const sz = CS(elements) || { width: 1916.4, height: 1440 };
-                                const cols = 2;                                  // 用户要求：一行两个就够了
-                                const cw = Math.max(320, Math.floor(sz.width / cols) - 10);
-                                const ch = rowH || 140;
-                                const GREEN = ccg.color(20, 255, 0, 255);      // 与引擎 SettingWindow 的 GREEN 一致
-                                const RED = ccg.color(255, 0, 0, 255);        // 同上：原版二态项 = 绿开 / 红关
-                                                                // ★ 分组标题行（只显示文字、不染色、不可点）
-                                try {
-                                    const hdr = ccg.instantiate(gpnCfgWinRow);
-                                    hdr.name = 'gpnGroupHeader';
-                                    (hdr.children || []).slice().forEach((c2) => {
-                                        const nm = String(c2.name || '');
-                                        if (nm.indexOf('ToolTip') === 0) return;
-                                        try { c2.active = false; } catch (eH1) { /* 忽略 */ }
-                                        try { c2.removeFromParent(); } catch (eH2) { /* 忽略 */ }
-                                        try { c2.destroy(); } catch (eH3) { /* 忽略 */ }
-                                    });
-                                    clearClickEvents(hdr);
-                                    setAllText(findByName(hdr, 'ToolTip', 0) || hdr, '【植物】');
-                                    try { for (const c of (hdr.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eH4) { /* 忽略 */ }
-                                    const uth = (hdr.components || []).find((x) => x && x.setContentSize);
-                                    if (uth && uth.setContentSize) uth.setContentSize(cw * cols, Math.max(60, Math.floor(ch * 0.6)));
-                                    hdr.setPosition(0, 0);
-                                    elements.addChild(hdr);
-                                } catch (eH) { gpnCfgLog('造分组标题失败：' + eH); }
-let gpnCfgBuilding = true;   // ★ 建行期间禁止刷新（否则建到 starfruit 就会触发一次"半成品刷新"）
-                                let idx = 0, made = 0, tinted = 0;
-                                gpnCfgItems.forEach((it) => {
-                                    try {
-                                        const row = ccg.instantiate(gpnCfgWinRow);
-                                        row.name = 'gpnRow_' + it.key;
-                                        // 只留 ToolTip（文字），其余（齿轮/▲▼）先隐藏再销毁
-                                        (row.children || []).slice().forEach((c2) => {
-                                            const nm = String(c2.name || '');
-                                            if (nm.indexOf('ToolTip') === 0) return;
-                                            try { c2.active = false; } catch (eA) { /* 忽略 */ }
-                                            try { c2.removeFromParent(); } catch (e1) { /* 忽略 */ }
-                                            try { c2.destroy(); } catch (e3) { /* 忽略 */ }
-                                        });
-                                        clearClickEvents(row);
-                                        setAllText(findByName(row, 'ToolTip', 0) || row, it.label);
-                                        // 停用 Widget（否则会覆盖我们的坐标）
-                                        try { for (const c of (row.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eW) { /* 忽略 */ }
-                                        const utr = (row.components || []).find((x) => x && x.setContentSize);
-                                        if (utr && utr.setContentSize) utr.setContentSize(cw, ch);
-                                        // ★ 行底 Sprite（原版就是靠它的 color 表示二态：绿=开/红=关）
-                                        let rowSprite = null;
-                                        try {
-                                            for (const c of (row.components || [])) {
-                                                if (c && c.spriteFrame !== undefined && c.color !== undefined) { rowSprite = c; break; }
-                                            }
-                                        } catch (eS) { /* 忽略 */ }
-                                        // ★ 右侧"开/关"小字：**克隆现成的 ToolTip 节点**（不新建 Label，规避 Error 3804）
-                                        let stateLabel = null;
-                                        try {
-                                            const tplTip = findByName(row, 'ToolTip', 0);
-                                            if (tplTip) {
-                                                const st = ccg.instantiate(tplTip);
-                                                st.name = 'gpnState';
-                                                try { for (const c of (st.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eW2) { /* 忽略 */ }
-                                                row.addChild(st);
-                                                st.setPosition(Math.floor(cw / 2) - 60, 0);
-                                                stateLabel = st;
-                                            }
-                                        } catch (eL) { /* 忽略 */ }
-                                        // ★ 子开关的父键（有父且父关 ⇒ 本行置灰、不可点）
-                                        const masterKey = gpnCfgDeps[it.key] || null;
-                                        let uiOp = null;
-                                        try {
-                                            uiOp = (row.components || []).find((x) => x && typeof x.opacity === 'number');
-                                            if (!uiOp) uiOp = row.addComponent(ccg.UIOpacity);
-                                        } catch (eO) { /* 忽略 */ }
-                                                                                const gpnCfgGrey = ccg.color(110, 104, 98, 255);
-                                        const gpnCfgGreyTxt = ccg.color(150, 145, 140, 255);
-                                        const applyState = (on) => {
-                                            const blocked = !!(masterKey && !featOn(masterKey));
-                                            try {
-                                                if (rowSprite) { rowSprite.color = blocked ? gpnCfgGrey : (on ? GREEN : RED); tinted++; }
-                                            } catch (e1) { /* 忽略 */ }
-                                            try { if (uiOp) uiOp.opacity = blocked ? 120 : 255; } catch (eO2) { /* 忽略 */ }
-                                            try {
-                                                setAllText(stateLabel || row, blocked
-                                                    ? ('需先开启' + (gpnCfgMasterLabel[masterKey] || masterKey))
-                                                    : (on ? '开' : '关'));
-                                                if (stateLabel && blocked) {
-                                                    // 置灰时文字也变浅（更容易看出"不可操作"）
-                                                    try { for (const c of (stateLabel.components || [])) { if (c && c.color !== undefined) c.color = gpnCfgGreyTxt; } } catch (eT) { /* 忽略 */ }
-                                                } else if (stateLabel) {
-                                                    try { for (const c of (stateLabel.components || [])) { if (c && c.color !== undefined) c.color = ccg.color(255, 255, 255, 255); } } catch (eT2) { /* 忽略 */ }
-                                                }
-                                            } catch (e2) { /* 忽略 */ }
-                                            if (blocked) gpnCfgLog("行已置灰（父关）：" + it.key + " ⇒ 颜色=暗灰");
-                                            return blocked;
-                                        };
-                                        applyState(featOn(it.key));
-                                        const col = idx % cols, rIdx = Math.floor(idx / cols);
-                                        row.setPosition(-Math.floor(sz.width / 2) + Math.floor(cw / 2) + col * cw, -(ch / 2) - rIdx * ch);
-                                        elements.addChild(row);
-                                        // ★ 整行可点：立即生效 + 更新颜色/文字
-                                        let tapLock = 0;
-                                        row.on('touch-end', (ev) => {
-                                            try {
-                                                const now = Date.now();
-                                                if (now - tapLock < 300) return;
-                                                tapLock = now;
-                                                if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
-                                                                                                // ★ 父开关关着 ⇒ 本行不可点（提示原因）
-                                                if (masterKey && !featOn(masterKey)) {
-                                                    gpnCfgLog('子开关被拦下：' + it.label + '(' + it.key + ') 需先开启 ' + (gpnCfgMasterLabel[masterKey] || masterKey));
-                                                    return;
-                                                }
-                                                const next = !featOn(it.key);
-                                                featSet(it.key, next);
-                                                // ★ 先更新界面（即便后面 apply 数据出错，界面也必须刷新）
-                                                applyState(next);
-                                                let applied = '未 apply';
-                                                try {
-                                                    if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); applied = '已 apply'; }
-                                                    else { applied = '数据补丁不可用(' + (typeof gpnApplyDataPatch) + ')'; }
-                                                } catch (eA) { applied = 'apply 出错：' + eA; }
-                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (next ? '开(绿)' : '关(红)') + ' ｜ ' + applied);
-                                            } catch (e) { warn('【配置界面】切换开关出错', e); }
-                                        });
-                                                                                gpnCfgRows[it.key] = {
-                                            applyState: applyState,
-                                            masterOf: () => (masterKey ? featOn(masterKey) : true),
-                                        };
-                                        // 若本次切换的是某行的父，刷新所有子行显示
-                                        if (!gpnCfgBuilding && Object.keys(gpnCfgDeps).some((k) => gpnCfgDeps[k] === it.key)) {
-                                            gpnCfgLog('【诊断】本次切换的是父：' + it.key + ' ⇒ 进入 refresh 分支（子行数=' + Object.keys(gpnCfgRows).length + '）');
-                                            Object.keys(gpnCfgRows).forEach((k) => {
-                                                try {
-                                                    const bk = gpnCfgDeps[k] || null;
-                                                    const r = gpnCfgRows[k].applyState(featOn(k));
-                                                    if (bk) gpnCfgLog('【诊断】refresh ' + k + ' ｜ 自身=' + featOn(k) + ' 父(' + bk + ')=' + featOn(bk) + ' ⇒ applyState 返回 blocked=' + r);
-                                                } catch (eR) { gpnCfgLog('【诊断】refresh ' + k + ' 出错：' + eR); }
-                                            });
-                                        }
-                                        made++; idx++;
-                                    } catch (e) { gpnCfgLog('造行失败 ' + it.key + '：' + e); }
-                                });
-                                try {
-                                    const perCol = Math.max(1, Math.ceil(made / cols));
-                                    const needH = Math.max(sz.height, perCol * ch + ch);
-                                    const ut3 = (elements.components || []).find((x) => x && x.setContentSize);
-                                    if (ut3 && ut3.setContentSize) ut3.setContentSize(sz.width, needH);
-                                    gpnCfgLog('网格：' + cols + ' 列，行宽 ' + cw + ' 行高 ' + ch + '，内容区高度 ' + needH);
-                                } catch (e) { /* 忽略 */ }
-                                gpnCfgLog('已铺开关行 ' + made + ' 行（整行染色 ' + tinted + ' 次）；Layout 停用=' + layoutOff);
-                                gpnCfgBuilding = false;   // ★ 建行结束 ⇒ 允许刷新
-                                try {
-                                    Object.keys(gpnCfgRows).forEach((k) => { try { gpnCfgRows[k].applyState(featOn(k)); } catch (eR0) { /* 忽略 */ } });
-                                    gpnCfgLog('建行完毕：已统一刷新 ' + Object.keys(gpnCfgRows).length + ' 行显示');
-                                } catch (eR00) { /* 忽略 */ }
-                                gpnCfgLog('注册表键 = [' + Object.keys(gpnCfgRows).join(', ') + '] 共 ' + Object.keys(gpnCfgRows).length + ' 个');
-                                // 【诊断】看第一行里各子节点的坐标/尺寸/锚点 ⇒ 用来定位"文本错位"
-                                try {
-                                    const anyRow = (elements.children || [])[0];
-                                    const dumpOne = (n, d) => {
-                                        if (!n || d > 2) return;
-                                        let cs = '?', ap = '?';
-                                        try {
-                                            const u = (n.components || []).find((x) => x && x.contentSize);
-                                            if (u) { cs = u.contentSize.width + 'x' + u.contentSize.height; ap = u.anchorX + ',' + u.anchorY; }
-                                        } catch (e) { /* 忽略 */ }
-                                        gpnCfgLog('  行内 ' + '|--'.repeat(d) + n.name + ' pos=' + n.position.x + ',' + n.position.y + ' size=' + cs + ' anchor=' + ap);
-                                        (n.children || []).forEach((k) => dumpOne(k, d + 1));
-                                    };
-                                    if (anyRow) dumpOne(anyRow, 0);
-                                    // 额外：看每行有几个带 string 的节点（Label），文字分别是什么
-                                    try {
-                                        const cnt = (n) => { let c = 0; try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string') c++; } } catch (e) { /* 忽略 */ } (n.children || []).forEach((k) => { c += cnt(k); }); return c; };
-                                        const texts = (n) => { let a = []; try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string') a.push(JSON.stringify(String(x.string).slice(0, 12))); } } catch (e) { /* 忽略 */ } (n.children || []).forEach((k) => { a = a.concat(texts(k)); }); return a; };
-                                        (elements.children || []).slice(0, 3).forEach((r2) => {
-                                            gpnCfgLog('  Label诊断 ' + r2.name + ' 数量=' + cnt(r2) + ' 文字=' + texts(r2).join('/'));
-                                        });
-                                    } catch (e) { /* 忽略 */ }
-                                } catch (e) { /* 忽略 */ }
-                            } catch (e) { gpnCfgLog('铺行出错：' + e); }
-                            if (elements.updateLayout) elements.updateLayout();
+                        try { for (const c of (clone.components || []).slice()) { if (c && c.node === clone) { try { c.destroy(); } catch (e0) { /* 忽略 */ } } } } catch (e1) { /* 忽略 */ }
+                        const cleared = clearClicks(clone);
+                        const titleNode = findDeep(clone, 'Title', 0);
+                        const titleN = titleNode ? setText(titleNode, '模组设置') : 0;
+                        panelRowsBox = findDeep(clone, 'elements', 0);
+                        // 量原版行尺寸（清空前，从第一行读）
+                        if (panelRowsBox) {
+                            const first = (panelRowsBox.children || [])[0];
+                            const cs0 = first ? sizeOf(first) : null;
+                            if (cs0) { rowW = Math.round(cs0.width); rowH = Math.round(cs0.height); }
+                            const csBox = sizeOf(panelRowsBox);
+                            if (csBox) contentW = csBox.width;
+                            killChildren(panelRowsBox, false);         // 清空原版 20 行
+                            try { const lay = (panelRowsBox.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined); if (lay) lay.enabled = false; } catch (e2) { /* 忽略 */ }
                         }
-                        // ⑤ 自己绑"关闭"（红 X 的原版事件已被清掉，否则点它没反应）
-                        const exitNode = findByName(clone, 'buttonExit', 0);
-                        let exitBound = 0;
+                        // 关闭按钮：自己绑（原版事件已清）
+                        const exitNode = findDeep(clone, 'buttonExit', 0);
                         if (exitNode) {
-                            const closeWin = (ev) => {
-                                try {
-                                    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
-                                    clone.active = false;
-                                    if (gpnCfgOrigWin) gpnCfgOrigWin.active = true;   // 关我们的窗 ⇒ 回到原版设置窗
-                                    gpnCfgLog('已关闭我们的配置窗体（回到原版设置窗）');
-                                } catch (e) { warn('【配置界面】关闭窗体出错', e); }
-                            };
-                            if (exitNode.on) { exitNode.on('touch-end', closeWin); exitBound++; }
-                            (exitNode.children || []).forEach((k) => { try { if (k.on) { k.on('touch-end', closeWin); exitBound++; } } catch (e) { /* 忽略 */ } });
+                            const closeIt = () => { try { clone.active = false; if (origWin) origWin.active = true; clog('已关闭配置窗体'); } catch (e) { /* 忽略 */ } };
+                            try { exitNode.on('touch-end', closeIt); } catch (e3) { /* 忽略 */ }
+                            (exitNode.children || []).forEach((k) => { try { k.on('touch-end', closeIt); } catch (e4) { /* 忽略 */ } });
                         }
-                        // ⑥ 挂到原窗的父节点（同一个 Canvas），初始隐藏
-                        const parent = origWin.parent;
                         clone.active = false;
-                        parent.addChild(clone);
-                        gpnCfgWin = clone;
-                        gpnCfgLog('窗体已建：组件清理 ' + removed + ' 个 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleChanged + ' 处 / 关闭按钮绑 ' + exitBound + ' 处');
-                        gpnCfgLog('内容区：原有行 ' + rowsBefore + ' 行已清空，放入占位 ' + (elements ? ((elements.children || []).length) : '?') + ' 行');
+                        origWin.parent.addChild(clone);
+                        panel = clone;
+                        clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
                         return clone;
                     } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
-                };
-                /** 插入入口行（幂等：已插过就不重复） */
-                const gpnCfgTryInsert = (origWin, ccg) => {
+                }
+
+                /* ---------- 建 23 行（打开窗体时懒建一次） ---------- */
+                function buildRows(ccg) {
                     try {
-                        if (gpnCfgRowDone || !origWin || origWin.active === false) return;
-                        const elements = findByName(origWin, 'elements', 0);
-                        if (!elements) return;
-                        const kids = elements.children || [];
-                        if (kids.some((k) => k && k.name === 'gpnConfigRow')) { gpnCfgRowDone = true; return; }
-                        const tpl = kids.find((k) => String(k.name) === 'KeyBinds') || kids[kids.length - 1];
-                        if (!tpl) { gpnCfgLog('找不到可作模板的入口行'); return; }
-                        const row = ccg.instantiate(tpl);
-                        row.name = 'gpnConfigRow';
-                        gpnCfgWinRow = tpl;
-                        // 只留 ToolTip + website（齿轮），其余（import/export 的▲▼）整颗删掉
-                        let cut = 0;
-                        (row.children || []).slice().forEach((c2) => {
-                            const nm = String(c2.name || '');
-                            if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
-                            try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
-                            try { c2.destroy(); } catch (e3) { /* 忽略 */ }
-                            cut++;
-                        });
-                        const cleared = clearClickEvents(row);
-                        const texts = setAllText(findByName(row, 'ToolTip', 0) || row, '配置界面');
-                        // 自己绑点击：打开我们的窗体（★ 加"同一次点击只处理一次"的守卫：
-                        //   行与齿轮都会收到 touch-end，日志里曾出现"已打开" ×2）
-                        let gpnCfgOpenLock = 0;
-                        const onClick = (ev) => {
+                        if (!panelRowsBox || entries.length) return;
+                        const cols = 2;
+                        const cw = Math.max(320, Math.floor(contentW / cols) - 10);
+                        const ch = rowH || 140;
+                        // 分组标题
+                        try {
+                            const hdr = ccg.instantiate(entryTemplate);
+                            hdr.name = 'gpnGroupHeader';
+                            killChildren(hdr, true);
+                            clearClicks(hdr);
+                            noWidget(hdr);
+                            setText(findDeep(hdr, 'ToolTip', 0) || hdr, '【植物】');
+                            setSize(hdr, cw * cols, Math.max(60, Math.floor(ch * 0.6)));
+                            hdr.setPosition(0, 0);
+                            hdr.active = false;                     // 先不显示，等统一摆位
+                            panelRowsBox.addChild(hdr);
+                        } catch (eH) { clog('造分组标题失败：' + eH); }
+                        // 23 行
+                        INFO.forEach((it) => {
                             try {
-                                const now = Date.now();
-                                if (now - gpnCfgOpenLock < 400) return;      // 防重复
-                                gpnCfgOpenLock = now;
-                                if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
-                                const ccg2 = (typeof cc !== 'undefined' && cc) ? cc : null;
-                                const w = gpnCfgWin || gpnCfgBuildWin(gpnCfgOrigWin, ccg2);
-                                if (!w) { gpnCfgLog('窗体创建失败'); return; }
-                                if (w.active === true) { gpnCfgLog('窗体已经是打开状态（忽略重复触发）'); return; }
-                                gpnCfgOrigWin.active = false;   // 关掉原版设置窗
-                                w.active = true;                // 打开我们的窗
-                                gpnCfgLog('已打开我们的配置窗体');
-                            } catch (e) { warn('【配置界面】打开窗体出错', e); }
-                        };
-                        try { if (row.on) row.on('touch-end', onClick); } catch (e) { /* 忽略 */ }
-                        const web = findByName(row, 'website', 0);
-                        try { if (web && web.on) web.on('touch-end', onClick); } catch (e) { /* 忽略 */ }
-                        elements.addChild(row);
-                        if (elements.updateLayout) elements.updateLayout();
-                        gpnCfgRowDone = true;
-                        gpnCfgLog('入口行已插入：删掉 ' + cut + ' 个多余子节点、清点击 ' + cleared + ' 处、文字改写 ' + texts + ' 处');
-                        const after = (elements.children || []).map((k) => k.name);
-                        gpnCfgLog('插入后 elements 子节点：[' + after.join(', ') + ']');
+                                const row = ccg.instantiate(entryTemplate);
+                                row.name = 'gpnRow_' + it.key;
+                                killChildren(row, true);
+                                clearClicks(row);
+                                noWidget(row);
+                                setSize(row, cw, ch);
+                                setText(findDeep(row, 'ToolTip', 0) || row, it.label);
+                                // 状态小字：克隆 ToolTip，放到行内右侧
+                                let stateLab = null;
+                                try {
+                                    const tip = findDeep(row, 'ToolTip', 0);
+                                    if (tip) {
+                                        const st = ccg.instantiate(tip);
+                                        st.name = 'gpnState';
+                                        noWidget(st);
+                                        row.addChild(st);
+                                        st.setPosition(Math.floor(cw / 2) - 70, 0);
+                                        stateLab = st;
+                                    }
+                                } catch (eS) { /* 忽略 */ }
+                                const e = { key: it.key, label: it.label, master: it.master || null, masterLabel: null, row: row, sprite: findSprite(row), labelNode: stateLab };
+                                entries.push(e);
+                                let lock = 0;
+                                row.on('touch-end', () => {
+                                    try {
+                                        const now = Date.now();
+                                        if (now - lock < 300) return;
+                                        lock = now;
+                                        if (e.master && !featOn(e.master)) { clog('已拦下：' + e.key + ' 需先开启 ' + (e.master || '')); return; }
+                                        const next = !featOn(e.key);
+                                        featSet(e.key, next);
+                                        renderAll();                                   // ★ 全量重画（父变 ⇒ 子立刻变灰）
+                                        try { if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') gpnApplyDataPatch.apply(); } catch (eA) { /* 忽略 */ }
+                                        clog('切换：' + e.label + '(' + e.key + ') ⇒ ' + (next ? '开' : '关'));
+                                    } catch (err) { warn('【配置界面】切换出错', err); }
+                                });
+                                row.active = false;                        // 先不显示，等统一摆位
+                                panelRowsBox.addChild(row);
+                            } catch (eR) { clog('造行失败 ' + it.key + '：' + eR); }
+                        });
+                        // 补上父名字（用于"需先开启XXX"文案）
+                        entries.forEach((e) => { if (e.master) { const m = entries.find((x) => x.key === e.master); e.masterLabel = m ? m.label : e.master; } });
+                        // 统一摆位（标题 + 23 行）
+                        let idx = 0;
+                        (panelRowsBox.children || []).forEach((k) => {
+                            try {
+                                if (k.name === 'gpnGroupHeader') {
+                                    k.setPosition(0, -Math.floor((Math.max(60, Math.floor(ch * 0.6))) / 2));
+                                    k.active = true;
+                                    return;
+                                }
+                                const col = idx % cols, r = Math.floor(idx / cols);
+                                const hdrH = Math.max(60, Math.floor(ch * 0.6));
+                                k.setPosition(-Math.floor(contentW / 2) + Math.floor(cw / 2) + col * cw, -(hdrH) - (ch / 2) - r * ch);
+                                k.active = true;
+                                idx++;
+                            } catch (eP) { /* 忽略 */ }
+                        });
+                        const perCol = Math.max(1, Math.ceil(idx / cols));
+                        const needH = Math.max(1440, Math.max(60, Math.floor(ch * 0.6)) + perCol * ch + ch);
+                        setSize(panelRowsBox, contentW, needH);
+                        if (panelRowsBox.updateLayout) panelRowsBox.updateLayout();
+                        clog('已铺 ' + idx + ' 行（2 列，行宽 ' + cw + '，行高 ' + ch + '，内容区高度 ' + needH + '）');
+                        // 【诊断】确认每行真的找到了 sprite 与状态 Label（避免"看着像改了、其实没改到"）
+                        entries.slice(0, 4).forEach((e) => {
+                            try {
+                                clog('  行自检 ' + e.key + ' ｜ sprite=' + (e.sprite ? '有' : '无')
+                                    + ' ｜ 状态Label=' + (e.labelNode ? '有' : '无')
+                                    + (e.sprite ? (' ｜ 当前色=' + e.sprite.color.r + ',' + e.sprite.color.g + ',' + e.sprite.color.b) : ''));
+                            } catch (eD) { /* 忽略 */ }
+                        });
+                        renderAll();
+                    } catch (e) { warn('【配置界面】建行出错', e); }
+                }
+
+                /* ---------- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---------- */
+                function ensureEntry() {
+                    try {
+                        if (!origWin || origWin.active === false) { lastWinActive = false; return; }
+                        if (lastWinActive) return;
+                        lastWinActive = true;
+                        const ccg = ccNode();
+                        if (!ccg) return;
+                        const box = findDeep(origWin, 'elements', 0);
+                        if (!box) { if (missLog++ < 3) clog('找不到原版 elements'); return; }
+                        if ((box.children || []).some((k) => k && k.name === 'gpnConfigRow')) {
+                            if (panelRowsBox) buildRows(ccg);       // 入口行已在 ⇒ 只需保证行已建
+                            return;
+                        }
+                        if (!entryTemplate) {
+                            const kids = box.children || [];
+                            entryTemplate = kids.find((k) => String(k.name) === 'KeyBinds') || kids[kids.length - 1];
+                        }
+                        if (!entryTemplate) { clog('找不到可作模板的原版行'); return; }
+                        const er = buildEntryRow(ccg);
+                        box.addChild(er);
+                        if (box.updateLayout) box.updateLayout();
+                        clog('入口行已插入（模板=' + entryTemplate.name + '）');
                     } catch (e) { warn('【配置界面】插入入口行出错', e); }
-                };
-                /** 找到原版设置窗并挂 onEnable（挂上后：开设置窗 ⇒ 插入口行 + 顺手把窗体建出来） */
-                let hooked = false;
-                const findAndHook = () => {
+                }
+
+                function hookWin() {
                     try {
                         if (hooked) return true;
-                        const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+                        const ccg = ccNode();
                         const dir = ccg && ccg.director;
                         const scene = dir && dir.getScene ? dir.getScene() : null;
-                        if (!scene || !ccg) return false;
+                        if (!scene) return false;
                         let comp = null;
                         const walk = (n) => {
                             if (!n || comp) return;
-                            try {
-                                for (const c of (n.components || [])) {
-                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
-                                    if (cn === 'SettingWindow') { comp = c; return; }
-                                }
-                            } catch (e) { /* 忽略 */ }
+                            try { for (const c of (n.components || [])) { const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || ''); if (cn === 'SettingWindow') { comp = c; return; } } } catch (e) { /* 忽略 */ }
                             (n.children || []).forEach(walk);
                         };
                         walk(scene);
                         if (!comp) return false;
-                        gpnCfgOrigWin = comp.node;
+                        origWin = comp.node;
                         const proto = Object.getPrototypeOf(comp);
                         const origOn = proto.onEnable;
-                        if (typeof origOn !== 'function') { gpnCfgLog('原型没有 onEnable，无法挂钩'); return false; }
+                        if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
                         proto.onEnable = function () {
                             const r = origOn.apply(this, arguments);
-                            try {
-                                gpnCfgOrigWin = this.node;
-                                gpnCfgRowDone = false;        // 每次打开都确保入口行在位（幂等判断会跳过已存在的）
-                                setTimeout(() => gpnCfgTryInsert(gpnCfgOrigWin, (typeof cc !== 'undefined' && cc) ? cc : null), 300);
-                            } catch (e) { /* 忽略 */ }
+                            try { origWin = this.node; lastWinActive = false; setTimeout(ensureEntry, 300); } catch (e) { /* 忽略 */ }
                             return r;
                         };
                         hooked = true;
-                        gpnCfgLog('已挂上原版设置窗的 onEnable（打开设置窗时插入入口行）');
+                        clog('已挂上原版设置窗 onEnable（打开设置窗时插入入口行）');
                         return true;
                     } catch (e) { warn('【配置界面】挂钩出错', e); return false; }
-                };
-                let tries = 0;
+                }
+
+                let ticks = 0;
                 setInterval(() => {
                     try {
-                        if (!hooked && !findAndHook()) {
-                            tries++;
-                            if (tries % 10 === 1) gpnCfgLog('还没找到原版 SettingWindow 组件（第 ' + tries + ' 次）');
-                            return;
-                        }
-                        // 兜底：万一 onEnable 没触发，也在窗已打开时补插一次
-                        gpnCfgTryInsert(gpnCfgOrigWin, (typeof cc !== 'undefined' && cc) ? cc : null);
+                        if (!hooked && !hookWin()) { ticks++; return; }
+                        // 兜底轮询：入口行可能被原版窗体重建而丢失
+                        ensureEntry();
+                        // 窗体开着且行还没建 ⇒ 补建
+                        if (panel && panel.active === true && !entries.length && panelRowsBox) buildRows(ccNode());
                     } catch (e) { /* 忽略 */ }
-                }, 2000);
-                gpnCfgLog('代码版本 = ' + gpnCfgV + '（入口行=配置界面+蓝齿轮；点它打开我们的窗体）');
+                }, 1000);
+                clog('已就绪（版本 ' + gpnCfgV + '：入口行=配置界面+蓝齿轮；点它打开配置窗体）');
             } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
