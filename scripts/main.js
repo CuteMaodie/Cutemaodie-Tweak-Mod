@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v12';
+                const gpnCfgV = 'v13';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5705,146 +5705,77 @@ export default {
                                 { key: 'pushPlantFix', label: '推植物修复' },
                                 { key: 'verboseLog', label: '诊断日志' },
                             ];
-                            // ★ 胶囊开关（自绘）：外圈浅底 + 内部绿(开)/深灰(关) + 可动滑块 + ON/OFF
-                            const gpnCfgMakeSwitch = (parent, on, onToggle) => {
-                                let step = 'start';
-                                try {
-                                    const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
-                                    // ⚠️ Cocos Error 3804：Graphics 必须在节点**进入场景树之后**再加，否则 onLoad 拿不到渲染数据
-                                    const node = new ccg.Node('gpnSwitch');
-                                    const ut = node.addComponent(ccg.UITransform);
-                                    ut.setContentSize(130, 74);
-                                    node.setPosition(352, 10);
-                                    parent.addChild(node);            // ★ 先入树
-                                    step = 'node-in-tree';
-                                    const g = node.addComponent(ccg.Graphics);   // ★ 后加 Graphics
-                                    step = 'graphics-added';
-                                    const kn = new ccg.Node('knob');
-                                    const utk = kn.addComponent(ccg.UITransform);
-                                    utk.setContentSize(58, 58);
-                                    node.addChild(kn);
-                                    const gk = kn.addComponent(ccg.Graphics);
-                                    step = 'knob-ready';
-                                    const labNode = new ccg.Node('state');
-                                    const utl = labNode.addComponent(ccg.UITransform);
-                                    utl.setContentSize(126, 30);
-                                    labNode.setPosition(0, -58);
-                                    node.addChild(labNode);
-                                    const L2 = labNode.addComponent(ccg.Label);
-                                    L2.fontSize = 32;
-                                    step = 'label-ready';
-                                    const draw = (state) => {
-                                        try {
-                                            g.clear();
-                                            g.fillColor = ccg.color(238, 226, 196, 255);
-                                            g.roundRect(-65, -37, 130, 74, 34);
-                                            g.fill();
-                                            g.strokeColor = ccg.color(120, 90, 60, 255);
-                                            g.lineWidth = 5;
-                                            g.roundRect(-65, -37, 130, 74, 34);
-                                            g.stroke();
-                                            g.fillColor = state ? ccg.color(56, 196, 74, 255) : ccg.color(96, 86, 80, 255);
-                                            g.roundRect(-59, -31, 118, 62, 29);
-                                            g.fill();
-                                        } catch (e) { /* 忽略 */ }
-                                        try {
-                                            gk.clear();
-                                            gk.fillColor = ccg.color(252, 250, 244, 255);
-                                            gk.circle(0, 0, 29);
-                                            gk.fill();
-                                            gk.strokeColor = ccg.color(110, 80, 60, 255);
-                                            gk.lineWidth = 4;
-                                            gk.circle(0, 0, 29);
-                                            gk.stroke();
-                                            kn.setPosition(state ? 30 : -30, 0);
-                                        } catch (e) { /* 忽略 */ }
-                                        try {
-                                            L2.string = state ? '开' : '关';
-                                            L2.color = state ? ccg.color(255, 255, 255, 255) : ccg.color(226, 216, 206, 255);
-                                        } catch (e) { /* 忽略 */ }
-                                    };
-                                    let cur = !!on;
-                                    draw(cur);
-                                    step = 'drawn';
-                                    let tapLock = 0;
-                                    node.on('touch-end', (ev) => {
-                                        try {
-                                            const now = Date.now();
-                                            if (now - tapLock < 300) return;
-                                            tapLock = now;
-                                            if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
-                                            cur = !cur;
-                                            draw(cur);
-                                            if (onToggle) onToggle(cur);
-                                        } catch (e) { /* 忽略 */ }
-                                    });
-                                    return true;
-                                } catch (e) { warn('【配置界面】造开关控件出错（步骤=' + step + '）', e); return false; }
-                            };
-                            // ===== 【构造函数探针】量清哪些操作安全（纯诊断，成功后删除）=====
-                            try {
-                                const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
-                                const probe = (name, fn) => { try { const r = fn(); gpnCfgLog('探针 OK  ' + name + (r ? (' ⇒ ' + r) : '')); return r; } catch (e) { gpnCfgLog('探针 FAIL ' + name + ' ⇒ ' + e); return null; } };
-                                // ① new cc.Node
-                                const n1 = probe('① new cc.Node', () => new ccg.Node('probe1'));
-                                // ② +UITransform
-                                if (n1) probe('② +cc.UITransform', () => { const u = n1.addComponent(ccg.UITransform); u.setContentSize(200, 80); return 'size 200x80'; });
-                                // ③ +Sprite
-                                if (n1) probe('③ +cc.Sprite', () => { const s = n1.addComponent(ccg.Sprite); return 'ok'; });
-                                // ④ 克隆现成帧并赋给新建 Sprite（从原版行里的按钮节点上取）
-                                try {
-                                    const anyBtn = findByName(gpnCfgWinRow, 'website', 0) || gpnCfgWinRow;
-                                    if (anyBtn && n1) {
-                                        const srcSprite = (anyBtn.components || []).find((c) => c && c.spriteFrame);
-                                        const sp = (n1.components || []).find((c) => c && c.spriteFrame !== undefined);
-                                        if (srcSprite && sp) {
-                                            gpnCfgLog('探针信息：来源节点=' + anyBtn.name + ' 帧名=' + (srcSprite.spriteFrame && (srcSprite.spriteFrame.name || srcSprite.spriteFrame._name) || '(无名)'));
-                                            probe('④ set spriteFrame（克隆现成帧）', () => { sp.spriteFrame = srcSprite.spriteFrame; return 'ok'; });
-                                            probe('⑥ sprite.color 染色', () => { sp.color = ccg.color(120, 200, 120, 255); return 'ok'; });
-                                        } else { gpnCfgLog('探针信息：找不到带 spriteFrame 的组件（src=' + !!srcSprite + ' dst=' + !!sp + '）'); }
-                                    }
-                                } catch (e) { gpnCfgLog('探针 ④/⑥ 异常：' + e); }
-                                // ⑤ +Label
-                                const n2 = probe('⑤ new cc.Node + cc.Label', () => { const n = new ccg.Node('probe2'); n.addComponent(ccg.UITransform).setContentSize(240, 40); const l = n.addComponent(ccg.Label); l.string = '探针'; l.fontSize = 30; return 'ok'; });
-                                // 入树测试（把探针节点挂到 elements 下，看会不会渲染报错）
-                                if (n1 && elements) { probe('⑦ elements.addChild(探针节点)', () => { elements.addChild(n1); n1.setPosition(0, 400); return 'ok'; }); }
-                                if (n2 && elements) { probe('⑧ addChild(探针Label)', () => { elements.addChild(n2); n2.setPosition(0, 300); return 'ok'; }); }
-                            } catch (e) { gpnCfgLog('探针整体异常：' + e); }
-                            // ★ 逐行生成并摆成 3 列网格
+                            // ★ 逐行生成并摆成 3 列网格（【整行染色】方案 —— 原版二态项同款）
                             try {
                                 const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
                                 const sz = CS(elements) || { width: 1916.4, height: 1440 };
                                 const cols = 3;
                                 const cw = Math.max(320, Math.floor(sz.width / cols) - 4);
                                 const ch = rowH || 140;
-                                let idx = 0, made = 0, sw = 0;
+                                const GREEN = ccg.color(20, 255, 0, 255);      // 与引擎 SettingWindow 的 GREEN 一致
+                                const RED = ccg.color(255, 0, 0, 255);        // 同上：原版二态项 = 绿开 / 红关
+                                let idx = 0, made = 0, tinted = 0;
                                 gpnCfgItems.forEach((it) => {
                                     try {
                                         const row = ccg.instantiate(gpnCfgWinRow);
                                         row.name = 'gpnRow_' + it.key;
+                                        // 只留 ToolTip（文字），其余（齿轮/▲▼）先隐藏再销毁
                                         (row.children || []).slice().forEach((c2) => {
                                             const nm = String(c2.name || '');
-                                            if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
+                                            if (nm.indexOf('ToolTip') === 0) return;
                                             try { c2.active = false; } catch (eA) { /* 忽略 */ }
                                             try { c2.removeFromParent(); } catch (e1) { /* 忽略 */ }
                                             try { c2.destroy(); } catch (e3) { /* 忽略 */ }
                                         });
                                         clearClickEvents(row);
                                         setAllText(findByName(row, 'ToolTip', 0) || row, it.label);
+                                        // 停用 Widget（否则会覆盖我们的坐标）
                                         try { for (const c of (row.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eW) { /* 忽略 */ }
                                         const utr = (row.components || []).find((x) => x && x.setContentSize);
                                         if (utr && utr.setContentSize) utr.setContentSize(cw, ch);
+                                        // ★ 行底 Sprite（原版就是靠它的 color 表示二态：绿=开/红=关）
+                                        let rowSprite = null;
+                                        try {
+                                            for (const c of (row.components || [])) {
+                                                if (c && c.spriteFrame !== undefined && c.color !== undefined) { rowSprite = c; break; }
+                                            }
+                                        } catch (eS) { /* 忽略 */ }
+                                        // ★ 右侧"开/关"小字：**克隆现成的 ToolTip 节点**（不新建 Label，规避 Error 3804）
+                                        let stateLabel = null;
+                                        try {
+                                            const tplTip = findByName(row, 'ToolTip', 0);
+                                            if (tplTip) {
+                                                const st = ccg.instantiate(tplTip);
+                                                st.name = 'gpnState';
+                                                try { for (const c of (st.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eW2) { /* 忽略 */ }
+                                                row.addChild(st);
+                                                st.setPosition(Math.floor(cw / 2) - 60, 0);
+                                                stateLabel = st;
+                                            }
+                                        } catch (eL) { /* 忽略 */ }
+                                        const applyState = (on) => {
+                                            try { if (rowSprite) { rowSprite.color = on ? GREEN : RED; tinted++; } } catch (e1) { /* 忽略 */ }
+                                            try { setAllText(stateLabel || row, on ? '开' : '关'); } catch (e2) { /* 忽略 */ }
+                                        };
+                                        applyState(featOn(it.key));
                                         const col = idx % cols, rIdx = Math.floor(idx / cols);
                                         row.setPosition(-Math.floor(sz.width / 2) + Math.floor(cw / 2) + col * cw, -(ch / 2) - rIdx * ch);
                                         elements.addChild(row);
-                                        const swObj = gpnCfgMakeSwitch(row, featOn(it.key), (v) => {
+                                        // ★ 整行可点：立即生效 + 更新颜色/文字
+                                        let tapLock = 0;
+                                        row.on('touch-end', (ev) => {
                                             try {
-                                                featSet(it.key, v);
+                                                const now = Date.now();
+                                                if (now - tapLock < 300) return;
+                                                tapLock = now;
+                                                if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+                                                const next = !featOn(it.key);
+                                                featSet(it.key, next);
                                                 if (gpnApplyDataPatch) gpnApplyDataPatch();
-                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (v ? '开' : '关'));
+                                                applyState(next);
+                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (next ? '开(绿)' : '关(红)'));
                                             } catch (e) { warn('【配置界面】切换开关出错', e); }
                                         });
-                                        if (swObj) sw++;
                                         made++; idx++;
                                     } catch (e) { gpnCfgLog('造行失败 ' + it.key + '：' + e); }
                                 });
@@ -5855,7 +5786,7 @@ export default {
                                     if (ut3 && ut3.setContentSize) ut3.setContentSize(sz.width, needH);
                                     gpnCfgLog('网格：' + cols + ' 列，行宽 ' + cw + ' 行高 ' + ch + '，内容区高度 ' + needH);
                                 } catch (e) { /* 忽略 */ }
-                                gpnCfgLog('已铺开关行 ' + made + ' 行（含胶囊开关 ' + sw + ' 个）；Layout 停用=' + layoutOff);
+                                gpnCfgLog('已铺开关行 ' + made + ' 行（整行染色 ' + tinted + ' 次）；Layout 停用=' + layoutOff);
                             } catch (e) { gpnCfgLog('铺行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
                         }
