@@ -623,6 +623,7 @@ const gpnGateRegistry = new WeakMap();
  *   所以这个标志只用来让"本实例"安静下来，不会影响新实例。 */
 let gpnDisposed = false;
 let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
+let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
 function gpnGatedBody(original, featKey, body) {
     try {
         if (original && typeof original === 'function') {
@@ -688,6 +689,7 @@ function gpnPierceZh(n) {
 
 function makeDataPatcher(PvZ2ObjectContainer) {
     const undo = [];
+    try { gpnDataBox = PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }   // 供配置界面诊断打印
 
     const track = (objdata, key) => {
         // 同一个字段只记【第一次】的原值：apply() 会被调用多次
@@ -5500,6 +5502,7 @@ export default {
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
     _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
+    _applyDataPatch: gpnApplyDataPatch, // 同上：数据补丁（自检用来验证两态）
     _gatedBody: gpnGatedBody,            // 同上：门禁包装器本体（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
@@ -5943,6 +5946,19 @@ function findSprite(n) {
                             for (const k of (node.children || [])) walk(k, depth + 1);
                         };
                         walk(scene, 0);
+                        // 同时打印数据层的真实值（用于区分：数据没改 / 界面没刷）
+                        try {
+                            const box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : null;
+                            const show = (alias) => {
+                                try {
+                                    const list = box && box.PlantProps;
+                                    if (!Array.isArray(list)) return alias + '=?';
+                                    const hit = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0];
+                                    return alias + '=' + (hit && hit.objdata ? hit.objdata.SunCost : '?');
+                                } catch (e) { return alias + '=err'; }
+                            };
+                            clog('数据层现值：' + show('nightshade') + ' ｜ ' + show('noctarine') + ' ｜ ' + show('spikerock'));
+                        } catch (eD) { /* 忽略 */ }
                         clog('刷新卡片阳光：找到 ' + found + ' 个卡片组件，成功刷新 ' + done + ' 个'
                             + (ids.length ? ('（ID: ' + ids.join(',') + '）') : ''));
                     } catch (e) { clog('刷新卡片阳光出错：' + e); }
@@ -6492,7 +6508,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l2 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l3 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
