@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -302,6 +302,16 @@ function featLoad() {
  *  若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
 const VANILLA = {
     spikerock: { sunCost: 250, maxSpike: 3, cooldown: 5 },
+    // ↓ 以下全部来自 `Objects/PlantProps.json` 逐字段核对（并与用户手工提供的清单交叉验证过）
+    splitpea: { sunCost: 125, cooldown: 5 },
+    nightshade: { sunCost: 75, cooldown: 5 },
+    tallnut: { cooldown: 20 },
+    starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
+    noctarine: { sunCost: 150, cooldown: 15 },
+    dandelion: { sunCost: 275, cooldown: 15 },
+    garlic: { sunCost: 50, cooldown: 5, eatDamage: 150 },
+    redstinger: { sunCost: 150, tier1: 0.3333333, tier2: 0.2 },
+    pepperpult: { sunCost: 200, cooldown: 20 },
 };
 
 const CFG = {
@@ -1126,7 +1136,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
         // 暗影龙葵：涨价
         if (featOn('nightshade')) {
-            setField('PlantProps', 'nightshade', 'SunCost', CFG.nightshade.sunCost);
+            setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
         }
         // 高坚果：免疫位移。这是原版字段，vanilla 里只有 turnip(白萝卜) 和 gravebuster 开了它。
         // 注意【不要】动 canBeChied()：那个开关是「整体打断气功 + 保护身后」，不是我们要的。
@@ -1137,7 +1147,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
             // v2.8.2：种植冷却 20 -> 30 秒
             if (CFG.tallnut.cooldown > 0) {
-                setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', CFG.tallnut.cooldown);
+                setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
             }
         }
 
@@ -1145,11 +1155,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         if (featOn('starfruit')) {
             // !! v2.8.2 补：CFG 里一直有 sunCost:125，但【从来没有写进数据】——
             //    v2.8.1 之前游戏里星星果一直是 150 阳光。这里补上。
-            setField('PlantProps', 'starfruit', 'SunCost', CFG.starfruit.sunCost);
+            setField('PlantProps', 'starfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.sunCost : VANILLA.starfruit.sunCost);
             // 本次：天使星星果 175 阳光、流星果 550 阳光（原版 500）+ 种植冷却 10 秒
-            setField('PlantProps', 'pinkstarfruit', 'SunCost', CFG.starfruit.pinkSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'SunCost', CFG.starfruit.shootingSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'Cooldown', CFG.starfruit.shootingCooldown);
+            setField('PlantProps', 'pinkstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.pinkSunCost : VANILLA.starfruit.pinkSunCost);
+            setField('PlantProps', 'shootingstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.shootingSunCost : VANILLA.starfruit.shootingSunCost);
+            setField('PlantProps', 'shootingstarfruit', 'Cooldown', featOn('starfruit') ? CFG.starfruit.shootingCooldown : VANILLA.starfruit.shootingCooldown);
             const STAR_PRJ = ['star', 'star1', 'star2', 'star_pf',
                 'pinkstar', 'pinkstar1', 'pinkstar2', 'pinkstar_pf',
                 'shootingstar', 'shootingstar1', 'shootingstar2', 'shootingstar_pf'];
@@ -1197,7 +1207,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用）----
         if (featOn('dandelion')) {
-            setField('PlantProps', 'dandelion', 'SunCost', CFG.dandelion.sunCost);
+            setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
             const DANDELION_KIND = { dandelion: 'normal', dandelion_blew: 'blew', dandelion_pf: 'pf' };
             const dlist = PvZ2ObjectContainer.ProjectileProps;
             if (Array.isArray(dlist)) {
@@ -1219,15 +1229,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ---- 大蒜：每口固定伤害 / 阳光 / 冷却（引擎字段就是 ReceivesDamageWhenEaten、Cooldown）----
         if (featOn('garlic')) {
-            setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', CFG.garlic.eatDamage);
-            setField('PlantProps', CFG.garlic.plantType, 'SunCost', CFG.garlic.sunCost);
-            setField('PlantProps', CFG.garlic.plantType, 'Cooldown', CFG.garlic.cooldown);
+            setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', featOn('garlic') ? CFG.garlic.eatDamage : VANILLA.garlic.eatDamage);
+            setField('PlantProps', CFG.garlic.plantType, 'SunCost', featOn('garlic') ? CFG.garlic.sunCost : VANILLA.garlic.sunCost);
+            setField('PlantProps', CFG.garlic.plantType, 'Cooldown', featOn('garlic') ? CFG.garlic.cooldown : VANILLA.garlic.cooldown);
         }
         // ---- 红针花：承伤倍率（越小越肉）+ 半防御半攻击形态的子弹击退 ----
         if (featOn('redstinger')) {
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', CFG.redstinger.tier1);
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', CFG.redstinger.tier2);
-            setField('PlantProps', CFG.redstinger.plantType, 'SunCost', CFG.redstinger.sunCost);
+            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', featOn('redstinger') ? CFG.redstinger.tier1 : VANILLA.redstinger.tier1);
+            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', featOn('redstinger') ? CFG.redstinger.tier2 : VANILLA.redstinger.tier2);
+            setField('PlantProps', CFG.redstinger.plantType, 'SunCost', featOn('redstinger') ? CFG.redstinger.sunCost : VANILLA.redstinger.sunCost);
             // 击退：inArea1（半防御半攻击）专用弹道是 redstinger_weak ——
             //   引擎 RedStinger.animationListener 里 inArea==1 时走 PeaTypeWeak，别名就是它，别的形态/植物都不用这条 ⇒
             //   直接写数据即可（引擎在 specialOnObjdataSet 里把这三个字段搬到子弹上，命中时自己调 knockBack）。
@@ -1249,7 +1259,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ---- 裂荚射手：阳光【显式写回原版 200】（原注释错写成「200 -> 225」；写一遍防被别的 mod 改掉）----
         if (featOn('splitpea')) {
-            setField('PlantProps', CFG.splitpea.plantType, 'SunCost', CFG.splitpea.sunCost);
+            setField('PlantProps', CFG.splitpea.plantType, 'SunCost', featOn('splitpea') ? CFG.splitpea.sunCost : VANILLA.splitpea.sunCost);
         }
         // ---- 寒冰射手：单格范围冰减速 + 概率冰锥（伤害跟随寒冰射手）----
         if (featOn('snowpea')) {
@@ -1281,10 +1291,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // 甜椒投手：阳光 + 种植冷却 + 灼烧标记
         if (featOn('pepperpult')) {
-            setField('PlantProps', 'pepperpult', 'SunCost', CFG.pepperpult.sunCost);
+            setField('PlantProps', 'pepperpult', 'SunCost', featOn('pepperpult') ? CFG.pepperpult.sunCost : VANILLA.pepperpult.sunCost);
             // !! v2.8.2 修：真实字段叫 Cooldown，不叫 PacketCooldown ——
             //    之前写错了名字，等于凭空加了个没人读的字段，游戏里冷却一直是 20 秒。
-            setField('PlantProps', 'pepperpult', 'Cooldown', CFG.pepperpult.packetCooldown);
+            setField('PlantProps', 'pepperpult', 'Cooldown', featOn('pepperpult') ? CFG.pepperpult.packetCooldown : VANILLA.pepperpult.cooldown);
             // 给甜椒弹道打上「落地要灼烧」的私有标记。
             // v2.7.1 修正：运行时 ProjectileProps 用的是【小写对象别名】
             //   pepper / pepper1 / pepper2 / pepper_pf，
@@ -1324,7 +1334,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
         if (featOn('noctarine')) {
-            setField('PlantProps', 'noctarine', 'SunCost', CFG.noctarine.sunCost);
+            setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
             // 注意：油桃有【两个】伤害来源 —— 数据里的 Actions 爆炸（一次性）和毒气云每跳伤害。
             // v2.5.0 只改了后者，所以实测还是掉 20。这里把爆炸也一起减半。
             const plist = PvZ2ObjectContainer.PlantProps;
@@ -1449,6 +1459,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
     };
 
     ChiliBean.prototype.specialPlantOnEaten = function (dmg, zombie, hpBefore, hpAfter) {
+        if (!featOn('chilibean')) return original.call(this, dmg, zombie, hpBefore, hpAfter);
         if (!(hpAfter <= 0) || !zombie) return;              // 和原版一致：只有被啃死才触发
 
         const factor = (this.MintBoosted && this.objdataOwn.MintStunDurationFactor > 0)
@@ -1503,6 +1514,7 @@ function makeSpikerockPatch(SpikerockPlant) {
     const original = SpikerockPlant.prototype.setSpikeSlot;
 
     SpikerockPlant.prototype.setSpikeSlot = function (remain) {
+        if (!featOn('spikerock')) return original.apply(this, arguments);
         const max = (this._objdataOwn && this._objdataOwn.MaxSpike) || CFG.spikerock.maxSpike;
         if (remain === undefined || remain === null) remain = max;
         remain = Math.ceil(remain);
@@ -1575,6 +1587,7 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
     const original = NightShadePlant.prototype._shoot;
 
     NightShadePlant.prototype._shoot = function (isFood) {
+        if (!featOn('nightshade')) return rec.original.apply(this, arguments);
         const self = this;
         // 原版 _shoot 是 async 且没有返回值，这里保持行为一致，只多打一个标记
         return (async () => {
@@ -2151,6 +2164,7 @@ function makeSweetPotatoPatch(Plant) {
     // 挂在基类上 + 用 Plant_Type 判定，所以不管甜薯的预制体实际挂哪个类都会命中。
     Plant.prototype.heal = function (amount) {
         if (this.Plant_Type === KEY) {
+            if (!featOn('sweetpotato')) return recHeal.original.call(this, amount);
             const mult = CFG.sweetpotato.healReceivedMultiplier;
             if (mult > 0 && mult !== 1 && typeof amount === 'number') amount *= mult;
             if (dbgOn(CFG.sweetpotato.debugLog)) log('甜薯 heal → ' + amount);
@@ -2208,6 +2222,7 @@ function makeTurnipPatch(Plant) {
 
     Plant.prototype.defaultDealNormalDamage = function (dmg, type) {
         if (this.Plant_Type === KEY) {
+            if (!featOn('turnip')) return rec.original.call(this, dmg, type);
             if (this.__gpnHitLocked) return this.health;      // 锁没解开：这次伤害整体作废
             this.__gpnHitLocked = true;
             const self = this;
@@ -2238,6 +2253,8 @@ function makeBloomingHeartVictimPatch(Plant) {
 
     // 引擎：Plant.eat(dmg, zombie) -> this.dealDamage(dmg, 0)
     Plant.prototype.eat = function (dmg, zombie) {
+        // gate: bloomingheart victim
+        if (!featOn('bloomingheart')) return recEat.original.apply(this, arguments);
         const mult = SCALE[normalizeType(this.Plant_Type)];
         if (mult !== undefined && typeof dmg === 'number' && dmg > 0
             && zombie && zombie.BloomingHeartDefenceRateList
@@ -2278,6 +2295,7 @@ function makePerfumeDurationPatch(PerfumeShroomPlant) {
     }
     const rec = methodRecord(PerfumeShroomPlant, 'explode');
     PerfumeShroomPlant.prototype.explode = function () {
+        if (!featOn('perfumeshroom')) return rec.original.apply(this, arguments); // gate: perfume-explode
         try {
             if (this._objdataOwn && this._objdataOwn.Duration !== want) this._objdataOwn.Duration = want;
         } catch (e) { /* 拿不到就按原版跑，不影响功能 */ }
@@ -2337,6 +2355,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     // 兜底取特效：真实心蕊命中时它会把 prefab 传进来，顺手缓存
     if (recPush) {
         Zombie.prototype.pushBloomingHeartDefenceRateList = function (list, par) {
+            if (!featOn('perfumeshroom')) return recPush.original.call(this, list, par); // gate: perfume-push
             if (par && !buff.par) { buff.par = par; log('减防特效 prefab 已缓存（来自真实心蕊命中）'); }
             return recPush.original.call(this, list, par);
         };
@@ -2356,6 +2375,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
 
     Fire.prototype.updateAsJalapenoFire = function (dt, rect) {
         const r = recFire.original.call(this, dt, rect);
+        if (!featOn('perfumeshroom')) return r; // gate: perfume-fire
         try {
             if (!this.dead && this.inLnC) {
                 const lane = Square.getLane(this.inLnC.lIndex);
@@ -2514,6 +2534,7 @@ function makeNoctarinePatch(NoctarinePlant) {
 
     const rec = methodRecord(NoctarinePlant, 'explode');
     NoctarinePlant.prototype.explode = function () {
+        if (!featOn('noctarine')) return rec.original.apply(this, arguments);
         const od = this.objdataOwn;
         if (od) {
             if (CFG.noctarine.normalLifespan > 0) od.NormalLifespan = CFG.noctarine.normalLifespan;
@@ -2544,6 +2565,7 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
 
     const rec = methodRecord(ZoybeanPodPlant, 'summon');
     ZoybeanPodPlant.prototype.summon = function () {
+        if (!featOn('zoybeanpod')) return rec.original.apply(this, arguments);
         const od = this.objdataOwn;
         if (od) {
             // 每次都重写（不依赖上次的状态，池化复用也安全）
@@ -2716,6 +2738,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
         const recLane = methodRecord(DandelionPlant, 'getEnemyLane');
         DandelionPlant.prototype.getEnemyLane = function () {
             try {
+                if (!featOn('dandelion')) return recLane.original.apply(this, arguments);
                 if (this.blew) return -2;                              // 吹风恢复期：保留引擎语义
                 if (this.isAirRaidPlant) return recLane.original.apply(this, arguments);
                 const off = gpnDandelionPickLaneFirst(this);
@@ -3290,6 +3313,7 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const rec = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
+            if (!featOn('pepperpult') || !(this.__gpnBurnRatio > 0)) return rec.original.apply(this, arguments);
             gpnPepperEnforceReflect(this);   // 【修 BUG】同上（兜底：任何命中入口都保证已归零）
             const r = rec.original.apply(this, arguments);
             try {
@@ -4103,6 +4127,7 @@ function makeHurrikalePatch(HurrikalePlant, Zombie, deps) {
         const rec = methodRecord(HurrikalePlant, 'animationListener');
         HurrikalePlant.prototype.animationListener = function (evt) {
             const r = rec.original.apply(this, arguments);      // ① 原版照跑
+            if (!featOn('hurrikale')) return r;
             try {
                 if (evt && evt.name === 'push') {
                     gpnHurrikaleBlowAll(this, deps);
@@ -4591,6 +4616,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'playHitOnCharacter');
         P.playHitOnCharacter = function (target) {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('phatbeet')) return r;
             try {
                 // ★ 命中特效资源：在这一刻把本株的 hitPar 存进缓存 —— 此刻它**必然活着**，
                 //   之后就算它死了/被铲了、被标记僵尸的持续特效也照样放得出来 ✓
@@ -4806,6 +4832,7 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
         const rec = methodRecord(RedStingerPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('redstinger')) return r;
             try {
                 if (this.__gpnFormManual && typeof this.__gpnForm === 'number') this.inArea = this.__gpnForm;
             } catch (e) { warn('红针花：恢复手动形态出错', e); }
@@ -4957,6 +4984,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'onShadowPoweredChanged');
         P.onShadowPoweredChanged = function () {
             try { gpnMkJellyTune(this); } catch (e) { warn('夏威夷果：算暗影物质数值出错', e); }
+            if (!featOn('murkadamia')) { try { return rec.original.apply(this, arguments); } catch (e) { return undefined; } }
             let r;
             try { r = rec.original.apply(this, arguments); }
             catch (e) { warn('夏威夷果：原版 onShadowPoweredChanged 出错', e); }
@@ -6117,26 +6145,26 @@ let ticks = 0;
                 clog('已就绪（版本 ' + gpnCfgV + '：入口行=配置界面+蓝齿轮；点它打开配置窗体）');
             } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
-            if (featOn('chilibean')) {
+            {   // install: no featOn wrap
                 const chili = makeChiliPatches(chiliMod.ChiliBean, zombieMod.Zombie, zombieMod.ZombiePoison);
                 recs.push(...chili.recs);
             }
 
             // ---- 3. 钢地刺 ----
-            if (featOn('spikerock')) {
+            {   // install: no featOn wrap
                 const spy = makeSpikerockPatch(spikerockMod.SpikerockPlant);
                 if (spy) recs.push(spy);
             }
 
             // ---- 4. 心蕊 ----
-            if (featOn('bloomingheart')) {
+            {   // install: no featOn wrap
                 const bloom = makeBloomingHeartPatch(bloomMod.bloomingheartShot,
                     charMgrMod.Rectangle, squareMod.Square);
                 if (bloom) recs.push(bloom);
             }
 
             // ---- 5. 暗影龙葵：先重写 _shoot 打标记，再装穿透 ----
-            if (featOn('nightshade')) {
+            {   // install: no featOn wrap
                 const night = makeNightShadePatch(nightMod.NightShadePlant,
                     prjMod.PrjFunctions, ccMod.Vec2, characterMod.CharacterType);
                 if (night) recs.push(night);
@@ -6153,7 +6181,7 @@ let ticks = 0;
             }
 
             // ---- 18. 飓风甘蓝：全屏寒风 ----
-            if (featOn('hurrikale')) {
+            {   // install: no featOn wrap
                 const hur = makeHurrikalePatch(hurrikaleMod && hurrikaleMod.HurrikalePlant,
                     zombieMod && zombieMod.Zombie, {
                         Square: squareMod.Square,
@@ -6167,7 +6195,7 @@ let ticks = 0;
             }
 
             // ---- 19. 魔音甜菜 ----
-            if (featOn('phatbeet')) {
+            {   // install: no featOn wrap
                 const pb = makePhatBeetPatch(phatbeetMod && phatbeetMod.PhatBeetPlant, {
                     Square: squareMod.Square,
                     Rectangle: charMgrMod.Rectangle,
@@ -6189,7 +6217,7 @@ let ticks = 0;
                 if (spf) recs.push(...spf);
             }
             // ---- 23. 红针花：左键循环切换形态 ----
-            if (featOn('redstinger')) {
+            {   // install: no featOn wrap
                 const rs = makeRedStingerPatch(redStingerMod && redStingerMod.RedStingerPlant, {
                     cc: ccMod, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2,
                     Square: squareMod.Square, FrontYard: frontYardMod && frontYardMod.FrontYard,
@@ -6197,7 +6225,7 @@ let ticks = 0;
                 if (rs) recs.push(...rs);
             }
             // ---- 24. 暗影夏威夷果：暗影态本体隐身（视觉）+ 暗影物质耐久 + 打光后真隐身 ----
-            if (featOn('murkadamia')) {
+            {   // install: no featOn wrap
                 const mk = makeMurkadamiaPatch(murkadamiaMod && murkadamiaMod.MurkadamiaNutPlant, {
                     cc: ccMod,
                 });
@@ -6276,7 +6304,7 @@ let ticks = 0;
             }
 
             // ---- 16. 甜椒投手：落点 3x3 灼烧 ----
-            if (featOn('pepperpult')) {
+            {   // install: no featOn wrap
                 const burn = makePepperBurnPatch(shotMod.commonShot, {
                     Square: squareMod.Square,
                     SquareType: squareMod.SquareType,
@@ -6306,25 +6334,25 @@ let ticks = 0;
             }
 
             // ---- 6. 甜薯：自回血 + 受到治疗加成 ----
-            if (featOn('sweetpotato')) {
+            {   // install: no featOn wrap
                 const sweet = makeSweetPotatoPatch(plantMod.Plant);
                 if (sweet) recs.push(...sweet);
             }
 
             // ---- 7. 白萝卜：受伤间隔（挂在扣血叶子上，不影响覆盖层）----
-            if (featOn('turnip')) {
+            {   // install: no featOn wrap
                 const turnip = makeTurnipPatch(plantMod.Plant);
                 if (turnip) recs.push(turnip);
             }
 
             // ---- 8. 心蕊 DEBUFF -> 对心蕊/甜薯/热辣海枣的啃食伤害减免 ----
-            if (featOn('bloomingheart')) {
+            {   // install: no featOn wrap
                 const victim = makeBloomingHeartVictimPatch(plantMod.Plant);
                 if (victim) recs.push(victim);
             }
 
             // ---- 9. 香水菇：香水火 13.5 秒（原版 9）+ 施加 6 层心蕊 DEBUFF ----
-            if (featOn('perfumeshroom')) {
+            {   // install: no featOn wrap
                 const perfume = makePerfumeShroomPatch(perfumeMod.PerfumeFire, squareMod.Square,
                     zombieMod.Zombie, gfmMod.GroundFiresManager, buffCache);
                 if (perfume) recs.push(...perfume);
@@ -6336,7 +6364,7 @@ let ticks = 0;
             }
 
             // ---- 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5 ----
-            if (featOn('noctarine')) {
+            {   // install: no featOn wrap
                 const noct = makeNoctarinePatch(noctarineMod.NoctarinePlant);
                 if (noct) recs.push(noct);
                 const gas = makeNoctarineGasPatch(gasMod.noctarineBuffParticle);
@@ -6344,25 +6372,25 @@ let ticks = 0;
             }
 
             // ---- 14. 腐尸豆荚：召唤权重 ----
-            if (featOn('zoybeanpod')) {
+            {   // install: no featOn wrap
                 const zoy = makeZoybeanPatch(zoybeanMod.ZoybeanPodPlant);
                 if (zoy) recs.push(zoy);
             }
 
             // ---- 15. 蒲公英：额外一颗子弹 ----
-            if (featOn('dandelion')) {
+            {   // install: no featOn wrap
                 const dan = makeDandelionPatch(dandelionMod.DandelionPlant, squareMod.Square, shotMod.commonShot);
                 if (dan) recs.push(...dan);
             }
 
             // ---- 12. 推植物：跳过「不可推」的挡路植物（不再飞出屏幕）----
-            if (featOn('pushPlantFix')) {
+            {   // install: no featOn wrap
                 const pushFix = makePushSkipPatch(charMgrMod.footballmech);
                 if (pushFix) recs.push(...pushFix);
             }
 
             // ---- 11. 高坚果：同原始坚果，可扛 3 次巨人砸击 ----
-            if (featOn('tallnut')) {
+            {   // install: no featOn wrap
                 // !! WallNut.ts 导出的名字是 WallNutPlant（大写 N），不是 WallnutPlant ——
                 //    写错会拿到 undefined，补丁会「静默跳过」（v2.4.0 就是这个 BUG：扛 3 次砸击没生效）
                 const wallNutCls = wallNutMod.WallNutPlant || wallNutMod.WallnutPlant;
