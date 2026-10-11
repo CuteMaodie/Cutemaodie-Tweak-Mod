@@ -88,8 +88,97 @@ function featSet(name, on) {
     const next = (on !== false);
     const prev = FEATURES_LIVE[name] !== false;
     FEATURES_LIVE[name] = next;
+    if (prev !== next) { try { gpnFeatStorageSaveSoon(); } catch (e) { /* 忽略 */ } }
     return prev !== next;
 }
+
+/* ============================================================================
+ * 开关的持久化（GP-Next 官方存储 ctx.storage）
+ *   目标：配置界面里改过的开关状态，**退出游戏重进后保留**。
+ *   · 只存"布尔开关"（24 个键）；数值仍由代码里的 CFG 决定，不进存储；
+ *   · 启动优先级：代码默认 → features.json 的值（老玩家迁移）→ **存储里的值（最高）**；
+ *   · 官方 API（逐字核对指南）：
+ *       ctx.storage.open({ scope:'global', version:1, defaults, validate }) -> Promise<handle>
+ *       handle.read() -> Promise<T> ；handle.update(fn) -> Promise<T>
+ *   · 存储不可用（老版本 / 自测环境）⇒ 降级为"仅本次会话有效"，只打一条警告。
+ * ========================================================================== */
+const gpnFeatDefaults = {};
+for (const k of Object.keys(FEATURES)) gpnFeatDefaults[k] = FEATURES[k] !== false;
+
+let gpnFeatStore = null;
+let gpnFeatSaveTimer = null;
+
+function gpnFeatSnapshot() {
+    const o = {};
+    for (const k of Object.keys(gpnFeatDefaults)) o[k] = featOn(k);
+    return o;
+}
+
+function gpnFeatValidate(v) {
+    if (!v || typeof v !== 'object') return false;
+    for (const k of Object.keys(gpnFeatDefaults)) if (typeof v[k] !== 'boolean') return false;
+    return true;
+}
+
+async function gpnFeatStorageLoad(ctx) {
+    try {
+        if (!ctx || !ctx.storage || typeof ctx.storage.open !== 'function') {
+            warn('开关持久化：拿不到 ctx.storage ⇒ 本次改动只在本次会话有效（不写盘）');
+            return false;
+        }
+        gpnFeatStore = await ctx.storage.open({
+            scope: 'global',
+            version: 1,
+            defaults: Object.assign({}, gpnFeatDefaults),
+            validate: gpnFeatValidate,
+        });
+        const saved = await gpnFeatStore.read();
+        let applied = 0;
+        for (const k of Object.keys(gpnFeatDefaults)) {
+            if (typeof saved[k] === 'boolean') { FEATURES_LIVE[k] = saved[k]; applied++; }
+        }
+        const offList = Object.keys(gpnFeatDefaults).filter((k) => !featOn(k) && k !== 'verboseLog');
+        log('开关持久化：已从存储读入 ' + applied + ' 项' + (offList.length ? ('（已关闭：' + offList.join('、') + '）') : '（全部开启）'));
+        return true;
+    } catch (e) {
+        warn('开关持久化：读取失败 ⇒ 本次改动只在本次会话有效', e);
+        return false;
+    }
+}
+
+function gpnFeatStorageSaveSoon() {
+    if (!gpnFeatStore) return;
+    try {
+        if (gpnFeatSaveTimer) clearTimeout(gpnFeatSaveTimer);
+        gpnFeatSaveTimer = setTimeout(() => {
+            gpnFeatSaveTimer = null;
+            try {
+                const snap = gpnFeatSnapshot();
+                Promise.resolve(gpnFeatStore.update(() => snap))
+                    .then(() => {
+                        const offList = Object.keys(snap).filter((k) => !snap[k] && k !== 'verboseLog');
+                        log('开关持久化：已保存' + (offList.length ? ('（已关闭：' + offList.join('、') + '）') : '（全部开启）'));
+                    })
+                    .catch((e2) => warn('开关持久化：保存失败', e2));
+            } catch (e) { warn('开关持久化：保存出错', e); }
+        }, 300);
+    } catch (e) { warn('开关持久化：定时器出错', e); }
+}
+
+function gpnFeatStorageReset() {
+    try {
+        for (const k of Object.keys(gpnFeatDefaults)) FEATURES_LIVE[k] = gpnFeatDefaults[k];
+        if (gpnFeatStore) {
+            const snap = gpnFeatSnapshot();
+            Promise.resolve(gpnFeatStore.update(() => snap))
+                .then(() => log('开关持久化：已恢复默认并写回存储'))
+                .catch((e2) => warn('开关持久化：恢复默认写盘失败', e2));
+        } else {
+            log('开关持久化：已恢复默认（本次会话；无存储句柄）');
+        }
+    } catch (e) { warn('开关持久化：恢复默认出错', e); }
+}
+
 
 /** 诊断日志总开关（features.json 的 verboseLog）。注意它在 FEATURES 表里登记为 false ⇒ 默认关。 */
 function verboseOn() { return featOn('verboseLog'); }
@@ -5350,6 +5439,9 @@ export default {
     _config: CFG,
     _vanilla: VANILLA,                 // 同上：原版值表（"关掉开关时写回什么"的唯一出处）
     _features: FEATURES,               // 同上：自检用来核对开关表
+    _featDefaults: gpnFeatDefaults,     // 同上：出厂默认
+    _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
+    _featReset: gpnFeatStorageReset,    // 同上：恢复默认
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
@@ -5367,7 +5459,7 @@ export default {
     author: 'CuteMaodie',
     description: '23 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。',
 
-    setup() {
+    setup(ctx) {
         const IMPORTS = [
             'chunks:///_virtual/JSONs.ts',            // 0
             'chunks:///_virtual/Zombie.ts',           // 1
@@ -5409,7 +5501,9 @@ export default {
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
-        return featLoad().then(() => Promise.all(IMPORTS.map((m) => System.import(m).catch((e) => {
+        return featLoad()
+            .then(() => gpnFeatStorageLoad(ctx))
+            .then(() => Promise.all(IMPORTS.map((m) => System.import(m).catch((e) => {
             warn('模块载入失败 ' + m, e);
             return {};
         })))).then((mods) => {
