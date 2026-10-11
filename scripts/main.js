@@ -6288,9 +6288,25 @@ function hookWin() {
 
 let ticks = 0;
                 let gpnCfgTimer = null;
+                let gpnLastScene = '';
                 gpnCfgTimer = setInterval(() => {
                     try {
                         if (gpnDisposed) { clearInterval(gpnCfgTimer); return; }
+                        // ★ 切场景 ⇒ 重新把数据补丁落一遍。
+                        //   为什么（实机证据）：暗影龙葵关掉后，进关卡/沙盒里阳光仍是 125（我们的值），
+                        //   而 apply() 内部诊断显示它看到的开关已经是 false ⇒ 说明游戏在进关卡时会重新
+                        //   加载/重置数据，把启动时写下去的值覆盖掉了（readJsons 钩子实测没触发）。
+                        //   钢地刺能生效、龙葵不能，差别就在"关卡是否重新读它"。
+                        try {
+                            const _sc = sceneName();
+                            if (_sc && _sc !== gpnLastScene) {
+                                gpnLastScene = _sc;
+                                if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') {
+                                    const _ok = gpnApplyDataPatch.apply();
+                                    clog('切场景(' + _sc + ')后重新落地数据补丁：' + _ok);
+                                }
+                            }
+                        } catch (eS) { /* 只影响这一项 */ }
                         if (!hookWin()) { ticks++; return; }
                         // 兜底轮询：入口行可能被原版窗体重建而丢失
                         ensureEntry();
@@ -6588,7 +6604,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l7 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l8 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
