@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v16';
+                const gpnCfgV = 'v17';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5684,6 +5684,7 @@ export default {
                             const gpnCfgDeps = { starfruitFollowMerge: 'starfruit' };
                             const gpnCfgMasterLabel = { starfruit: '星星果系' };
                             const gpnCfgRows = {};
+                            gpnCfgLog('依赖表 = ' + JSON.stringify(gpnCfgDeps));
                             const gpnCfgItems = [
                                 { key: 'chilibean', label: '巴豆' },
                                 { key: 'spikerock', label: '钢地刺' },
@@ -5840,7 +5841,14 @@ let idx = 0, made = 0, tinted = 0;
                                         };
                                         // 若本次切换的是某行的父，刷新所有子行显示
                                         if (Object.keys(gpnCfgDeps).some((k) => gpnCfgDeps[k] === it.key)) {
-                                            try { Object.keys(gpnCfgRows).forEach((k) => { try { gpnCfgRows[k].applyState(featOn(k)); } catch (eR) { /* 忽略 */ } }); } catch (eR2) { /* 忽略 */ }
+                                            gpnCfgLog('【诊断】本次切换的是父：' + it.key + ' ⇒ 进入 refresh 分支（子行数=' + Object.keys(gpnCfgRows).length + '）');
+                                            Object.keys(gpnCfgRows).forEach((k) => {
+                                                try {
+                                                    const bk = gpnCfgDeps[k] || null;
+                                                    const r = gpnCfgRows[k].applyState(featOn(k));
+                                                    if (bk) gpnCfgLog('【诊断】refresh ' + k + ' ｜ 自身=' + featOn(k) + ' 父(' + bk + ')=' + featOn(bk) + ' ⇒ applyState 返回 blocked=' + r);
+                                                } catch (eR) { gpnCfgLog('【诊断】refresh ' + k + ' 出错：' + eR); }
+                                            });
                                         }
                                         made++; idx++;
                                     } catch (e) { gpnCfgLog('造行失败 ' + it.key + '：' + e); }
@@ -5853,6 +5861,7 @@ let idx = 0, made = 0, tinted = 0;
                                     gpnCfgLog('网格：' + cols + ' 列，行宽 ' + cw + ' 行高 ' + ch + '，内容区高度 ' + needH);
                                 } catch (e) { /* 忽略 */ }
                                 gpnCfgLog('已铺开关行 ' + made + ' 行（整行染色 ' + tinted + ' 次）；Layout 停用=' + layoutOff);
+                                gpnCfgLog('注册表键 = [' + Object.keys(gpnCfgRows).join(', ') + '] 共 ' + Object.keys(gpnCfgRows).length + ' 个');
                                 // 【诊断】看第一行里各子节点的坐标/尺寸/锚点 ⇒ 用来定位"文本错位"
                                 try {
                                     const anyRow = (elements.children || [])[0];
