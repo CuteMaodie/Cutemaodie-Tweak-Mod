@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v10';
+                const gpnCfgV = 'v11';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5707,69 +5707,79 @@ export default {
                             ];
                             // ★ 胶囊开关（自绘）：外圈浅底 + 内部绿(开)/深灰(关) + 可动滑块 + ON/OFF
                             const gpnCfgMakeSwitch = (parent, on, onToggle) => {
+                                let step = 'start';
                                 try {
                                     const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+                                    // ⚠️ Cocos Error 3804：Graphics 必须在节点**进入场景树之后**再加，否则 onLoad 拿不到渲染数据
                                     const node = new ccg.Node('gpnSwitch');
                                     const ut = node.addComponent(ccg.UITransform);
-                                    ut.setContentSize(120, 66);
-                                    node.setPosition(360, 0);
-                                    const g = node.addComponent(ccg.Graphics);
+                                    ut.setContentSize(130, 74);
+                                    node.setPosition(352, 10);
+                                    parent.addChild(node);            // ★ 先入树
+                                    step = 'node-in-tree';
+                                    const g = node.addComponent(ccg.Graphics);   // ★ 后加 Graphics
+                                    step = 'graphics-added';
                                     const kn = new ccg.Node('knob');
                                     const utk = kn.addComponent(ccg.UITransform);
-                                    utk.setContentSize(54, 54);
-                                    kn.addComponent(ccg.Graphics);
+                                    utk.setContentSize(58, 58);
                                     node.addChild(kn);
-                                    const lab = new ccg.Node('state');
-                                    const utl = lab.addComponent(ccg.UITransform);
-                                    utl.setContentSize(118, 26);
-                                    lab.setPosition(0, -60);
-                                    const L2 = lab.addComponent(ccg.Label);
-                                    L2.fontSize = 30;
-                                    node.addChild(lab);
+                                    const gk = kn.addComponent(ccg.Graphics);
+                                    step = 'knob-ready';
+                                    const labNode = new ccg.Node('state');
+                                    const utl = labNode.addComponent(ccg.UITransform);
+                                    utl.setContentSize(126, 30);
+                                    labNode.setPosition(0, -58);
+                                    node.addChild(labNode);
+                                    const L2 = labNode.addComponent(ccg.Label);
+                                    L2.fontSize = 32;
+                                    step = 'label-ready';
                                     const draw = (state) => {
                                         try {
                                             g.clear();
-                                            g.fillColor = ccg.color(240, 228, 196, 255);
-                                            g.roundRect(-60, -33, 120, 66, 30);
+                                            g.fillColor = ccg.color(238, 226, 196, 255);
+                                            g.roundRect(-65, -37, 130, 74, 34);
                                             g.fill();
                                             g.strokeColor = ccg.color(120, 90, 60, 255);
-                                            g.lineWidth = 4;
-                                            g.roundRect(-60, -33, 120, 66, 30);
+                                            g.lineWidth = 5;
+                                            g.roundRect(-65, -37, 130, 74, 34);
                                             g.stroke();
-                                            g.fillColor = state ? ccg.color(60, 200, 70, 255) : ccg.color(90, 80, 75, 255);
-                                            g.roundRect(-56, -29, 112, 58, 27);
+                                            g.fillColor = state ? ccg.color(56, 196, 74, 255) : ccg.color(96, 86, 80, 255);
+                                            g.roundRect(-59, -31, 118, 62, 29);
                                             g.fill();
-                                            const gk = kn.getComponent(ccg.Graphics);
+                                        } catch (e) { /* 忽略 */ }
+                                        try {
                                             gk.clear();
-                                            gk.fillColor = ccg.color(250, 250, 245, 255);
-                                            gk.circle(0, 0, 27);
+                                            gk.fillColor = ccg.color(252, 250, 244, 255);
+                                            gk.circle(0, 0, 29);
                                             gk.fill();
                                             gk.strokeColor = ccg.color(110, 80, 60, 255);
-                                            gk.lineWidth = 3;
-                                            gk.circle(0, 0, 27);
+                                            gk.lineWidth = 4;
+                                            gk.circle(0, 0, 29);
                                             gk.stroke();
-                                            kn.setPosition(state ? 28 : -28, 0);
+                                            kn.setPosition(state ? 30 : -30, 0);
+                                        } catch (e) { /* 忽略 */ }
+                                        try {
                                             L2.string = state ? '开' : '关';
-                                            L2.color = state ? ccg.color(255, 255, 255) : ccg.color(225, 215, 205);
+                                            L2.color = state ? ccg.color(255, 255, 255, 255) : ccg.color(226, 216, 206, 255);
                                         } catch (e) { /* 忽略 */ }
                                     };
                                     let cur = !!on;
                                     draw(cur);
+                                    step = 'drawn';
+                                    let tapLock = 0;
                                     node.on('touch-end', (ev) => {
                                         try {
-                                            let gpnCfgTapLock = 0;
                                             const now = Date.now();
-                                            if (now - gpnCfgTapLock < 300) return;
-                                            gpnCfgTapLock = now;
+                                            if (now - tapLock < 300) return;
+                                            tapLock = now;
                                             if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
                                             cur = !cur;
                                             draw(cur);
                                             if (onToggle) onToggle(cur);
                                         } catch (e) { /* 忽略 */ }
                                     });
-                                    parent.addChild(node);
-                                    return { node: node, set: (v) => { cur = !!v; draw(cur); } };
-                                } catch (e) { warn('【配置界面】造开关控件出错', e); return null; }
+                                    return true;
+                                } catch (e) { warn('【配置界面】造开关控件出错（步骤=' + step + '）', e); return false; }
                             };
                             // ★ 逐行生成并摆成 3 列网格
                             try {
@@ -5786,11 +5796,13 @@ export default {
                                         (row.children || []).slice().forEach((c2) => {
                                             const nm = String(c2.name || '');
                                             if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
-                                            try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
+                                            try { c2.active = false; } catch (eA) { /* 忽略 */ }
+                                            try { c2.removeFromParent(); } catch (e1) { /* 忽略 */ }
                                             try { c2.destroy(); } catch (e3) { /* 忽略 */ }
                                         });
                                         clearClickEvents(row);
                                         setAllText(findByName(row, 'ToolTip', 0) || row, it.label);
+                                        try { for (const c of (row.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (eW) { /* 忽略 */ }
                                         const utr = (row.components || []).find((x) => x && x.setContentSize);
                                         if (utr && utr.setContentSize) utr.setContentSize(cw, ch);
                                         const col = idx % cols, rIdx = Math.floor(idx / cols);
