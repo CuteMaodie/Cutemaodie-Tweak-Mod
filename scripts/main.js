@@ -5698,7 +5698,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v25';
+                const gpnCfgV = 'v26';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5799,6 +5799,29 @@ function findSprite(n) {
                     //   所以干脆不放。若将来想加回来：从 entryTemplate 里 clone 名为 website 的子节点挂到这里即可。
                     clearClicks(row);
                     setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
+                    // ★ 蓝色齿轮 = 「恢复默认」（用户要求：单击即执行，不二次确认）
+                    try {
+                        const webTpl = (entryTemplate.children || []).find((k) => String((k && k.name) || '').indexOf('website') === 0);
+                        if (webTpl) {
+                            const gear = ccg.instantiate(webTpl);
+                            gear.name = 'gpnResetGear';
+                            clearClicks(gear);                       // 去掉原版"打开网页"的事件
+                            let gearLock = 0;
+                            gear.on('touch-end', (ev) => {
+                                try {
+                                    const now = Date.now();
+                                    if (now - gearLock < 500) return;
+                                    gearLock = now;
+                                    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();   // 别连带打开面板
+                                    gpnFeatStorageReset();                   // 恢复默认 + 写回存储
+                                    renderAll();                             // 界面立刻刷新
+                                    clog('已点击齿轮：恢复默认（开关已重置并写回存储）');
+                                } catch (e) { warn('【配置界面】恢复默认出错', e); }
+                            });
+                            row.addChild(gear);
+                            clog('入口行：已加入恢复默认齿轮');
+                        } else { clog('入口行：模板里找不到 website 节点，齿轮未加入'); }
+                    } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
                     let locked = 0;
                     row.on('touch-end', () => {
                         try {
@@ -5826,6 +5849,7 @@ function findSprite(n) {
                                 if (blocked) { setText(e.labelNode, '关'); setRightAlign(e.labelNode, true); }
                                 else { setRightAlign(e.labelNode, false); setText(e.labelNode, on ? '开' : '关'); }
                             }
+                            if (e.hint) { try { for (const c of (e.hint.components || [])) { if (c && c.color !== undefined) c.color = blocked ? ccColor(210, 200, 190, 255) : ccColor(120, 110, 100, 255); } } catch (eHC) { } }
                             if (i < 3) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
                         } catch (err) { clog('render 出错 ' + e.key + '：' + err); }
                     });
@@ -5904,6 +5928,31 @@ function findSprite(n) {
                                 noWidget(row);
                                 setSize(row, cw, ch);
                                 setText(findDeep(row, 'ToolTip', 0) || row, it.label);
+                                // ★ 括号小字（照原版"最大帧率"那行的小字样式）：目前只有"诊断日志"需要
+                                let hintNode = null;
+                                if (it.key === 'verboseLog') {
+                                    try {
+                                        const tip2 = findDeep(row, 'ToolTip', 0);
+                                        if (tip2) {
+                                            const h = ccg.instantiate(tip2);
+                                            h.name = 'gpnHint';
+                                            noWidget(h);
+                                            for (const c of (h.components || [])) {
+                                                if (c && typeof c.string === 'string') {
+                                                    c.string = '(需重新启动游戏)';
+                                                    try { c.fontSize = Math.max(18, Math.round((c.fontSize || 32) * 0.5)); } catch (eF) { }
+                                                    try { c.lineHeight = Math.max(20, Math.round((c.lineHeight || 36) * 0.5)); } catch (eL2) { }
+                                                    try { c.color = ccColor(120, 110, 100, 255); } catch (eC) { }
+                                                }
+                                                if (c && c.isAlignLeft !== undefined) c.enabled = false;
+                                            }
+                                            row.addChild(h);
+                                            const rowCs = sizeOf(row);
+                                            h.setPosition(Math.floor((rowCs ? rowCs.width : 948) / 2) - 150, -(ch / 2) + 26);
+                                            hintNode = h;
+                                        }
+                                    } catch (eH2) { clog('小字添加失败：' + eH2); }
+                                }
                                 // 状态小字：克隆 ToolTip，放到行内右侧
                                 let stateLab = null;
                                 try {
@@ -5917,7 +5966,7 @@ function findSprite(n) {
                                         stateLab = st;
                                     }
                                 } catch (eS) { /* 忽略 */ }
-                                const e = { key: it.key, label: it.label, master: it.master || null, masterLabel: null, row: row, sprite: findSprite(row), labelNode: stateLab };
+                                const e = { key: it.key, label: it.label, master: it.master || null, masterLabel: null, row: row, sprite: findSprite(row), labelNode: stateLab, hint: hintNode };
                                 entries.push(e);
                                 let lock = 0;
                                 row.on('touch-end', () => {
