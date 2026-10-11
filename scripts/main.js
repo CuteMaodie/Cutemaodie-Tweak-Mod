@@ -3054,6 +3054,7 @@ let gpnUiProbeLastScene = '';
 let gpnTestToggles = null;
 let gpnTestToggles2 = null;
 let gpnTestDataPatch = null;
+let gpnVerSpike = null;      // 钢地刺专用验证（自动切 + 打印表值/活对象）
 
 /* ============================================================================
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
@@ -5523,6 +5524,39 @@ export default {
                 try {
                     setInterval(() => { gpnVerOn({ type: 'AUTO' }); }, 6000);
                 } catch (e) { warn('【验证】自动定时器安装失败', e); }
+                // ①b 【钢地刺专用】每 6 秒自动切钢地刺并**重新应用数据**，同时打印：
+                //      · 容器表里的阳光值（= 我们写入的结果）
+                //      · "活对象"的引用与取值（引擎 `getPlantProps()` 读的就是它）
+                //    目的：判断"表"与"活对象"是不是**同一个对象** ⇒ 决定 B′ 是"双写"还是"只改一处"。
+                try {
+                    gpnVerSpike = () => {
+                        try {
+                            const PC2 = jsonMod && jsonMod.PvZ2ObjectContainer;
+                            const hit = (name) => {
+                                try {
+                                    const list = PC2 && PC2[name];
+                                    if (!Array.isArray(list)) return null;
+                                    return list.find((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf('spikerock') !== -1) || null;
+                                } catch (e) { return null; }
+                            };
+                            const entry = hit('PlantProps');
+                            const before = featOn('spikerock');
+                            featSet('spikerock', !before);
+                            let reap = '(无数据补丁)';
+                            try {
+                                if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重应用'; }
+                            } catch (e) { reap = '重应用出错'; }
+                            const after = hit('PlantProps');
+                            const v = (after && after.objdata) ? after.objdata.SunCost : '(取不到)';
+                            log('【验证·钢地刺】开关 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
+                                + ' ｜ 场景=' + gpnVerScene() + ' ｜ 数据补丁 ' + reap
+                                + ' ｜ 表里 SunCost=' + v
+                                + ' ｜ 条目同一对象=' + (entry === after)
+                                + ' ｜ objdata 同一对象=' + (!!entry && !!after && entry.objdata === after.objdata));
+                        } catch (e) { warn('【验证·钢地刺】出错', e); }
+                    };
+                    setInterval(() => { if (gpnVerSpike) gpnVerSpike(); }, 6000);
+                } catch (e) { warn('【验证】钢地刺定时器安装失败', e); }
                 // ② 键盘 / ③ 鼠标（保留，作为佐证：能到的话日志里会写 keydown/mouseup）
                 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
                     document.addEventListener('mouseup', (ev) => {
@@ -5540,7 +5574,7 @@ export default {
                         } catch (e) { /* 只影响诊断 */ }
                     }, true);   // 捕获阶段：万一引擎在冒泡阶段吞掉事件，这里也能收到
                 }
-                log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；F7/F8 与"左上角点击"作为佐证');
+                log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；每 6 秒自动切一次钢地刺并打印表值/活对象');
             } catch (e) { warn('【验证】安装失败', e); }
 
             // ---- 2. 巴豆 ----
