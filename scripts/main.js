@@ -1477,7 +1477,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             try {
                 const _PM = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
                 if (_PM && typeof _PM.getPlantProps === 'function' && typeof CFG !== 'undefined') {
-                    _typeId = CFG.nightshade.plantType;
+                    _typeId = 'nightshade';   // ★ 修 BUG：CFG.nightshade 没有 plantType 字段（之前传 undefined ⇒ 引擎回退成豌豆射手）
                     const _gp = _PM.getPlantProps(_typeId);
                     if (_gp) {
                         _engineSun = _gp.SunCost;
@@ -6024,61 +6024,43 @@ function findSprite(n) {
                 //  数据（objdata.SunCost）我们早就改了；但已建卡片把阳光缓存在 _SUNCOST 里，
                 //  必须按引擎自己的惯用法「自赋值」一次，才会同时更新缓存与价格文字。
                 function gpnRefreshCardSunCost() {
-                    let found = 0, done = 0, ids = [];
+                    // ★ 探测版：先"看清卡片组件长什么样"，再做引擎同款刷新（SUNCOST 自赋值）。
+                    //   上次的实现按"typeof c._SUNCOST === number"去找，找到 0 个 —— 说明特征选错了，
+                    //   所以这次把**所有可疑组件**都打印出来（节点名/属性键/ID/值），用证据改。
+                    let found = 0, done = 0;
+                    const shapes = [];
                     try {
                         const ccg = ccNode();
                         const scene = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
-                        if (!scene) { clog('刷新卡片：拿不到场景'); return; }
+                        if (!scene) { clog('卡片探测：拿不到场景'); return; }
                         const seen = [];
                         const walk = (node, depth) => {
-                            if (!node || depth > 12 || seen.length > 4000) return;
+                            if (!node || depth > 14 || seen.length > 6000) return;
                             seen.push(node);
                             try {
                                 for (const c of (node.components || [])) {
                                     if (!c) continue;
-                                    if (typeof c._SUNCOST !== 'number') continue;   // 卡片组件特征
+                                    let keys = [];
+                                    try { keys = Object.keys(c); } catch (e) { keys = []; }
+                                    const hasSun = keys.indexOf('_SUNCOST') !== -1;
+                                    const hasPrice = keys.indexOf('_priceLB') !== -1;
+                                    const hasPF = keys.indexOf('PF') !== -1;
+                                    if (!hasSun && !hasPrice && !hasPF) continue;
                                     found++;
-                                    const id = c.ID;
-                                    if (ids.indexOf(id) === -1 && ids.length < 12) ids.push(id);
-                                    try { c.SUNCOST = c.SUNCOST; done++; } catch (e) { /* 忽略 */ }
+                                    if (shapes.length < 12) {
+                                        shapes.push(String(node.name || '?') + '[' + (hasSun ? 'S' : '-') + (hasPrice ? 'P' : '-') + (hasPF ? 'F' : '-') + ']'
+                                            + ' id=' + (c.ID !== undefined ? c.ID : '?')
+                                            + ' sun=' + (c._SUNCOST !== undefined ? c._SUNCOST : '?'));
+                                    }
+                                    // 引擎同款刷新：自赋值 ⇒ setter 同时更新缓存与价格文字
+                                    try { if (hasSun) { c.SUNCOST = c.SUNCOST; done++; } } catch (e) { /* 忽略 */ }
                                 }
                             } catch (e) { /* 忽略 */ }
-                            for (const k of (node.children || [])) walk(k, depth + 1);
+                            for (const kk of (node.children || [])) walk(kk, depth + 1);
                         };
                         walk(scene, 0);
-                        // 同时打印数据层的真实值（用于区分：数据没改 / 界面没刷）
-                        try {
-                            const box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : gpnDataBox;
-                            const rawList = box ? box.PlantProps : null;
-                            const boxKind = (typeof box === 'function') ? '类' : (box ? typeof box : '无');
-                            clog('数据容器诊断：gpnDataBox=' + (box ? ('有(' + boxKind + ')') : '无')
-                                + ' ｜ PlantProps=' + (Array.isArray(rawList) ? (rawList.length + '条') : String(rawList))
-                                + ' ｜ 第1条键=' + (Array.isArray(rawList) && rawList[0] ? Object.keys(rawList[0]).join(',') : 'n/a')
-                                + ' ｜ 开关: nightshade=' + featOn('nightshade') + ' noctarine=' + featOn('noctarine') + ' spikerock=' + featOn('spikerock')
-                                + ' ｜ 实例=' + GPN_INSTANCE_ID);
-                            const show = (alias) => {
-                                try {
-                                    const list = box && box.PlantProps;
-                                    if (!Array.isArray(list)) return alias + '=?';
-                                    const hit = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0];
-                                    const _mine = (hit && hit.objdata) ? hit.objdata.SunCost : '?';
-                                    let _eng = '?';
-                                    try {
-                                        const _PM3 = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
-                                        const _cfg = CFG[alias] || CFG.nightshade;
-                                        if (_PM3 && typeof _PM3.getPlantProps === 'function' && _cfg && _cfg.plantType) {
-                                            const _gp3 = _PM3.getPlantProps(_cfg.plantType);
-                                            _eng = _gp3 ? _gp3.SunCost : '空';
-                                        } else { _eng = '拿不到'; }
-                                    } catch (e) { _eng = 'err'; }
-                                    return alias + ':我方=' + _mine + '/引擎=' + _eng;
-                                } catch (e) { return alias + '=err'; }
-                            };
-                            clog('数据层现值：' + show('nightshade') + ' ｜ ' + show('noctarine') + ' ｜ ' + show('spikerock'));
-                        } catch (eD) { /* 忽略 */ }
-                        clog('刷新卡片阳光：找到 ' + found + ' 个卡片组件，成功刷新 ' + done + ' 个'
-                            + (ids.length ? ('（ID: ' + ids.join(',') + '）') : ''));
-                    } catch (e) { clog('刷新卡片阳光出错：' + e); }
+                        clog('卡片探测：命中组件 ' + found + ' 个、刷新成功 ' + done + ' 个 ｜ 样本: ' + (shapes.length ? shapes.join(' , ') : '(无)'));
+                    } catch (e) { clog('卡片探测出错：' + e); }
                 }
 
                 /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
@@ -6641,7 +6623,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l11 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l12 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
