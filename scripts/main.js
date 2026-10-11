@@ -5604,7 +5604,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v22';
+                const gpnCfgV = 'v23';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5612,7 +5612,7 @@ export default {
                 let rowW = 968, rowH = 140;  // 实测行尺寸
                 let contentW = 1916.4;
                 const entries = [];          // 行对象数组（唯一数据源）
-                let hooked = false, lastWinActive = false, missLog = 0;
+                let hooked = false, lastWinActive = false, missLog = 0, hookedScene = '';
                 const GREEN = ccColor(20, 255, 0, 255);
                 const RED = ccColor(255, 0, 0, 255);
                 const GREY = ccColor(110, 104, 98, 255);
@@ -5873,64 +5873,82 @@ function findSprite(n) {
 
                 /* ---------- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---------- */
                 function ensureEntry() {
-                    try {
-                        if (!origWin || origWin.active === false) { lastWinActive = false; return; }
-                        if (lastWinActive) return;
-                        lastWinActive = true;
-                        const ccg = ccNode();
-                        if (!ccg) return;
-                        const box = findDeep(origWin, 'elements', 0);
-                        if (!box) { if (missLog++ < 3) clog('找不到原版 elements'); return; }
-                        if ((box.children || []).some((k) => k && k.name === 'gpnConfigRow')) {
-                            if (panelRowsBox) buildRows(ccg);       // 入口行已在 ⇒ 只需保证行已建
-                            return;
-                        }
-                        if (!entryTemplate) {
-                            const kids = box.children || [];
-                            entryTemplate = kids.find((k) => String(k.name) === 'KeyBinds') || kids[kids.length - 1];
-                        }
-                        if (!entryTemplate) { clog('找不到可作模板的原版行'); return; }
-                        const er = buildEntryRow(ccg);
-                        box.addChild(er);
-                        if (box.updateLayout) box.updateLayout();
-                        clog('入口行已插入（模板=' + entryTemplate.name + '）');
-                    } catch (e) { warn('【配置界面】插入入口行出错', e); }
-                }
+    try {
+        if (!origWin || origWin.active === false) { lastWinActive = false; return; }
+        if (lastWinActive) return;
+        lastWinActive = true;
+        const ccg = ccNode();
+        if (!ccg) return;
+        const box = findDeep(origWin, 'elements', 0);
+        if (!box) { if (missLog++ < 3) clog('找不到原版 elements'); return; }
+        // 不跨场景缓存模板：每次都从"当前窗口"的 elements 里取（旧场景销毁后缓存会失效，曾崩在这里）
+        const kids = box.children || [];
+        const tpl = kids.find((k) => String((k && k.name) || '') === 'KeyBinds') || kids[kids.length - 1];
+        if (!tpl) { if (missLog++ < 3) clog('当前设置窗里找不到模板行（kids=' + kids.length + '）'); return; }
+        entryTemplate = tpl;
+        if (kids.some((k) => k && k.name === 'gpnConfigRow')) {
+            if (panel && panel.active === true) buildRows(ccg);
+            return;
+        }
+        const er = buildEntryRow(ccg);
+        box.addChild(er);
+        if (box.updateLayout) box.updateLayout();
+        clog('入口行已插入（模板=' + tpl.name + '，场景=' + sceneName() + '）');
+    } catch (e) { warn('【配置界面】插入入口行出错', e); }
+}
 
-                function hookWin() {
-                    try {
-                        if (hooked) return true;
-                        const ccg = ccNode();
-                        const dir = ccg && ccg.director;
-                        const scene = dir && dir.getScene ? dir.getScene() : null;
-                        if (!scene) return false;
-                        let comp = null;
-                        const walk = (n) => {
-                            if (!n || comp) return;
-                            try { for (const c of (n.components || [])) { const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || ''); if (cn === 'SettingWindow') { comp = c; return; } } } catch (e) { /* 忽略 */ }
-                            (n.children || []).forEach(walk);
-                        };
-                        walk(scene);
-                        if (!comp) return false;
-                        origWin = comp.node;
-                        const proto = Object.getPrototypeOf(comp);
-                        const origOn = proto.onEnable;
-                        if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
-                        proto.onEnable = function () {
-                            const r = origOn.apply(this, arguments);
-                            try { origWin = this.node; lastWinActive = false; setTimeout(ensureEntry, 300); } catch (e) { /* 忽略 */ }
-                            return r;
-                        };
-                        hooked = true;
-                        clog('已挂上原版设置窗 onEnable（打开设置窗时插入入口行）');
-                        return true;
-                    } catch (e) { warn('【配置界面】挂钩出错', e); return false; }
-                }
+function sceneName() {
+    try {
+        const ccg = ccNode();
+        const sc = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
+        return sc ? String(sc.name || '?') : '?';
+    } catch (e) { return '?'; }
+}
+function hookWin() {
+    try {
+        // 每个场景各有自己的 SettingWindow 组件，必须按场景重新挂钩
+        //（曾经只挂启动时那一个，导致世界地图的设置窗没有入口行）
+        const cur = sceneName();
+        if (cur !== hookedScene) {
+            hooked = false; origWin = null; lastWinActive = false; hookedScene = cur;
+            clog('场景变化，重新查找设置窗（当前场景=' + cur + '）');
+        }
+        if (hooked && origWin && origWin.isValid) return true;
+        hooked = false; origWin = null;
+        const ccg = ccNode();
+        const dir = ccg && ccg.director;
+        const scene = dir && dir.getScene ? dir.getScene() : null;
+        if (!scene) return false;
+        let comp = null;
+        const walk = (n2) => {
+            if (!n2 || comp) return;
+            try { for (const c of (n2.components || [])) { const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || ''); if (cn === 'SettingWindow') { comp = c; return; } } } catch (e) { }
+            (n2.children || []).forEach(walk);
+        };
+        walk(scene);
+        if (!comp) return false;
+        origWin = comp.node;
+        const proto = Object.getPrototypeOf(comp);
+        const origOn = proto.onEnable;
+        if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
+        if (!proto.__gpnCfgHooked) {
+            proto.__gpnCfgHooked = true;
+            proto.onEnable = function () {
+                const r = origOn.apply(this, arguments);
+                try { origWin = this.node; lastWinActive = false; setTimeout(ensureEntry, 300); } catch (e) { }
+                return r;
+            };
+        }
+        hooked = true;
+        clog('已挂上设置窗 onEnable（场景=' + cur + '）');
+        return true;
+    } catch (e) { warn('【配置界面】挂钩出错', e); return false; }
+}
 
-                let ticks = 0;
+let ticks = 0;
                 setInterval(() => {
                     try {
-                        if (!hooked && !hookWin()) { ticks++; return; }
+                        if (!hookWin()) { ticks++; return; }
                         // 兜底轮询：入口行可能被原版窗体重建而丢失
                         ensureEntry();
                         // 窗体开着且行还没建 ⇒ 补建
