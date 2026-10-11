@@ -5604,7 +5604,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v24';
+                const gpnCfgV = 'v25';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5741,6 +5741,10 @@ function findSprite(n) {
                 function buildPanel(ccg) {
                     try {
                         if (panel && panel.isValid) return panel;
+                        // ★ 跨场景重建：清空旧行数据（否则 buildRows 会因为 entries 非空而跳过 ⇒ 新窗体会是空的）
+                        if (entries.length) clog('重建面板：清空旧行数据 ' + entries.length + ' 行');
+                        entries.length = 0;
+                        panelRowsBox = null;
                         const clone = ccg.instantiate(origWin);
                         clone.name = 'gpnConfigWindow';
                         try { for (const c of (clone.components || []).slice()) { if (c && c.node === clone) { try { c.destroy(); } catch (e0) { /* 忽略 */ } } } } catch (e1) { /* 忽略 */ }
