@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v13';
+                const gpnCfgV = 'v14';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5709,8 +5709,8 @@ export default {
                             try {
                                 const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
                                 const sz = CS(elements) || { width: 1916.4, height: 1440 };
-                                const cols = 3;
-                                const cw = Math.max(320, Math.floor(sz.width / cols) - 4);
+                                const cols = 2;                                  // 用户要求：一行两个就够了
+                                const cw = Math.max(320, Math.floor(sz.width / cols) - 10);
                                 const ch = rowH || 140;
                                 const GREEN = ccg.color(20, 255, 0, 255);      // 与引擎 SettingWindow 的 GREEN 一致
                                 const RED = ccg.color(255, 0, 0, 255);        // 同上：原版二态项 = 绿开 / 红关
@@ -5771,9 +5771,14 @@ export default {
                                                 if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
                                                 const next = !featOn(it.key);
                                                 featSet(it.key, next);
-                                                if (gpnApplyDataPatch) gpnApplyDataPatch();
+                                                // ★ 先更新界面（即便后面 apply 数据出错，界面也必须刷新）
                                                 applyState(next);
-                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (next ? '开(绿)' : '关(红)'));
+                                                let applied = '未 apply';
+                                                try {
+                                                    if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); applied = '已 apply'; }
+                                                    else { applied = '数据补丁不可用(' + (typeof gpnApplyDataPatch) + ')'; }
+                                                } catch (eA) { applied = 'apply 出错：' + eA; }
+                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (next ? '开(绿)' : '关(红)') + ' ｜ ' + applied);
                                             } catch (e) { warn('【配置界面】切换开关出错', e); }
                                         });
                                         made++; idx++;
@@ -5787,6 +5792,21 @@ export default {
                                     gpnCfgLog('网格：' + cols + ' 列，行宽 ' + cw + ' 行高 ' + ch + '，内容区高度 ' + needH);
                                 } catch (e) { /* 忽略 */ }
                                 gpnCfgLog('已铺开关行 ' + made + ' 行（整行染色 ' + tinted + ' 次）；Layout 停用=' + layoutOff);
+                                // 【诊断】看第一行里各子节点的坐标/尺寸/锚点 ⇒ 用来定位"文本错位"
+                                try {
+                                    const anyRow = (elements.children || [])[0];
+                                    const dumpOne = (n, d) => {
+                                        if (!n || d > 2) return;
+                                        let cs = '?', ap = '?';
+                                        try {
+                                            const u = (n.components || []).find((x) => x && x.contentSize);
+                                            if (u) { cs = u.contentSize.width + 'x' + u.contentSize.height; ap = u.anchorX + ',' + u.anchorY; }
+                                        } catch (e) { /* 忽略 */ }
+                                        gpnCfgLog('  行内 ' + '|--'.repeat(d) + n.name + ' pos=' + n.position.x + ',' + n.position.y + ' size=' + cs + ' anchor=' + ap);
+                                        (n.children || []).forEach((k) => dumpOne(k, d + 1));
+                                    };
+                                    if (anyRow) dumpOne(anyRow, 0);
+                                } catch (e) { /* 忽略 */ }
                             } catch (e) { gpnCfgLog('铺行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
                         }
