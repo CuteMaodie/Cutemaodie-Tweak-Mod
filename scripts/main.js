@@ -5669,6 +5669,8 @@ export default {
                                 if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) keep.push(c2);
                                 else { try { c2.removeFromParent(); c2.destroy(); } catch (e) { /* 忽略 */ } }
                             });
+                            // ★ 只删 export（绿▲及其绿底方框）；website（蓝色齿轮）的子节点一个都不要动！
+
                             log('【探查】模板行保留的子节点：' + keep.map((k) => k.name).join(', '));
                         } catch (e) { warn('【探查】裁剪子节点出错', e); }
                         // ⚠️ 教训：用"类名字符串"判断组件不可靠（内置组件与自定义组件的类名格式不同）
@@ -5720,22 +5722,8 @@ export default {
                             (n.children || []).forEach(clearBtns);
                         };
                         clearBtns(clone);
-                        // ★ 隐藏 ▲▼：**按名字识别**（含 arrow/up/down），不再靠"第几个"（上次就是靠下标猜错的）
-                        try {
-                            const isArrow = (nm) => {
-                                const s = String(nm || '').toLowerCase();
-                                return s.indexOf('arrow') !== -1 || s.indexOf('up') !== -1 || s.indexOf('down') !== -1;
-                            };
-                            let hid = 0;
-                            const hideArrows = (n) => {
-                                (n.children || []).forEach((k) => {
-                                    if (isArrow(k.name)) { try { k.active = false; hid++; } catch (e) { /* 忽略 */ } }
-                                    else hideArrows(k);
-                                });
-                            };
-                            hideArrows(clone);
-                            log('【探查】已按名字隐藏 ' + hid + ' 个疑似▲▼节点');
-                        } catch (e) { warn('【探查】隐藏▲▼出错', e); }
+                        // ★ 上一版的错误：按名字含 arrow 隐藏 ⇒ 连 website 里的"Gear 帧"节点一起藏了（齿轮消失）。
+                        //   正解：▲▼ 由 export 节点负责（已在上面整颗删掉）；website 内部**原样保留**。
                         let texts = 0;
                         const setText = (n, str) => {
                             try {
@@ -5824,7 +5812,7 @@ export default {
                         gpnRowTryInsert('轮询兜底');
                     } catch (e) { /* 忽略 */ }
                 }, 2000);
-                log('【探查】代码版本 = v4（按名字隐藏▲▼ + 递归 dump；若看不到这行说明跑的是旧代码）');
+                log('【探查】代码版本 = v5（删 export 绿▲、保留 website 齿轮；若看不到这行说明跑的是旧代码）');
                 log('【探查】已就绪：挂 onEnable 钩子 + 2 秒轮询兜底（打开原版设置窗即插入占位行）');
             } catch (e) { warn('【探查】安装失败', e); }
 
