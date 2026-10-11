@@ -5474,50 +5474,65 @@ export default {
                         const nm = sc ? String(sc.name || '') : '';
                         if (nm && nm !== gpnUiProbeLastScene) {
                             gpnUiProbeLastScene = nm;
-                            setTimeout(() => gpnUiProbeDump('场景切换 -> ' + nm), 1500);
+                            // 【临时诊断】自动 dump 已停用（会刷屏、把【验证】日志冲掉）；需要时按 O 手动 dump
                         }
                     } catch (e) { /* 只影响诊断 */ }
                 }, 500);
                 log('UI侦查：已就绪（切场景自动 dump；或按 O 键 dump 当前场景）');
             } catch (e) { warn('UI侦查：安装失败', e); }
 
-            // ---- 1c.【临时诊断】"即时生效"可行性验证按键（阶段⓪）----
-            //   目的：在投入 35 处改造之前，先证明"运行期改开关 ⇒ 立刻生效"这条路线走得通。
-            //     · 按 `1` ⇒ 切【裂荚射手】（C 类样板：补丁已常驻、钩子里运行期现查 ⇒ 应立刻生效）；
-            //     · 按 `2` ⇒ 切【钢地刺】并**重新应用数据补丁**（B 类样板：数值类，
-            //       已翻开的卡片/已种下的植物可能仍用旧值 ⇒ 看"新种的"是否立刻用新数值）。
-            //   ⚠️ 这些数据只在内存里（不写 features.json）⇒ 退出游戏即还原。整段调查结束删除。
+            // ---- 1c.【临时诊断】"即时生效"可行性验证（阶段⓪）----
+            //   触发方式**三重保险**（不再赌"按键是否被游戏吃掉 / 是否忘了按"）：
+            //     · 鼠标：在屏幕【左上角 200×200 区域点一下】= 等价按一次 F7；
+            //     · 键盘：F7 = 切【裂荚】（C 类样板）；F8 = 切【钢地刺】并重应用数据（B 类样板）；
+            //     · 每次触发都打印 场景名 + 开关前后状态 ⇒ 日志本身就是证据。
+            //   ⚠️ 只改内存、不写 features.json ⇒ 退出即还原。调查结束整段删除。
             try {
-                gpnTestToggles = () => {
+                const gpnVerOn = (ev) => {
                     try {
-                        const a = featSet('splitpea', !featOn('splitpea'));
-                        log('【验证】裂荚射手 = ' + (featOn('splitpea') ? '开' : '关') + (a ? '' : '（未变化）'));
-                        // 开/关之后**不动**场上那些株的翻转标记 ⇒ 正好顺便验证"关掉时会被自动摆正"
-                    } catch (e) { warn('【验证】切裂荚失败', e); }
-                };
-                gpnTestToggles2 = () => {
-                    try {
-                        featSet('spikerock', !featOn('spikerock'));
-                        let reap = '（没找到数据补丁）';
+                        const tag = (ev && ev.type) || '?';
+                        let sceneName = '?';
                         try {
-                            if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') {
-                                gpnTestDataPatch.apply();
-                                reap = '已重新应用';
-                            }
+                            const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
+                            sceneName = sc ? String(sc.name || '?') : '(无场景)';
+                        } catch (e) { /* 忽略 */ }
+                        const before = featOn('splitpea');
+                        featSet('splitpea', !before);
+                        log('【验证】收到 ' + tag + ' ｜ 场景=' + sceneName
+                            + ' ｜ 裂荚 ' + (before ? '开' : '关') + ' → ' + (featOn('splitpea') ? '开' : '关')
+                            + '（补丁常驻、钩子运行期现查 ⇒ 应立即生效，无需重进）');
+                    } catch (e) { warn('【验证】F7 处理失败', e); }
+                };
+                const gpnVerOn2 = (ev) => {
+                    try {
+                        const tag = (ev && ev.type) || '?';
+                        const before = featOn('spikerock');
+                        featSet('spikerock', !before);
+                        let reap = '(没找到数据补丁)';
+                        try {
+                            if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重新应用'; }
                         } catch (e) { reap = '重新应用出错：' + e; }
-                        log('【验证】钢地刺 = ' + (featOn('spikerock') ? '开' : '关') + '；数据补丁 ' + reap);
-                    } catch (e) { warn('【验证】切钢地刺失败', e); }
+                        log('【验证】收到 ' + tag + ' ｜ 钢地刺 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
+                            + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : 250) + '）');
+                    } catch (e) { warn('【验证】F8 处理失败', e); }
                 };
                 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+                    document.addEventListener('mouseup', (ev) => {
+                        try {
+                            const x = Number(ev && (ev.clientX != null ? ev.clientX : ev.pageX));
+                            const y = Number(ev && (ev.clientY != null ? ev.clientY : ev.pageY));
+                            if (isFinite(x) && isFinite(y) && x >= 0 && x <= 200 && y >= 0 && y <= 200) gpnVerOn(ev);
+                        } catch (e) { /* 只影响诊断 */ }
+                    });
                     document.addEventListener('keydown', (ev) => {
                         try {
-                            const k = ev && (ev.key || ev.code);
-                            if (k === '1' || k === 'Digit1') gpnTestToggles();
-                            if (k === '2' || k === 'Digit2') gpnTestToggles2();
+                            const k = String((ev && (ev.key || ev.code)) || '');
+                            if (k === 'F7') gpnVerOn(ev);
+                            if (k === 'F8') gpnVerOn2(ev);
                         } catch (e) { /* 只影响诊断 */ }
                     });
                 }
-                log('【验证】已就绪：按 1 = 切裂荚（行为类，应立刻生效）；按 2 = 切钢地刺并重应用数据（数值类）');
+                log('【验证】已就绪：左上角(0~200,0~200)点一下 或 F7 = 切裂荚；F8 = 切钢地刺并重应用数据；O = UI dump');
             } catch (e) { warn('【验证】安装失败', e); }
 
             // ---- 2. 巴豆 ----
