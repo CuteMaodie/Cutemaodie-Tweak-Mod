@@ -5589,6 +5589,110 @@ export default {
                 log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；每 6 秒自动切一次钢地刺并打印表值/活对象');
             } catch (e) { warn('【验证】安装失败', e); }
 
+            // ---- 1d.【临时探查】往【原版设置窗】最底部加一条空占位行（方案 B′ 的可行性验证）----
+            //   用户诉求：在**原版设置界面最底下**加一条「配置界面」+ 蓝色齿轮按钮；
+            //            点它打开**我们自己的窗体**。
+            //   本探针只验证三件事（**不加任何功能**）：
+            //     ① 能否安全往原版 `elements`（cc.Layout）里加一行 ⇒ 滚动区/滚动条是否跟着变长、末行是否被裁；
+            //     ② 原版窗体的代码会不会因为多一行而异常（它都是按属性引用，不按行数遍历）；
+            //     ③ 克隆行上的按钮**能否自己绑点击**（点它**不能**误触原版设置）。
+            //   做法：克隆原版【键位绑定】那一行（它右侧就是蓝色齿轮按钮）⇒ 文字改成「配置界面-占位」⇒
+            //        把克隆行上所有 cc.Button 的 clickEvents 清空 + 移除 ButtonWithSounds ⇒ 自己绑触摸 ⇒ 只打日志。
+            //   ⚠️ 纯临时：设置窗打开时才加、关掉时随窗销毁；调查结束整段删除。
+            try {
+                let gpnRowProbeDone = false;
+                const gpnRowProbe = () => {
+                    try {
+                        if (gpnRowProbeDone) return;
+                        const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+                        const dir = ccg && ccg.director;
+                        const scene = dir && dir.getScene ? dir.getScene() : null;
+                        if (!scene) return;
+                        // 找原版设置窗（组件名 SettingWindow）
+                        let win = null;
+                        const findWin = (n) => {
+                            if (!n || win) return;
+                            try {
+                                const comps = n.components || [];
+                                for (const c of comps) {
+                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
+                                    if (cn === 'SettingWindow') { win = n; return; }
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            const kids = n.children || [];
+                            for (let i = 0; i < kids.length && !win; i++) findWin(kids[i]);
+                        };
+                        findWin(scene);
+                        if (!win) return;                       // 设置窗没开（或还没建）
+                        if (win.active === false) return;       // 没打开就不动
+                        const elements = (ccg.find && ccg.find) ? ccg.find('elements', win) : null;
+                        if (!elements) return;
+                        // 已经插过就不再插
+                        if (elements.children && elements.children.some((k) => k && k.name === 'gpnConfigRowProbe')) { gpnRowProbeDone = true; return; }
+                        const kids = elements.children || [];
+                        // ★ 先把行的结构打出来（我要照抄模板）
+                        log('【探查】原版设置窗 elements：共 ' + kids.length + ' 行');
+                        kids.forEach((k, i) => {
+                            let desc = '';
+                            try {
+                                desc = (k.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+');
+                            } catch (e) { desc = '?'; }
+                            let sub = '';
+                            try { sub = (k.children || []).map((c2) => c2.name).join(','); } catch (e) { /* 忽略 */ }
+                            log('【探查】  行[' + i + '] ' + k.name + ' [组件: ' + desc + '] 子节点: ' + sub);
+                        });
+                        // 选模板：优先 键位绑定 那一行
+                        let tpl = kids.find((k) => String(k.name).indexOf('Key') !== -1) || kids[kids.length - 1];
+                        if (!tpl) { log('【探查】没找到可作模板的行'); return; }
+                        log('【探查】用作模板的行 = ' + tpl.name);
+                        const clone = ccg.instantiate(tpl);
+                        clone.name = 'gpnConfigRowProbe';
+                        // ① 清掉所有 cc.Button 的点击事件（防止误触原版设置）
+                        let cleared = 0;
+                        const clearBtns = (n) => {
+                            try {
+                                const comps = n.components || [];
+                                for (const c of comps) {
+                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
+                                    if (cn === 'Button' && c.clickEvents) { c.clickEvents.length = 0; cleared++; }
+                                    if (cn === 'ButtonWithSounds') { try { c.enabled = false; } catch (e) { /* 忽略 */ } }
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            (n.children || []).forEach(clearBtns);
+                        };
+                        clearBtns(clone);
+                        // ② 把行上的文字改成占位（Label 有 string 属性）
+                        let texts = 0;
+                        const setText = (n) => {
+                            try {
+                                const comps = n.components || [];
+                                for (const c of comps) {
+                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
+                                    if (cn === 'Label' && typeof c.string === 'string') { c.string = '配置界面-占位'; texts++; }
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            (n.children || []).forEach(setText);
+                        };
+                        setText(clone);
+                        // ③ 自己绑点击：整行 + 每个按钮子节点都监听（只打日志）
+                        const bindLog = (n, tag) => {
+                            try {
+                                if (n && n.on) n.on('touch-end', () => log('【探查】点到了 ' + tag + '（' + n.name + '）—— 若原版设置没被改动，说明"自己绑点击"可行'));
+                            } catch (e) { /* 忽略 */ }
+                        };
+                        bindLog(clone, '占位行');
+                        (clone.children || []).forEach((c2) => bindLog(c2, '行内子节点'));
+                        elements.addChild(clone);
+                        elements.updateLayout && elements.updateLayout();
+                        gpnRowProbeDone = true;
+                        log('【探查】已插入占位行（清空点击事件 ' + cleared + ' 处、改写文字 ' + texts + ' 处）⇒ 请看：'
+                            + '① 能否滚到最底、末行是否被裁 ② 滚动条长度 ③ 点这颗按钮是否只打日志、不影响原版设置');
+                    } catch (e) { warn('【探查】插入占位行出错', e); }
+                };
+                setInterval(gpnRowProbe, 1000);
+                log('【探查】已就绪：打开原版设置窗后会自动插入一条占位行（并打印行的结构）');
+            } catch (e) { warn('【探查】安装失败', e); }
+
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
                 const chili = makeChiliPatches(chiliMod.ChiliBean, zombieMod.Zombie, zombieMod.ZombiePoison);
