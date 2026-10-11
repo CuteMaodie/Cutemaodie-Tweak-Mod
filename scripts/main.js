@@ -3061,7 +3061,7 @@ let gpnUiProbeLastScene = '';
 /* 【临时诊断】阶段⓪ 可行性验证用的按键处理与"数据补丁引用"（调查结束整段删除） */
 let gpnTestToggles = null;
 let gpnTestToggles2 = null;
-let gpnTestDataPatch = null;
+let gpnApplyDataPatch = null;
 let gpnVerSpike = null;      // 钢地刺专用验证（自动切 + 打印表值/活对象）
 
 /* ============================================================================
@@ -5435,7 +5435,7 @@ export default {
             if (jsonMod.PvZ2ObjectContainer) {
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
                 dataPatch.apply();
-                gpnTestDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
+                gpnApplyDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
 
                 // 保证在游戏数据加载完成后再落一次，避免被 readJsons 覆盖
                 const JSONsCls = jsonMod.JSONs;
@@ -5523,7 +5523,7 @@ export default {
                         featSet('spikerock', !before);
                         let reap = '(没找到数据补丁)';
                         try {
-                            if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重新应用'; }
+                            if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); reap = '已重新应用'; }
                         } catch (e) { reap = '重新应用出错：' + e; }
                         log('【验证】收到 ' + tag + ' ｜ 钢地刺 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
                             + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost) + '）');
@@ -5531,7 +5531,7 @@ export default {
                 };
                 // ① 自动定时切换（核心：不需要任何输入）
                 try {
-                    setInterval(() => { gpnVerOn({ type: 'AUTO' }); }, 6000);
+                    /* 【临时诊断·已停用】自动切裂荚：阶段② 起会干扰界面观察，故关闭（需要时手动恢复） */
                 } catch (e) { warn('【验证】自动定时器安装失败', e); }
                 // ①b 【钢地刺专用】每 6 秒自动切钢地刺并**重新应用数据**，同时打印：
                 //      · 容器表里的阳光值（= 我们写入的结果）
@@ -5553,7 +5553,7 @@ export default {
                             featSet('spikerock', !before);
                             let reap = '(无数据补丁)';
                             try {
-                                if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') { gpnTestDataPatch.apply(); reap = '已重应用'; }
+                                if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); reap = '已重应用'; }
                             } catch (e) { reap = '重应用出错'; }
                             const after = hit('PlantProps');
                             const od = (after && after.objdata) ? after.objdata : null;
@@ -5567,7 +5567,7 @@ export default {
                                 + ' ｜ objdata 同一对象=' + (!!entry && !!after && entry.objdata === after.objdata));
                         } catch (e) { warn('【验证·钢地刺】出错', e); }
                     };
-                    setInterval(() => { if (gpnVerSpike) gpnVerSpike(); }, 6000);
+                    /* 【临时诊断·已停用】自动切钢地刺：同上 */
                 } catch (e) { warn('【验证】钢地刺定时器安装失败', e); }
                 // ② 键盘 / ③ 鼠标（保留，作为佐证：能到的话日志里会写 keydown/mouseup）
                 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
@@ -5601,7 +5601,7 @@ export default {
             //     · 关键动作**不能静默失败**（removeFromParent 抛错被吞过一次）⇒ 每步打结果；
             //     · 加**代码版本戳**，一眼确认实机跑的是不是新代码。
             try {
-                const gpnCfgV = 'v9';
+                const gpnCfgV = 'v10';
                 let gpnCfgRowDone = false;
                 let gpnCfgWin = null;
                 let gpnCfgWinRow = null;
@@ -5663,83 +5663,159 @@ export default {
                         let rowsBefore = 0;
                         if (elements) {
                             rowsBefore = (elements.children || []).length;
-                            // ★ 先"从原件量尺寸"（清空之前，最稳）：原版第一行的 contentSize 就是真实行尺寸
+                            // ★ 先量原版行的真实尺寸（清空前，从第一行读）
+                            let rowW = gpnCfgRowW, rowH = gpnCfgRowH;
                             try {
                                 const first = (elements.children || [])[0];
                                 const cs0 = first ? ((first.components || []).find((x) => x && x.contentSize) || {}).contentSize : null;
-                                if (cs0) {
-                                    gpnCfgRowW = Math.round(cs0.width);
-                                    gpnCfgRowH = Math.round(cs0.height);
-                                    gpnCfgLog('从原版第一行量得：行宽 ' + gpnCfgRowW + ' 行高 ' + gpnCfgRowH + '（第一行=' + (first ? first.name : '?') + '）');
-                                }
-                            } catch (e) { gpnCfgLog('量原版行尺寸出错：' + e); }
+                                if (cs0) { rowW = Math.round(cs0.width); rowH = Math.round(cs0.height); }
+                                gpnCfgLog('量得原版行：行宽 ' + rowW + ' 行高 ' + rowH + '（第一行=' + (first ? first.name : '?') + '）');
+                            } catch (e) { gpnCfgLog('量行尺寸出错：' + e); }
+                            // ★ 清空原版 20 行
                             (elements.children || []).slice().forEach((k) => { try { k.removeFromParent(); k.destroy(); } catch (e) { /* 忽略 */ } });
-                            // ★ 占位行必须是"精简过的干净行"（只留文字）—— 上一版直接克隆了带齿轮/▲▼的整行
-                            const tpl = gpnCfgWinRow;
-                            if (tpl) {
-                                const r = ccg.instantiate(tpl);
-                                r.name = 'gpnCfgPlaceholder';
-                                // 精简：只留 ToolTip（文字），其余（齿轮/▲▼）整颗删掉
-                                let cut = 0;
-                                (r.children || []).slice().forEach((c2) => {
-                                    const nm = String(c2.name || '');
-                                    if (nm.indexOf('ToolTip') === 0) return;
-                                    try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
-                                    try { c2.destroy(); } catch (e3) { /* 忽略 */ }
-                                    cut++;
-                                });
-                                clearClickEvents(r);
-                                setAllText(r, '（开关列表将在下一阶段填入）');
-                                elements.addChild(r);
-                                gpnCfgLog('占位行：精简掉 ' + cut + ' 个多余子节点，实际子节点 [' + (r.children || []).map((k) => k.name).join(', ') + ']');
-                            }
-                            // ★ 量一下各容器尺寸（为"正确撑开内容区"提供依据）
+                            // ★ 停用 Layout（我们自己摆 3 列网格）
+                            let layoutOff = false;
                             try {
-                                const ut = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? { w: c.contentSize.width, h: c.contentSize.height } : null; } catch (e) { return null; } };
-                                const comps = (n) => (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+');
-                                const view = findByName(clone, 'view', 0);
-                                const sv = findByName(clone, 'ScrollView', 0);
-                                gpnCfgLog('尺寸：view=' + JSON.stringify(ut(view)) + ' elements=' + JSON.stringify(ut(elements))
-                                    + ' ScrollView=' + JSON.stringify(ut(sv)));
-                                gpnCfgLog('组件：view=[' + (view ? comps(view) : '?') + '] elements=[' + comps(elements) + ']');
-                                if (elements) {
-                                    const lay = (elements.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined);
-                                    if (lay) {
-                                        try { lay.enabled = false; gpnCfgLog('已停用 elements 上的 Layout（改由我们自己摆行）'); }
-                                        catch (e) { gpnCfgLog('停用 Layout 失败：' + e); }
-                                    }
-                                }
-                            } catch (e) { gpnCfgLog('量尺寸出错：' + e); }
-                            // ★ 位置与宽度：Layout 已停用 ⇒ 必须自己定
-                            //   ⚠️ 上一版把行高估成 72（我拿 1440÷21 硬算）——**算错了**：
-                            //      原版 elements 是 Layout + **两列**（Grid）⇒ 20 行只占 10 个行位
-                            //      ⇒ 真实行高 ≈ 1440÷10×2 或直接取模板行的 contentSize。
-                            //   ⇒ 本版**直接量模板行的真实高度**（gpnCfgWinRow / 第一行的 contentSize），不再估算。
+                                const lay = (elements.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined);
+                                if (lay) { lay.enabled = false; layoutOff = true; }
+                            } catch (e) { /* 忽略 */ }
+                            // ★ 开关清单（key 必须与 FEATURES/features.json 一致；label 取 features.json 的 _对照 名称）
+                            const gpnCfgItems = [
+                                { key: 'chilibean', label: '巴豆' },
+                                { key: 'spikerock', label: '钢地刺' },
+                                { key: 'bloomingheart', label: '心蕊' },
+                                { key: 'nightshade', label: '暗影龙葵' },
+                                { key: 'turnip', label: '白萝卜' },
+                                { key: 'sweetpotato', label: '甜薯' },
+                                { key: 'tallnut', label: '高坚果' },
+                                { key: 'perfumeshroom', label: '香水菇' },
+                                { key: 'starfruit', label: '星星果系' },
+                                { key: 'starfruitFollowMerge', label: '　└ 追击合并' },
+                                { key: 'noctarine', label: '暗影油桃' },
+                                { key: 'zoybeanpod', label: '腐尸豆荚' },
+                                { key: 'dandelion', label: '蒲公英' },
+                                { key: 'pepperpult', label: '甜椒投手' },
+                                { key: 'hurrikale', label: '飓风甘蓝' },
+                                { key: 'phatbeet', label: '魔音甜菜' },
+                                { key: 'garlic', label: '大蒜' },
+                                { key: 'snowpea', label: '寒冰射手' },
+                                { key: 'redstinger', label: '红针花' },
+                                { key: 'murkadamia', label: '暗影夏威夷果' },
+                                { key: 'splitpea', label: '裂荚射手' },
+                                { key: 'pushPlantFix', label: '推植物修复' },
+                                { key: 'verboseLog', label: '诊断日志' },
+                            ];
+                            // ★ 胶囊开关（自绘）：外圈浅底 + 内部绿(开)/深灰(关) + 可动滑块 + ON/OFF
+                            const gpnCfgMakeSwitch = (parent, on, onToggle) => {
+                                try {
+                                    const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+                                    const node = new ccg.Node('gpnSwitch');
+                                    const ut = node.addComponent(ccg.UITransform);
+                                    ut.setContentSize(120, 66);
+                                    node.setPosition(360, 0);
+                                    const g = node.addComponent(ccg.Graphics);
+                                    const kn = new ccg.Node('knob');
+                                    const utk = kn.addComponent(ccg.UITransform);
+                                    utk.setContentSize(54, 54);
+                                    kn.addComponent(ccg.Graphics);
+                                    node.addChild(kn);
+                                    const lab = new ccg.Node('state');
+                                    const utl = lab.addComponent(ccg.UITransform);
+                                    utl.setContentSize(118, 26);
+                                    lab.setPosition(0, -60);
+                                    const L2 = lab.addComponent(ccg.Label);
+                                    L2.fontSize = 30;
+                                    node.addChild(lab);
+                                    const draw = (state) => {
+                                        try {
+                                            g.clear();
+                                            g.fillColor = ccg.color(240, 228, 196, 255);
+                                            g.roundRect(-60, -33, 120, 66, 30);
+                                            g.fill();
+                                            g.strokeColor = ccg.color(120, 90, 60, 255);
+                                            g.lineWidth = 4;
+                                            g.roundRect(-60, -33, 120, 66, 30);
+                                            g.stroke();
+                                            g.fillColor = state ? ccg.color(60, 200, 70, 255) : ccg.color(90, 80, 75, 255);
+                                            g.roundRect(-56, -29, 112, 58, 27);
+                                            g.fill();
+                                            const gk = kn.getComponent(ccg.Graphics);
+                                            gk.clear();
+                                            gk.fillColor = ccg.color(250, 250, 245, 255);
+                                            gk.circle(0, 0, 27);
+                                            gk.fill();
+                                            gk.strokeColor = ccg.color(110, 80, 60, 255);
+                                            gk.lineWidth = 3;
+                                            gk.circle(0, 0, 27);
+                                            gk.stroke();
+                                            kn.setPosition(state ? 28 : -28, 0);
+                                            L2.string = state ? '开' : '关';
+                                            L2.color = state ? ccg.color(255, 255, 255) : ccg.color(225, 215, 205);
+                                        } catch (e) { /* 忽略 */ }
+                                    };
+                                    let cur = !!on;
+                                    draw(cur);
+                                    node.on('touch-end', (ev) => {
+                                        try {
+                                            let gpnCfgTapLock = 0;
+                                            const now = Date.now();
+                                            if (now - gpnCfgTapLock < 300) return;
+                                            gpnCfgTapLock = now;
+                                            if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+                                            cur = !cur;
+                                            draw(cur);
+                                            if (onToggle) onToggle(cur);
+                                        } catch (e) { /* 忽略 */ }
+                                    });
+                                    parent.addChild(node);
+                                    return { node: node, set: (v) => { cur = !!v; draw(cur); } };
+                                } catch (e) { warn('【配置界面】造开关控件出错', e); return null; }
+                            };
+                            // ★ 逐行生成并摆成 3 列网格
                             try {
                                 const CS = (n) => { try { const c = (n.components || []).find((x) => x && x.contentSize); return c ? c.contentSize : null; } catch (e) { return null; } };
                                 const sz = CS(elements) || { width: 1916.4, height: 1440 };
-                                const tplSize = gpnCfgWinRow ? CS(gpnCfgWinRow) : null;
-                                const half = gpnCfgRowW || (tplSize ? Math.round(tplSize.width) : Math.max(300, Math.floor(sz.width / 2) - 6));
-                                const rowH = gpnCfgRowH || (tplSize ? Math.round(tplSize.height) : 96);
-                                gpnCfgLog('采用 行宽 ' + half + ' / 行高 ' + rowH + '（来源：' + (gpnCfgRowH ? '原版第一行实测' : '估算') + '）');
-                                (elements.children || []).forEach((k, i) => {
+                                const cols = 3;
+                                const cw = Math.max(320, Math.floor(sz.width / cols) - 4);
+                                const ch = rowH || 140;
+                                let idx = 0, made = 0, sw = 0;
+                                gpnCfgItems.forEach((it) => {
                                     try {
-                                        const ut2 = (k.components || []).find((x) => x && x.setContentSize);
-                                        if (ut2 && ut2.setContentSize) ut2.setContentSize(half, rowH);
-                                        k.setPosition(-Math.floor(sz.width / 4), -(rowH / 2) - i * rowH);
-                                    } catch (e) { /* 忽略 */ }
+                                        const row = ccg.instantiate(gpnCfgWinRow);
+                                        row.name = 'gpnRow_' + it.key;
+                                        (row.children || []).slice().forEach((c2) => {
+                                            const nm = String(c2.name || '');
+                                            if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) return;
+                                            try { c2.removeFromParent(); } catch (e1) { try { c2.active = false; } catch (e2) { /* 忽略 */ } }
+                                            try { c2.destroy(); } catch (e3) { /* 忽略 */ }
+                                        });
+                                        clearClickEvents(row);
+                                        setAllText(findByName(row, 'ToolTip', 0) || row, it.label);
+                                        const utr = (row.components || []).find((x) => x && x.setContentSize);
+                                        if (utr && utr.setContentSize) utr.setContentSize(cw, ch);
+                                        const col = idx % cols, rIdx = Math.floor(idx / cols);
+                                        row.setPosition(-Math.floor(sz.width / 2) + Math.floor(cw / 2) + col * cw, -(ch / 2) - rIdx * ch);
+                                        elements.addChild(row);
+                                        const swObj = gpnCfgMakeSwitch(row, featOn(it.key), (v) => {
+                                            try {
+                                                featSet(it.key, v);
+                                                if (gpnApplyDataPatch) gpnApplyDataPatch();
+                                                gpnCfgLog('开关切换：' + it.label + '(' + it.key + ') ⇒ ' + (v ? '开' : '关'));
+                                            } catch (e) { warn('【配置界面】切换开关出错', e); }
+                                        });
+                                        if (swObj) sw++;
+                                        made++; idx++;
+                                    } catch (e) { gpnCfgLog('造行失败 ' + it.key + '：' + e); }
                                 });
-                                // 内容区高度：按"每列可容纳的行数"撑开（两列 ⇒ 行数取半向上取整）
                                 try {
-                                    const rows = (elements.children || []).length;
-                                    const perCol = Math.max(1, Math.ceil(rows / 2));
-                                    const needH = Math.max(sz.height, perCol * rowH + rowH);
+                                    const perCol = Math.max(1, Math.ceil(made / cols));
+                                    const needH = Math.max(sz.height, perCol * ch + ch);
                                     const ut3 = (elements.components || []).find((x) => x && x.setContentSize);
                                     if (ut3 && ut3.setContentSize) ut3.setContentSize(sz.width, needH);
-                                    gpnCfgLog('内容区高度：' + rows + ' 行 ⇒ 每列 ' + perCol + ' 行 ⇒ 高度 ' + needH);
+                                    gpnCfgLog('网格：' + cols + ' 列，行宽 ' + cw + ' 行高 ' + ch + '，内容区高度 ' + needH);
                                 } catch (e) { /* 忽略 */ }
-                                gpnCfgLog('已按实测尺寸摆行：行宽 ' + half + ' 行高 ' + rowH + '，共 ' + ((elements.children || []).length) + ' 行');
-                            } catch (e) { gpnCfgLog('摆行出错：' + e); }
+                                gpnCfgLog('已铺开关行 ' + made + ' 行（含胶囊开关 ' + sw + ' 个）；Layout 停用=' + layoutOff);
+                            } catch (e) { gpnCfgLog('铺行出错：' + e); }
                             if (elements.updateLayout) elements.updateLayout();
                         }
                         // ⑤ 自己绑"关闭"（红 X 的原版事件已被清掉，否则点它没反应）
