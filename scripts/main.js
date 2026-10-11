@@ -5601,13 +5601,15 @@ export default {
             //   ⚠️ 纯临时：设置窗打开时才加、关掉时随窗销毁；调查结束整段删除。
             try {
                 let gpnRowProbeDone = false;
+                let gpnRowProbeTries = 0;
                 const gpnRowProbe = () => {
                     try {
                         if (gpnRowProbeDone) return;
+                        if (gpnRowProbeTries > 30) return;          // 最多试 30 次（约 30 秒），不刷屏
                         const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
                         const dir = ccg && ccg.director;
                         const scene = dir && dir.getScene ? dir.getScene() : null;
-                        if (!scene) return;
+                        if (!scene) { return; }
                         // 找原版设置窗（组件名 SettingWindow）
                         let win = null;
                         const findWin = (n) => {
@@ -5623,6 +5625,30 @@ export default {
                             for (let i = 0; i < kids.length && !win; i++) findWin(kids[i]);
                         };
                         findWin(scene);
+                        // ★ 每 5 秒自报一次"找到没 / 场景是什么"，避免再次静默失败
+                        gpnRowProbeTries++;
+                        if (gpnRowProbeTries % 5 === 1) {
+                            let hint = '';
+                            try {
+                                const names = [];
+                                const scan = (n, d) => {
+                                    if (!n || d > 5 || names.length > 14) return;
+                                    const nm = String(n.name || '');
+                                    if (nm.indexOf('Setting') !== -1 || nm.indexOf('Window') !== -1) {
+                                        let cs = '';
+                                        try {
+                                            cs = (n.components || []).map((c) => String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?')).join('+');
+                                        } catch (e) { cs = '?'; }
+                                        names.push(nm + '(act=' + (n.active !== false) + ')[组件:' + cs + ']');
+                                    }
+                                    (n.children || []).forEach((k) => scan(k, d + 1));
+                                };
+                                scan(scene, 0);
+                                hint = ' ｜ 含 Setting/Window 的节点: ' + (names.join(' ; ') || '(无)');
+                            } catch (e) { hint = ' ｜ 扫描失败'; }
+                            log('【探查】第 ' + gpnRowProbeTries + ' 次检查 ｜ 场景=' + String(scene.name || '?')
+                                + ' ｜ 找到设置窗=' + (!!win) + (win ? ('(active=' + (win.active !== false) + ')') : '') + hint);
+                        }
                         if (!win) return;                       // 设置窗没开（或还没建）
                         if (win.active === false) return;       // 没打开就不动
                         const elements = (ccg.find && ccg.find) ? ccg.find('elements', win) : null;
