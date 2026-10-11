@@ -5604,7 +5604,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v20';
+                const gpnCfgV = 'v21';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -5673,7 +5673,13 @@ export default {
                 }
                 function sizeOf(n) { try { const x = (n.components || []).find((y) => y && y.contentSize); return x ? x.contentSize : null; } catch (e) { return null; } }
                 function setSize(n, w, h) { try { const x = (n.components || []).find((y) => y && y.setContentSize); if (x) { x.setContentSize(w, h); return true; } } catch (e) { /* 忽略 */ } return false; }
-                function findSprite(n) {
+                function setRightAlign(n, right) {
+    try {
+        const u = (n.components || []).find((y) => y && typeof y.anchorX === 'number');
+        if (u) u.anchorX = right ? 1 : 0;
+    } catch (e) { /* 忽略 */ }
+}
+function findSprite(n) {
                     try { for (const x of (n.components || [])) { if (x && x.spriteFrame !== undefined && x.color !== undefined) return x; } } catch (e) { /* 忽略 */ }
                     try { for (const x of (n.components || [])) { if (x && x.color !== undefined) return x; } } catch (e2) { /* 兜底 */ }
                     return null;
@@ -5693,7 +5699,17 @@ export default {
                 function buildEntryRow(ccg) {
                     const row = ccg.instantiate(entryTemplate);
                     row.name = 'gpnConfigRow';
-                    killChildren(row, true);                  // 只留 ToolTip（文字），删掉 ▲▼/import/export
+                    killChildren(row, true);                  // 先只留 ToolTip（行名）
+                    // ★ 蓝色齿轮在 website 节点内 ⇒ 必须保留它（此前误删 ⇒ 齿轮消失）
+                    try {
+                        const keepG = (entryTemplate.children || []).filter((k) => String(k.name || '').indexOf('website') === 0);
+                        keepG.forEach((src) => {
+                            const g = ccg.instantiate(src);
+                            clearClicks(g);                       // 保险：不带原版"打开网页"的点击事件
+                            row.addChild(g);
+                        });
+                        clog('入口行：保留齿轮节点 ' + keepG.length + ' 个');
+                    } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
                     clearClicks(row);
                     setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
                     let locked = 0;
@@ -5720,8 +5736,8 @@ export default {
                             const blocked = !!(e.master && !featOn(e.master));
                             if (e.sprite) e.sprite.color = blocked ? GREY : (on ? GREEN : RED);
                             if (e.labelNode) {
-                                if (blocked) setText(e.labelNode, '需先开启' + (e.masterLabel || e.master));
-                                else setText(e.labelNode, on ? '开' : '关');
+                                if (blocked) { setText(e.labelNode, '父项关闭'); setRightAlign(e.labelNode, true); }
+                                else { setRightAlign(e.labelNode, false); setText(e.labelNode, on ? '开' : '关'); }
                             }
                             if (i < 3) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
                         } catch (err) { clog('render 出错 ' + e.key + '：' + err); }
