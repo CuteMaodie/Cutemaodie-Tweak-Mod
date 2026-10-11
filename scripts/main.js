@@ -747,6 +747,42 @@ function gpnPierceZh(n) {
     return (Math.round(n) === 2) ? '两' : gpnZhNum(n);
 }
 
+/* dynamic original value: the "off" branch must READ it, never hardcode it.
+ *   Lesson (caught by selftest): I hardcoded phatbeet off=150, but its real original value
+ *   can be anything (the mock uses 999 as a sentinel) => hardcoding is simply wrong.
+ *   Rule: record it on first read (including "field did not exist"), then always reuse it.
+ */
+const gpnVanillaMemo = new Map();
+function gpnVanilla(listName, alias, field) {
+    const mk = listName + "|" + alias + "|" + field;
+    if (gpnVanillaMemo.has(mk)) return gpnVanillaMemo.get(mk);
+    let val;
+    try {
+        const Box = (typeof gpnResolveDataBox === "function") ? gpnResolveDataBox() : null;
+        const list = Box && Box[listName];
+        const hit = Array.isArray(list) ? list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0] : null;
+        val = (hit && hit.objdata) ? hit.objdata[field] : undefined;
+    } catch (e) { val = undefined; }
+    const rec = { had: val !== undefined, value: val };
+    gpnVanillaMemo.set(mk, rec);
+    return rec;
+}
+/* restore a field to its recorded original state (delete it if it never existed) */
+function gpnRestoreField(listName, alias, field) {
+    try {
+        const rec = gpnVanilla(listName, alias, field);
+        const Box = (typeof gpnResolveDataBox === "function") ? gpnResolveDataBox() : null;
+        const list = Box && Box[listName];
+        if (!Array.isArray(list)) return false;
+        const hits = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1);
+        for (const e of hits) {
+            if (!e.objdata) continue;
+            if (rec.had) e.objdata[field] = rec.value;
+            else { try { delete e.objdata[field]; } catch (e2) { } }
+        }
+        return true;
+    } catch (e) { return false; }
+}
 function makeDataPatcher(PvZ2ObjectContainer) {
     const undo = [];
     try { gpnDataBox = PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }   // 供配置界面诊断打印
@@ -1243,13 +1279,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 只开这个字段的效果 = 橄榄车/抛掷/舞王推/渔夫钩 全部无效，但气功照常对其它植物生效、
         //                        高坚果自己原地不动（pushPlantLeft 对它的格子返回 false）。
         // 时空黑洞(ChiHole) 走的是 canBeChied()，不看这个字段 ⇒ 高坚果照样被吸走，符合预期。
-        if (featOn('tallnut')) {
-            setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
-            // v2.8.2：种植冷却 20 -> 30 秒
-            if (CFG.tallnut.cooldown > 0) {
-                setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', CFG.tallnut.cooldown);
-            }
-        }
+        // ★ 两态（不再用 featOn 包整段，否则关掉时不会还原）
+        // boolean field: write only when ON; when OFF restore the original shape (delete if absent)
+        if (featOn('tallnut')) setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
+        else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
+        setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
 
         // 星星果系：阳光 + 12 条弹道的穿透/溅射
         if (featOn('starfruit')) {
@@ -1306,10 +1340,13 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
         }
         // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用）----
-        if (featOn('dandelion')) {
-            setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
+        // ★ 阳光两态放到包裹外面（否则关掉时整段不执行 ⇒ 不还原）
+        setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
+        // ★ 弹道标记也两态：关掉时清掉标记（原来是"只在开着时写" ⇒ 关掉后标记残留）
+        {
             const DANDELION_KIND = { dandelion: 'normal', dandelion_blew: 'blew', dandelion_pf: 'pf' };
             const dlist = PvZ2ObjectContainer.ProjectileProps;
+            const onD = featOn('dandelion');
             if (Array.isArray(dlist)) {
                 for (const e of dlist) {
                     if (!e || !Array.isArray(e.aliases)) continue;
@@ -1318,26 +1355,29 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                         if (!kind) continue;
                         if (!e.objdata) e.objdata = {};
                         track(e.objdata, DANDELION_KIND_KEY);
-                        e.objdata[DANDELION_KIND_KEY] = kind;
+                        if (onD) e.objdata[DANDELION_KIND_KEY] = kind;
+                        else { try { delete e.objdata[DANDELION_KIND_KEY]; } catch (e2) { /* ignore */ } }
                     }
                 }
             }
         }
         // ---- 魔音甜菜：阳光（改回原版 150）----
-        if (featOn('phatbeet')) {
-            setField('PlantProps', CFG.phatbeet.plantType, 'SunCost', CFG.phatbeet.sunCost);   // 魔音甜菜 阳光：改回原版 150
+        // ★ 两态：魔音甜菜的阳光值恰好 = 原版 150（历史上曾改高再改回），写成两态更安全
+        {
+            const _v = gpnVanilla('PlantProps', CFG.phatbeet.plantType, 'SunCost');
+            setField('PlantProps', CFG.phatbeet.plantType, 'SunCost', featOn('phatbeet') ? CFG.phatbeet.sunCost : _v.value);
         }
         // ---- 大蒜：每口固定伤害 / 阳光 / 冷却（引擎字段就是 ReceivesDamageWhenEaten、Cooldown）----
-        if (featOn('garlic')) {
-            setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', CFG.garlic.eatDamage);
-            setField('PlantProps', CFG.garlic.plantType, 'SunCost', CFG.garlic.sunCost);
-            setField('PlantProps', CFG.garlic.plantType, 'Cooldown', CFG.garlic.cooldown);
-        }
+        // ★ 两态（大蒜：被啃伤害 / 阳光 / 冷却）
+        setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', featOn('garlic') ? CFG.garlic.eatDamage : VANILLA.garlic.eatDamage);
+        setField('PlantProps', CFG.garlic.plantType, 'SunCost', featOn('garlic') ? CFG.garlic.sunCost : VANILLA.garlic.sunCost);
+        setField('PlantProps', CFG.garlic.plantType, 'Cooldown', featOn('garlic') ? CFG.garlic.cooldown : VANILLA.garlic.cooldown);
         // ---- 红针花：承伤倍率（越小越肉）+ 半防御半攻击形态的子弹击退 ----
-        if (featOn('redstinger')) {
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', CFG.redstinger.tier1);
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', CFG.redstinger.tier2);
-            setField('PlantProps', CFG.redstinger.plantType, 'SunCost', CFG.redstinger.sunCost);
+        // ★ 三项两态（承伤倍率 / 阳光）
+        setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', featOn('redstinger') ? CFG.redstinger.tier1 : VANILLA.redstinger.tier1);
+        setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', featOn('redstinger') ? CFG.redstinger.tier2 : VANILLA.redstinger.tier2);
+        setField('PlantProps', CFG.redstinger.plantType, 'SunCost', featOn('redstinger') ? CFG.redstinger.sunCost : VANILLA.redstinger.sunCost);
+        if (featOn('redstinger')) {   // 下面这段是"弹道击退"，只在开着时写（关掉不还原原版弹道，属已知文案/道具类）
             // 击退：inArea1（半防御半攻击）专用弹道是 redstinger_weak ——
             //   引擎 RedStinger.animationListener 里 inArea==1 时走 PeaTypeWeak，别名就是它，别的形态/植物都不用这条 ⇒
             //   直接写数据即可（引擎在 specialOnObjdataSet 里把这三个字段搬到子弹上，命中时自己调 knockBack）。
@@ -1433,11 +1473,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
-        if (featOn('noctarine')) {
-            setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
-            // 注意：油桃有【两个】伤害来源 —— 数据里的 Actions 爆炸（一次性）和毒气云每跳伤害。
-            // v2.5.0 只改了后者，所以实测还是掉 20。这里把爆炸也一起减半。
+        // ★ 阳光两态放到包裹外面
+        setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
+        // ★ 油桃的 Actions 爆炸伤害：**两态**，且原值一律取自 track 的第一次记录。
+        //   为什么放在 featOn 外面：关掉开关时也必须还原（原来放在里面 ⇒ 关掉后不还原）。
+        //   为什么不用局部变量记原值：第一次 apply 时 track 还没数据，会把"已乘过的值"当原值 ⇒ 连乘。
+        {
             const plist = PvZ2ObjectContainer.PlantProps;
+            const on = featOn('noctarine');
             if (Array.isArray(plist)) {
                 for (const e of plist) {
                     if (!e || !Array.isArray(e.aliases) || e.aliases.indexOf('noctarine') === -1) continue;
@@ -1445,8 +1488,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (!Array.isArray(acts)) continue;
                     for (const act of acts) {
                         if (!act || typeof act.Damage !== 'number' || act.Damage <= 0) continue;
-                        track(act, 'Damage');            // track 对任意对象都适用
-                        act.Damage = act.Damage * CFG.noctarine.damageScale;
+                        track(act, 'Damage');                      // 只在第一次记录原值
+                        const rec = undo.find((r) => r.objdata === act && r.key === 'Damage');
+                        const baseDmg = (rec && typeof rec.old === 'number') ? rec.old : act.Damage;
+                        act.Damage = on ? baseDmg * CFG.noctarine.damageScale : baseDmg;
                     }
                 }
             }
@@ -4960,6 +5005,8 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
         const rec = methodRecord(RedStingerPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function () {
             const r = rec.original.apply(this, arguments);
+            // ★ 运行期开关：关掉后不再"锁"手动形态（否则看起来像没关闭）
+            if (!featOn('redstinger')) return r;
             try {
                 if (this.__gpnFormManual && typeof this.__gpnForm === 'number') this.inArea = this.__gpnForm;
             } catch (e) { warn('红针花：恢复手动形态出错', e); }
@@ -4974,6 +5021,11 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
     //  （这版引擎没有 Input.EventType / systemEvent，鼠标只走节点事件，所以不能用 cc.input ✗）
     const baseOnMouseDown = P.onMouseDown;                 // 可能继承自 Plant 基类
     P.onMouseDown = function (ev) {
+        // ★ 运行期开关：关掉后完全不干涉形态（补丁常驻、行为现查）
+        if (!featOn('redstinger')) {
+            try { return (typeof baseOnMouseDown === 'function') ? baseOnMouseDown.apply(this, arguments) : undefined; }
+            catch (e) { warn('红针花：原版 onMouseDown 出错', e); return undefined; }
+        }
         let r;
         try { if (typeof baseOnMouseDown === 'function') r = baseOnMouseDown.apply(this, arguments); }
         catch (e) { warn('红针花：原版 onMouseDown 出错', e); }
@@ -6635,7 +6687,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l13 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l15 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
