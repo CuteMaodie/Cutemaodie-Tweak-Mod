@@ -2973,46 +2973,57 @@ function gpnUiProbeDump(why) {
         const scene = dir.getScene();
         if (!scene) { log('UI侦查[' + why + ']：当前没有场景'); return; }
         const G = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+        // ⚠️ 上一版用空格缩进 ⇒ **控制台把行首空格吃掉了**，层级全丢。
+        //    这里改用 "|--" 前缀（可见字符）表示层级。
+        const pad = (depth) => '|' + '--'.repeat(Math.min(depth, 8));
+        const compDesc = (c) => {
+            const cn = G(() => (c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?', '?');
+            const extra = [];
+            if (c && typeof c.string === 'string') extra.push('text="' + String(c.string).slice(0, 18) + '"');
+            if (c && c.color && typeof c.color.r === 'number') extra.push('color=' + c.color.r + ',' + c.color.g + ',' + c.color.b);
+            if (c && c.handle && c.handle.node) extra.push('slider');
+            if (c && typeof c.progress === 'number') extra.push('progress=' + c.progress);
+            return cn + (extra.length ? '(' + extra.join(' ') + ')' : '');
+        };
         log('===== UI侦查[' + why + '] 场景="' + G(() => scene.name, '?') + '" =====');
+        // ① 场景树（前缀表示层级；上限放宽到 260 行 / 1200 节点）
         let count = 0, lines = 0;
-        const MAXN = 500, MAXL = 60;
+        const MAXN = 1200, MAXL = 260;
         const walk = (n, depth) => {
             if (!n || count >= MAXN || lines >= MAXL) return;
             count++;
             const kids = G(() => n.children, []) || [];
-            const act = G(() => n.active, true) ? '' : ' [未激活]';
+            const act = G(() => n.active, true) ? '' : '[X]';
             if (lines < MAXL) {
-                log('  '.repeat(Math.min(depth, 12)) + '- ' + G(() => n.name, '?') + act + ' (子' + kids.length + ')');
+                log('树 ' + pad(depth) + ' ' + act + G(() => n.name, '?') + ' (子' + kids.length + ')');
                 lines++;
             }
             for (let i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
         };
         walk(scene, 0);
         log('----- 场景树：打印 ' + count + ' 个节点' + ((count >= MAXN || lines >= MAXL) ? '（已截断）' : '') + ' -----');
-        // ② 带 Window 字样的节点 + 组件清单
+        // ② 定向：把"设置窗 + 一个普通窗口（InfoWindow，做对照）"的子树连组件一起 dump
         lines = 0;
-        const dumpComps = (n, depth) => {
+        const dumpWin = (n, depth) => {
             if (!n || lines >= MAXL) return;
-            const kids = G(() => n.children, []) || [];
             const nm = String(G(() => n.name, '') || '');
-            if (nm.indexOf('Window') !== -1 || nm === 'Canvas') {
-                const comps = G(() => n.components, []) || [];
-                const desc = comps.map((c) => {
-                    const cn = G(() => (c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?', '?');
-                    const extra = [];
-                    if (c && typeof c.string === 'string') extra.push('text="' + String(c.string).slice(0, 16) + '"');
-                    if (c && c.color && typeof c.color.r === 'number') extra.push('color=' + c.color.r + ',' + c.color.g + ',' + c.color.b);
-                    if (c && c.handle && c.handle.node) extra.push('slider');
-                    return cn + (extra.length ? '(' + extra.join(' ') + ')' : '');
-                }).join(' + ');
-                log('  '.repeat(Math.min(depth, 12)) + '* ' + nm + ' [组件: ' + (desc || '无') + '] (子' + kids.length + ')');
-                lines++;
-                for (let i = 0; i < kids.length && lines < MAXL; i++) dumpComps(kids[i], depth + 1);
-                return;      // 命中窗口后只看它自己，不再扫兄弟
-            }
-            for (let i = 0; i < kids.length; i++) dumpComps(kids[i], depth);
+            const kids = G(() => n.children, []) || [];
+            const comps = (G(() => n.components, []) || []).map(compDesc).join(' + ');
+            log('窗 ' + pad(depth) + ' ' + (G(() => n.active, true) ? '' : '[X]') + nm + ' [组件: ' + (comps || '无') + '] (子' + kids.length + ')');
+            lines++;
+            for (let i = 0; i < kids.length && lines < MAXL; i++) dumpWin(kids[i], depth + 1);
         };
-        dumpComps(scene, 0);
+        const isWin = (n) => {
+            const nm = String(G(() => n.name, '') || '');
+            return nm.indexOf('SettingWindow') === 0 || nm.indexOf('InfoWindow') === 0;
+        };
+        const findAndDump = (n) => {
+            if (!n || lines >= MAXL) return;
+            if (isWin(n)) { log('--- 命中窗口子树：' + String(G(() => n.name, '')) + ' ---'); dumpWin(n, 0); return; }
+            const kids = G(() => n.children, []) || [];
+            for (let i = 0; i < kids.length; i++) findAndDump(kids[i]);
+        };
+        findAndDump(scene);
         log('===== UI侦查结束 =====');
     } catch (e) { warn('UI侦查出错', e); }
 }
