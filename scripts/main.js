@@ -5652,36 +5652,53 @@ export default {
                             try { sub = (k.children || []).map((c2) => c2.name + '(' + (c2.children || []).length + ')').join(','); } catch (e) { /* 忽略 */ }
                             log('【探查】  行[' + i + '] ' + k.name + ' [组件: ' + desc + '] 子: ' + sub);
                         });
-                        let tpl = kids.find((k) => String(k.name).indexOf('Key') !== -1) || kids[kids.length - 1];
+                        // ★ 模板固定为 KeyBinds 行（它右侧就是蓝色齿轮按钮 website）；找不到再退回其它含 website 的行
+                        const hasWebsite = (k) => (k.children || []).some((c2) => String(c2.name || '').indexOf('website') === 0);
+                        let tpl = kids.find((k) => String(k.name) === 'KeyBinds')
+                            || kids.find((k) => hasWebsite(k))
+                            || kids[kids.length - 1];
                         if (!tpl) { log('【探查】没找到可作模板的行'); return; }
                         log('【探查】用作模板的行 = ' + tpl.name);
                         const clone = ccg.instantiate(tpl);
                         clone.name = 'gpnConfigRowProbe';
+                        // ★ 只保留 ToolTip（文字）+ website（蓝色齿轮按钮），去掉 import / export
+                        try {
+                            const keep = [];
+                            (clone.children || []).forEach((c2) => {
+                                const nm = String(c2.name || '');
+                                if (nm.indexOf('ToolTip') === 0 || nm.indexOf('website') === 0) keep.push(c2);
+                                else { try { c2.removeFromParent(); c2.destroy(); } catch (e) { /* 忽略 */ } }
+                            });
+                            log('【探查】模板行保留的子节点：' + keep.map((k) => k.name).join(', '));
+                        } catch (e) { warn('【探查】裁剪子节点出错', e); }
+                        // ⚠️ 教训：用"类名字符串"判断组件不可靠（内置组件与自定义组件的类名格式不同）
+                        //   ⇒ 一律**按属性特征**识别：clickEvents = Button；string = Label。
                         let cleared = 0;
                         const clearBtns = (n) => {
                             try {
-                                const comps = n.components || [];
-                                for (const c of comps) {
-                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
-                                    if (cn === 'Button' && c.clickEvents) { c.clickEvents.length = 0; cleared++; }
-                                    if (cn === 'ButtonWithSounds') { try { c.enabled = false; } catch (e) { /* 忽略 */ } }
+                                for (const c of (n.components || [])) {
+                                    if (c && Array.isArray(c.clickEvents)) {
+                                        if (c.clickEvents.length) cleared += c.clickEvents.length;
+                                        c.clickEvents.length = 0;
+                                    }
+                                    if (c && Array.isArray(c.clickEvents) && (c.transition !== undefined || c.target !== undefined)) {
+                                        try { c.enabled = false; } catch (e) { /* 忽略 */ }
+                                    }
                                 }
                             } catch (e) { /* 忽略 */ }
                             (n.children || []).forEach(clearBtns);
                         };
                         clearBtns(clone);
                         let texts = 0;
-                        const setText = (n) => {
+                        const setText = (n, str) => {
                             try {
-                                const comps = n.components || [];
-                                for (const c of comps) {
-                                    const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || '');
-                                    if (cn === 'Label' && typeof c.string === 'string') { c.string = '配置界面-占位'; texts++; }
+                                for (const c of (n.components || [])) {
+                                    if (c && typeof c.string === 'string' && c.string !== '') { c.string = str; texts++; }
                                 }
                             } catch (e) { /* 忽略 */ }
-                            (n.children || []).forEach(setText);
+                            (n.children || []).forEach((k) => setText(k, str));
                         };
-                        setText(clone);
+                        setText(clone, '配置界面-占位');
                         const bindLog = (n, tag) => {
                             try {
                                 if (n && n.on) n.on('touch-end', () => log('【探查】点到了 ' + tag + '（' + n.name + '）—— 若原版设置没被改动，说明"自己绑点击"可行'));
