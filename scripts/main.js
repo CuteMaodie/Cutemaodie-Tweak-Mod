@@ -1472,9 +1472,24 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     return (hit && hit.objdata) ? hit.objdata.SunCost : '?';
                 } catch (e) { return 'err'; }
             };
+            let _engineSun = '?', _sameRef = '?', _typeId = '?';
+            try {
+                const _PM = (typeof plantsMod !== 'undefined' && plantsMod) ? plantsMod.plants : null;
+                if (_PM && typeof _PM.getPlantProps === 'function' && typeof CFG !== 'undefined') {
+                    _typeId = CFG.nightshade.plantType;
+                    const _gp = _PM.getPlantProps(_typeId);
+                    if (_gp) {
+                        _engineSun = _gp.SunCost;
+                        const _bx = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+                        const _list = _bx && _bx.PlantProps;
+                        const _ours = Array.isArray(_list) ? _list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf('nightshade') !== -1)[0] : null;
+                        _sameRef = (_ours && _ours.objdata === _gp) ? '同一个' : '★不是同一个';
+                    } else { _engineSun = 'getPlantProps返回空'; }
+                } else { _engineSun = '拿不到 getPlantProps'; }
+            } catch (eE) { _engineSun = 'err:' + eE; }
             log('[数据补丁·apply] 第' + gpnApplyCount + '次 ｜ 开关: nightshade=' + featOn('nightshade')
-                + ' spikerock=' + featOn('spikerock') + ' noctarine=' + featOn('noctarine')
-                + ' ｜ 龙葵阳光=' + _findSun('nightshade') + ' ｜ 实例=' + GPN_INSTANCE_ID);
+                + ' ｜ 我方读到=' + _findSun('nightshade') + ' ｜ 引擎读到=' + _engineSun
+                + ' ｜ 同一对象? ' + _sameRef + ' ｜ 实例=' + GPN_INSTANCE_ID);
         } catch (e) { /* 只影响诊断 */ }
         return undo.length > 0;
     };
@@ -6604,7 +6619,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l8 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l9 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
