@@ -614,6 +614,32 @@ function normalizeType(t) {
  *   为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
  *   __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
  * ========================================================================== */
+/* ★ 数据补丁自愈：apply() 返回 false 说明"static 数组还没填充 / 容器还没到位"，每秒重试直到成功。
+ *   为什么需要（实机证据）：`PlantProps` 等由 readJsons 填充；实机日志里
+ *   `数据已在 readJsons 之后重新应用` 从未出现 ⇒ 我们唯一的那次"补"没发生，
+ *   于是 setField 一直空写、数值停留原版（表现为"关掉开关阳光不变"）。
+ *   注意：不设硬上限（关卡数据可能是进关卡才加载），但也不会刷屏（只在特定次数打点）。
+ */
+let gpnDataRetryTimer = null;
+let gpnDataRetryCount = 0;
+function gpnStartDataPatchRetry(getPatch) {
+    if (gpnDataRetryTimer) { try { clearInterval(gpnDataRetryTimer); } catch (e) { } }
+    gpnDataRetryTimer = setInterval(() => {
+        gpnDataRetryCount++;
+        try {
+            if (gpnDisposed) { clearInterval(gpnDataRetryTimer); gpnDataRetryTimer = null; return; }
+            const dp = getPatch && getPatch();
+            if (!dp || typeof dp.apply !== 'function') return;
+            const ok = dp.apply();
+            if (ok === true) {
+                log('数据补丁：自愈成功（第 ' + gpnDataRetryCount + ' 次重试后数据已落到容器）');
+                clearInterval(gpnDataRetryTimer); gpnDataRetryTimer = null;
+            } else if (gpnDataRetryCount === 10 || gpnDataRetryCount === 60 || gpnDataRetryCount === 300 || gpnDataRetryCount === 600) {
+                warn('数据补丁：第 ' + gpnDataRetryCount + ' 次重试仍未成功（容器/数组还没到位）');
+            }
+        } catch (e) { /* 单次失败不中断 */ }
+    }, 1000);
+}
 const gpnGateStats = { bodies: 0, calls: 0, bypass: 0, reused: 0 };
 /* ★ 注册表：保证"同一个原函数只被包装一次"
  *   为什么需要（实测）：setup 跑 N 次时，第 2 次拿到的 original 是"第 1 次包装后的函数"，
@@ -711,7 +737,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     const setField = (listName, alias, key, value) => {
-        const list = PvZ2ObjectContainer[listName];
+        const Box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : PvZ2ObjectContainer;
+        const list = Box && Box[listName];
         if (!Array.isArray(list) || !list.length) return false;
         const hits = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1);
         if (!hits.length) { warn('数据里找不到 ' + listName + '/' + alias); return false; }
@@ -1164,6 +1191,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     const apply = () => {
+        // ★ 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
+        const Box = (typeof gpnDataBox === 'object' && gpnDataBox) ? gpnDataBox : PvZ2ObjectContainer;
+        if (!Box) { warn('数据补丁：容器不可用，这次没落下去'); return false; }
         // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
         gpnAlmApplyCalls++;
         const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
@@ -5600,7 +5630,9 @@ export default {
             // ---- 1. 数值 ----
             if (jsonMod.PvZ2ObjectContainer) {
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
-                dataPatch.apply();
+                const firstOk = dataPatch.apply();
+                log('数据补丁：首次 apply 结果 = ' + firstOk + '（false = 容器/数组还没到位，将自愈重试）');
+                if (firstOk !== true) gpnStartDataPatchRetry(() => gpnApplyDataPatch);
                 gpnApplyDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
 
                 // 保证在游戏数据加载完成后再落一次，避免被 readJsons 覆盖
@@ -6523,7 +6555,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-trace1 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l5 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
