@@ -5482,26 +5482,29 @@ export default {
             } catch (e) { warn('UI侦查：安装失败', e); }
 
             // ---- 1c.【临时诊断】"即时生效"可行性验证（阶段⓪）----
-            //   触发方式**三重保险**（不再赌"按键是否被游戏吃掉 / 是否忘了按"）：
-            //     · 鼠标：在屏幕【左上角 200×200 区域点一下】= 等价按一次 F7；
-            //     · 键盘：F7 = 切【裂荚】（C 类样板）；F8 = 切【钢地刺】并重应用数据（B 类样板）；
-            //     · 每次触发都打印 场景名 + 开关前后状态 ⇒ 日志本身就是证据。
+            //   ⚠️ 实机教训：先试过"按键 1/2"（与游戏选卡冲突）和"F7/F8 + 左上角点击"，
+            //      **装了钩子但一次都没触发** ⇒ 说明键盘/鼠标事件到不了我们的监听器（引擎吞了）。
+            //   ⇒ 本版改为**自动定时切换**：完全不需要任何输入，日志一定会出现。
+            //     观察法：进关卡种一株裂荚，**盯住它**，它自己会每隔几秒"摆正/恢复翻转"一次。
+            //   触发：  ① `AUTO` 每 6 秒自动切一次裂荚（进关卡后 6 秒开始）；
+            //           ② 仍保留 F7/F8（万一键盘其实能到）；③ 左上角点击同样保留。
             //   ⚠️ 只改内存、不写 features.json ⇒ 退出即还原。调查结束整段删除。
             try {
+                const gpnVerScene = () => {
+                    try {
+                        const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
+                        return sc ? String(sc.name || '?') : '(无场景)';
+                    } catch (e) { return '(取场景失败)'; }
+                };
                 const gpnVerOn = (ev) => {
                     try {
                         const tag = (ev && ev.type) || '?';
-                        let sceneName = '?';
-                        try {
-                            const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
-                            sceneName = sc ? String(sc.name || '?') : '(无场景)';
-                        } catch (e) { /* 忽略 */ }
                         const before = featOn('splitpea');
                         featSet('splitpea', !before);
-                        log('【验证】收到 ' + tag + ' ｜ 场景=' + sceneName
+                        log('【验证】收到 ' + tag + ' ｜ 场景=' + gpnVerScene()
                             + ' ｜ 裂荚 ' + (before ? '开' : '关') + ' → ' + (featOn('splitpea') ? '开' : '关')
                             + '（补丁常驻、钩子运行期现查 ⇒ 应立即生效，无需重进）');
-                    } catch (e) { warn('【验证】F7 处理失败', e); }
+                    } catch (e) { warn('【验证】裂荚切换失败', e); }
                 };
                 const gpnVerOn2 = (ev) => {
                     try {
@@ -5514,14 +5517,19 @@ export default {
                         } catch (e) { reap = '重新应用出错：' + e; }
                         log('【验证】收到 ' + tag + ' ｜ 钢地刺 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
                             + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : 250) + '）');
-                    } catch (e) { warn('【验证】F8 处理失败', e); }
+                    } catch (e) { warn('【验证】钢地刺切换失败', e); }
                 };
+                // ① 自动定时切换（核心：不需要任何输入）
+                try {
+                    setInterval(() => { gpnVerOn({ type: 'AUTO' }); }, 6000);
+                } catch (e) { warn('【验证】自动定时器安装失败', e); }
+                // ② 键盘 / ③ 鼠标（保留，作为佐证：能到的话日志里会写 keydown/mouseup）
                 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
                     document.addEventListener('mouseup', (ev) => {
                         try {
                             const x = Number(ev && (ev.clientX != null ? ev.clientX : ev.pageX));
                             const y = Number(ev && (ev.clientY != null ? ev.clientY : ev.pageY));
-                            if (isFinite(x) && isFinite(y) && x >= 0 && x <= 200 && y >= 0 && y <= 200) gpnVerOn(ev);
+                            if (isFinite(x) && isFinite(y) && x >= 0 && x <= 200 && y >= 0 && y <= 200) gpnVerOn2(ev);
                         } catch (e) { /* 只影响诊断 */ }
                     });
                     document.addEventListener('keydown', (ev) => {
@@ -5530,9 +5538,9 @@ export default {
                             if (k === 'F7') gpnVerOn(ev);
                             if (k === 'F8') gpnVerOn2(ev);
                         } catch (e) { /* 只影响诊断 */ }
-                    });
+                    }, true);   // 捕获阶段：万一引擎在冒泡阶段吞掉事件，这里也能收到
                 }
-                log('【验证】已就绪：左上角(0~200,0~200)点一下 或 F7 = 切裂荚；F8 = 切钢地刺并重应用数据；O = UI dump');
+                log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；F7/F8 与"左上角点击"作为佐证');
             } catch (e) { warn('【验证】安装失败', e); }
 
             // ---- 2. 巴豆 ----
