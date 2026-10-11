@@ -2441,7 +2441,10 @@ function makeBloomingHeartVictimPatch(Plant) {
 
     // 引擎：Plant.eat(dmg, zombie) -> this.dealDamage(dmg, 0)
     Plant.prototype.eat = function (dmg, zombie) {
-        if (!featOn('bloomingheart')) return original.call(this, dmg, zombie);   // 【运行期开关】关掉 ⇒ 原版啃食
+        // 【运行期开关】关掉 ⇒ 原版啃食
+        //   ⚠️ 必须是 `rec.original`（作用域里没有 `original` 这个名字）。
+        //   曾写成 `original.call(...)` ⇒ 每次啃食都抛 ReferenceError ⇒ **所有植物无敌**（实机 203 次报错）。
+        if (!featOn('bloomingheart')) return rec.original.call(this, dmg, zombie);
         const mult = SCALE[normalizeType(this.Plant_Type)];
         if (mult !== undefined && typeof dmg === 'number' && dmg > 0
             && zombie && zombie.BloomingHeartDefenceRateList
@@ -6705,7 +6708,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l16 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l17 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
