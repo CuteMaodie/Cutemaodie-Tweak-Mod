@@ -89,6 +89,7 @@ function featSet(name, on) {
     const prev = FEATURES_LIVE[name] !== false;
     FEATURES_LIVE[name] = next;
     if (prev !== next) { try { gpnFeatStorageSaveSoon(); } catch (e) { /* 忽略 */ } }
+    if (prev !== next && name === 'snowpea' && gpnSnowPeaGoldApply) { try { gpnSnowPeaGoldApply(); } catch (e2) { /* 忽略 */ } }   // gpnSnowPeaGoldApply 立即重刷
     return prev !== next;
 }
 
@@ -3147,6 +3148,12 @@ function gpnUiProbeDump(why) {
 
 let gpnUiProbeLastScene = '';
 
+/* 寒冰射手金卡：把"数据层"改金卡的动作抽成可重复调用的函数（开=金卡，关=还原）
+ *  · 数据层 = PlantFeatures[].OBTAINWORLD（引擎卡面 getPlantBGSpriteByObtainWorld 读它）
+ *  · 显示层 = Plants.getBGAnm 钩子（运行期现查 featOn('snowpea')）
+ *  用户在配置界面切换 snowpea ⇒ 立刻调用本函数（数据立即生效）；卡面在"进入关卡/重开图鉴"重建卡面时随之变化。 */
+let gpnSnowPeaGoldApply = null;
+
 /* 【临时诊断】阶段⓪ 可行性验证用的按键处理与"数据补丁引用"（调查结束整段删除） */
 let gpnTestToggles = null;
 let gpnTestToggles2 = null;
@@ -5698,7 +5705,7 @@ export default {
             //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
             //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
-                const gpnCfgV = 'v26';
+                const gpnCfgV = 'v27';
                 let origWin = null;          // 原版设置窗节点
                 let panel = null;            // 我们的窗体（克隆原版外壳）
                 let panelRowsBox = null;     // 我们窗体的 elements
@@ -6203,40 +6210,50 @@ let ticks = 0;
                 if (sp) recs.push(...sp);
             }
             // ---- 20b. 寒冰射手：金卡（数据 + 显示两条路一起走）----
-            //  getBGAnm 在【植物管理类】（持有 PlantFeatures 的那个）上，不在 Cards.ts 上。
-            //  先把数据改掉（OBTAINWORLD = market ⇒ 金卡 + prenium 背景），拿不到表只 warn。
-            if (featOn('snowpea')) {
-                try {
-                    const PM = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
-                    const res = PM && PM.plantRes;
-                    if (res && Array.isArray(res.PlantFeatures)) {
-                        const sd = res.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
-                        const w = (sd && sd.OBTAINWORLD) || 'market';
-                        for (const f of res.PlantFeatures) {
-                            if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = w;
-                        }
-                        log('寒冰射手：OBTAINWORLD -> ' + w + '（金卡）');
-                    } else { warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）'); }
-                } catch (e) { warn('寒冰射手：OBTAINWORLD 补丁出错', e); }
-            }
-            // 显示层兜底：包【植物管理类】的 getBGAnm，只对 snowpea 返回金卡参数
-            if (featOn('snowpea')) {
-                try {
-                    const PM = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
-                    if (PM && typeof PM.getBGAnm === 'function') {
-                        const og = PM.getBGAnm;
-                        PM.getBGAnm = function (feature, boosted) {
-                            const r = og.apply(this, arguments);
-                            if (feature && feature.CODENAME === CFG.snowpea.plantType && r) {
+            //  ⚠️【即时生效改造】这里**不再**用 featOn 包住安装：
+            //    · getBGAnm 钩子**常驻**，内部运行期现查 featOn('snowpea')；
+            //    · 数据层（OBTAINWORLD）抽成 gpnSnowPeaGoldApply()，切换 snowpea 时立刻重刷。
+            //  注意：**已经存在的卡片**不会自动重读 ⇒ 卡面在"进关卡 / 重开图鉴"重建卡面时随之变化
+            //        （引擎里没有 refreshCard 之类的刷新入口，已核对）。
+            try {
+                const PM0 = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
+                const res0 = PM0 && PM0.plantRes;
+                if (res0 && Array.isArray(res0.PlantFeatures)) {
+                    const sd0 = res0.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
+                    const goldW = (sd0 && sd0.OBTAINWORLD) || 'market';
+                    const vanW = (res0.PlantFeatures.find((x) => x && x.CODENAME === CFG.snowpea.plantType) || {}).OBTAINWORLD;
+                    gpnSnowPeaGoldApply = function () {
+                        try {
+                            const on = featOn('snowpea');
+                            for (const f of res0.PlantFeatures) {
+                                if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = on ? goldW : vanW;
+                            }
+                            log('寒冰射手：OBTAINWORLD -> ' + (on ? goldW + '（金卡）' : String(vanW) + '（还原）'));
+                            return true;
+                        } catch (e) { warn('寒冰射手：OBTAINWORLD 补丁出错', e); return false; }
+                    };
+                    gpnSnowPeaGoldApply();          // 启动时先应用一次
+                } else {
+                    warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）');
+                }
+            } catch (e) { warn('寒冰射手：OBTAINWORLD 准备出错', e); }
+            // 显示层兜底：包【植物管理类】的 getBGAnm（常驻 + 运行期现查）
+            try {
+                const PM = plantsMod && plantsMod.plants;
+                if (PM && typeof PM.getBGAnm === 'function') {
+                    const og = PM.getBGAnm;
+                    PM.getBGAnm = function (feature, boosted) {
+                        try {
+                            if (featOn('snowpea') && feature && feature.CODENAME === CFG.snowpea.plantType) {
                                 return { bg: CFG.snowpea.goldBg, golden: true, lod: false };
                             }
-                            return r;
-                        };
-                        recs.push({ Cls: PM, name: 'getBGAnm', original: og });
-                        log('寒冰射手：金卡钩子（Plants.getBGAnm）已挂');
-                    } else { warn('寒冰射手：Plants.getBGAnm 不在 —— 若数据路线也失败则卡面不变金'); }
-                } catch (e) { warn('寒冰射手：金卡钩子出错', e); }
-            }
+                        } catch (e) { /* 忽略 */ }
+                        return og.apply(this, arguments);
+                    };
+                    recs.push({ Cls: PM, name: 'getBGAnm', original: og });
+                    log('寒冰射手：金卡钩子（Plants.getBGAnm）已挂（运行期现查）');
+                } else { warn('寒冰射手：Plants.getBGAnm 不在 —— 若数据路线也失败则卡面不变金'); }
+            } catch (e) { warn('寒冰射手：金卡钩子出错', e); }
 
             // ---- 17. A2 星星果追击攻击 ----
             if (featOn('starfruit') && CFG.starfruit.followEnabled) {
