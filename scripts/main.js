@@ -71,8 +71,25 @@ const FEATURES = {
     verboseLog: false,      // 诊断日志总开关（默认关；排查时把 features.json 里的 verboseLog 改成 true）
 };
 
+/** 【运行期开关表】= 下面导出的 `_features`，**同一个对象**。
+ *  · `featOn(...)` 一律**运行期现查**这张表 ⇒ 游戏内配置界面改开关能**立刻生效**（不必退出重进）；
+ *  · `featLoad()` 把 features.json 的初值写进它；界面以后写它；
+ *  · 之所以不另建一张表：自检（以及将来可能的"重载"）是**改 `_features` 再 setup**，
+ *    只有让"导出的开关表" = "内部读的表"，那条链路才成立（曾经另建表导致自检 9 项失败）。 */
+const FEATURES_LIVE = FEATURES;
+
 /** 只有【显式写了 false】才算关；键不存在 / 不是布尔 -> 按开 */
-function featOn(name) { return FEATURES[name] !== false; }
+function featOn(name) { return FEATURES_LIVE[name] !== false; }
+
+/** 设置一个开关（运行期，立刻生效）；返回是否真的变化了。
+ *  这是"游戏内配置界面"写入的入口：改值后调用方按需重新应用数据补丁。 */
+function featSet(name, on) {
+    if (!(name in FEATURES_LIVE)) return false;
+    const next = (on !== false);
+    const prev = FEATURES_LIVE[name] !== false;
+    FEATURES_LIVE[name] = next;
+    return prev !== next;
+}
 
 /** 诊断日志总开关（features.json 的 verboseLog）。注意它在 FEATURES 表里登记为 false ⇒ 默认关。 */
 function verboseOn() { return featOn('verboseLog'); }
@@ -172,11 +189,11 @@ function featLoad() {
         }
         try {
             const obj = JSON.parse(String(txt).replace(/^\uFEFF/, ''));
-            for (const k of Object.keys(FEATURES)) {
-                if (obj[k] === true || obj[k] === false) FEATURES[k] = obj[k];
+            for (const k of Object.keys(FEATURES_LIVE)) {
+                if (obj[k] === true || obj[k] === false) FEATURES_LIVE[k] = obj[k];
             }
             FEATURES_MERGE_EXPLICIT_TRUE = (obj.starfruitFollowMerge === true);
-            const off = Object.keys(FEATURES).filter((k) => !featOn(k) && k !== 'verboseLog');
+            const off = Object.keys(FEATURES_LIVE).filter((k) => !featOn(k) && k !== 'verboseLog');
             log('features.json 已读取 —— ' + (off.length ? ('已关闭：' + off.join('、')) : '全部开启'));
             return obj;
         } catch (e) {
@@ -1001,11 +1018,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         gpnAlmApplyCalls++;
         const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
         // 钢地刺：降价 + 打击次数 3 -> 9
-        if (featOn('spikerock')) {
-            setField('PlantProps', 'spikerock', 'SunCost', CFG.spikerock.sunCost);
-            setField('PlantProps', 'spikerock', 'MaxSpike', CFG.spikerock.maxSpike);
-            setField('PlantProps', 'spikerock', 'Cooldown', CFG.spikerock.cooldown);
-        }
+        //  ⚠️【即时生效改造·数据类样板】这里**不再**用 `featOn` 包住赋值，而是"开/关都写"：
+        //   开 ⇒ 写我们的值；关 ⇒ 写回原版值（ORIG）。这样开关一改、再调一次 `apply()`
+        //   就能立刻改回去（`setField` 就是直接赋值 ⇒ 重复 apply 幂等）。
+        //   注意：**已经翻开的卡片 / 已经种下的植物**可能仍用旧值 ⇒ 界面上这类开关要标注
+        //   "下次进关卡生效"（官方文档也是这个口径）。
+        setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : 250);
+        setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : 3);
+        setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : 15);
         // 暗影龙葵：涨价
         if (featOn('nightshade')) {
             setField('PlantProps', 'nightshade', 'SunCost', CFG.nightshade.sunCost);
@@ -3030,6 +3050,11 @@ function gpnUiProbeDump(why) {
 
 let gpnUiProbeLastScene = '';
 
+/* 【临时诊断】阶段⓪ 可行性验证用的按键处理与"数据补丁引用"（调查结束整段删除） */
+let gpnTestToggles = null;
+let gpnTestToggles2 = null;
+let gpnTestDataPatch = null;
+
 /* ============================================================================
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
  *
@@ -5024,6 +5049,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         catch (e) { warn('裂荚射手：原版 onMouseDown 出错', e); }
         try {
             if (!C.clickFlip) return r;
+            if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 完全不插手（原版行为）
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;                 // 只认左键
             const next = !this.__gpnSpFlip;
@@ -5043,7 +5069,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     //   发射口参数【不动】：peaSpawnpoint / peaBackPoint 是植物根节点子节点，随 scale=-1 一起镜像。
     const recShoot = methodRecord(SplitPeaPlant, '_shoot');
     P._shoot = function (o, n, e, i, a, sp) {
-        if (this.__gpnSpFlip) {
+        if (featOn('splitpea') && this.__gpnSpFlip) {   // 【运行期开关】关掉 ⇒ 直接走原版
             const hadDir = !!(a && typeof a.x === 'number');
             const flipped = gpnSpFlipVec(a, Vec2Ctor);       // 参数缺省时也补成"朝后"
             if (dbgOn(C.debugLog)) {
@@ -5071,6 +5097,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     if (typeof baseDetect === 'function') {
         P.detectEnemySplit = function () {
             const r = baseDetect.apply(this, arguments);
+            if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 原样返回
             if (!this.__gpnSpFlip) return r;
             if (!r || typeof r !== 'object') return r;          // 形状不对就原样返回，绝不破坏引擎判读
             const out = { Left: !!r.Right, Right: !!r.Left };    // 屏幕左右 ⇄ 植物前后
@@ -5092,7 +5119,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function (t, o) {
             const r = rec.original.apply(this, arguments);
-            try { if (this.__gpnSpFlip) this.scale = -1; }
+            try { if (featOn('splitpea') && this.__gpnSpFlip) this.scale = -1; }   // 【运行期开关】
             catch (e) { warn('裂荚射手：移动后保持翻转出错', e); }
             return r;
         };
@@ -5109,7 +5136,11 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         P.specialPlantOnEnable = function () {
             const wasFlip = !!this.__gpnSpFlip;
             const scaleBefore = (typeof this.scale === 'number') ? this.scale : '?';
-            try { this.__gpnSpFlip = false; this.scale = 1; }
+            try {
+                // 这里始终复位（新种的默认不翻转）；"关掉开关后场上已翻转的株"由
+                // characterUpdate / characterLateUpdate 的运行期判断负责摆正（见下）。
+                this.__gpnSpFlip = false; this.scale = 1;
+            }
             catch (e) { warn('裂荚射手：复位出错', e); }
             if (dbgOn(C.debugLog)) {
                 try {
@@ -5221,9 +5252,20 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     //   ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
     // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
     const baseCharUpdate = P.characterUpdate;          // 继承自 Plant；可能不存在
+    /** 【运行期开关】关掉 splitpea 时，把"场上已经翻转的株"当场摆正。
+     *  只做一次（靠 __gpnSpFlip 标记判断）：复位渲染缩放 + 清掉翻转标记 ⇒ 下一帧不再插手。 */
+    const gpnSpUnflip = (plant) => {
+        try {
+            if (!plant || !plant.__gpnSpFlip) return;
+            plant.__gpnSpFlip = false;
+            try { plant.scale = 1; } catch (e) { /* 忽略 */ }
+        } catch (e) { /* 忽略 */ }
+    };
     P.characterUpdate = function (dt) {
         let r;
         if (typeof baseCharUpdate === 'function') r = baseCharUpdate.apply(this, arguments);
+        // 【运行期开关】关掉 ⇒ 不插手（只负责把"已翻转的"摆正一次），完全回到原版行为
+        if (!featOn('splitpea')) { gpnSpUnflip(this); return r; }
         try {
             if (this.__gpnSpFlip) {
                 const cur = this.node && this.node.scale && this.node.scale.x;
@@ -5280,6 +5322,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     P.characterLateUpdate = function (dt) {
         let r;
         if (typeof baseCharLate === 'function') r = baseCharLate.apply(this, arguments);
+        // 【运行期开关】关掉 ⇒ 帧末也不插手（同样只把"已翻转的"摆正一次）
+        if (!featOn('splitpea')) { gpnSpUnflip(this); return r; }
         try { gpnSpFixBodyScale(this); }
         catch (e) { warn('裂荚射手：帧末自愈出错', e); }
         return r;
@@ -5381,6 +5425,7 @@ export default {
             if (jsonMod.PvZ2ObjectContainer) {
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
                 dataPatch.apply();
+                gpnTestDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
 
                 // 保证在游戏数据加载完成后再落一次，避免被 readJsons 覆盖
                 const JSONsCls = jsonMod.JSONs;
@@ -5435,6 +5480,45 @@ export default {
                 }, 500);
                 log('UI侦查：已就绪（切场景自动 dump；或按 O 键 dump 当前场景）');
             } catch (e) { warn('UI侦查：安装失败', e); }
+
+            // ---- 1c.【临时诊断】"即时生效"可行性验证按键（阶段⓪）----
+            //   目的：在投入 35 处改造之前，先证明"运行期改开关 ⇒ 立刻生效"这条路线走得通。
+            //     · 按 `1` ⇒ 切【裂荚射手】（C 类样板：补丁已常驻、钩子里运行期现查 ⇒ 应立刻生效）；
+            //     · 按 `2` ⇒ 切【钢地刺】并**重新应用数据补丁**（B 类样板：数值类，
+            //       已翻开的卡片/已种下的植物可能仍用旧值 ⇒ 看"新种的"是否立刻用新数值）。
+            //   ⚠️ 这些数据只在内存里（不写 features.json）⇒ 退出游戏即还原。整段调查结束删除。
+            try {
+                gpnTestToggles = () => {
+                    try {
+                        const a = featSet('splitpea', !featOn('splitpea'));
+                        log('【验证】裂荚射手 = ' + (featOn('splitpea') ? '开' : '关') + (a ? '' : '（未变化）'));
+                        // 开/关之后**不动**场上那些株的翻转标记 ⇒ 正好顺便验证"关掉时会被自动摆正"
+                    } catch (e) { warn('【验证】切裂荚失败', e); }
+                };
+                gpnTestToggles2 = () => {
+                    try {
+                        featSet('spikerock', !featOn('spikerock'));
+                        let reap = '（没找到数据补丁）';
+                        try {
+                            if (gpnTestDataPatch && typeof gpnTestDataPatch.apply === 'function') {
+                                gpnTestDataPatch.apply();
+                                reap = '已重新应用';
+                            }
+                        } catch (e) { reap = '重新应用出错：' + e; }
+                        log('【验证】钢地刺 = ' + (featOn('spikerock') ? '开' : '关') + '；数据补丁 ' + reap);
+                    } catch (e) { warn('【验证】切钢地刺失败', e); }
+                };
+                if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+                    document.addEventListener('keydown', (ev) => {
+                        try {
+                            const k = ev && (ev.key || ev.code);
+                            if (k === '1' || k === 'Digit1') gpnTestToggles();
+                            if (k === '2' || k === 'Digit2') gpnTestToggles2();
+                        } catch (e) { /* 只影响诊断 */ }
+                    });
+                }
+                log('【验证】已就绪：按 1 = 切裂荚（行为类，应立刻生效）；按 2 = 切钢地刺并重应用数据（数值类）');
+            } catch (e) { warn('【验证】安装失败', e); }
 
             // ---- 2. 巴豆 ----
             if (featOn('chilibean')) {
@@ -5523,7 +5607,11 @@ export default {
                 if (mk) recs.push(...mk);
             }
             // ---- 25. 裂荚射手：左键左右翻转 + 前后豌豆数对调 ----
-            if (featOn('splitpea')) {
+            //  ⚠️【即时生效改造·样板】这里**不再**用 `featOn` 包住安装 ——
+            //  补丁**永远装着**，行为在钩子内部**运行期现查** `featOn('splitpea')`。
+            //  这样在游戏内配置界面改开关就能**立刻生效**（不需要退出游戏重进）。
+            //  其它功能后续按同一套路逐个改造（阶段②）。
+            {
                 const sp = makeSplitPeaPatch(splitPeaMod && splitPeaMod.SplitPeaPlant, { cc: ccMod });
                 if (sp) recs.push(...sp);
             }
@@ -5676,7 +5764,7 @@ export default {
             }
 
             {
-                const off = Object.keys(FEATURES).filter((k) => !featOn(k) && k !== 'verboseLog');
+                const off = Object.keys(FEATURES_LIVE).filter((k) => !featOn(k) && k !== 'verboseLog');
                 // 依赖：starfruit 关掉 ⇒ starfruitFollowMerge 一律视为关闭（运行时判定，绝不去改玩家的 features.json）。
                 //   ① 把它也列进【已关闭】，玩家能看到"我没关它、它也关了"；
                 //   ② 玩家【显式写了 true】时额外打一行黄色提示，解释为什么没生效。
