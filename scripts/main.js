@@ -122,9 +122,35 @@ function gpnFeatSnapshot() {
 }
 
 function gpnFeatValidate(v) {
-    if (!v || typeof v !== 'object') return false;
-    for (const k of Object.keys(gpnFeatDefaults)) if (typeof v[k] !== 'boolean') return false;
-    return true;
+    // ★ 宽容校验（实机教训）：原来要求"23 个键全是 boolean"，
+    //   只要存档缺一个键（老版本 / 早期键集）就判**整份无效** ⇒ 引擎静默回落到 defaults（全开）。
+    //   现在只做形状检查，键的补齐与坏值纠正交给 gpnFeatMigrate。
+    return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 把任意旧值归一成"完整、键齐全、值为 boolean"的设置表。
+ *  逐键合并到 defaults 之上：缺键 ⇒ 用默认值；坏值 ⇒ 用默认值。
+ *  （这就是官方说的 migrate："它返回升级后的值，再经 validate 检查"。） */
+function gpnFeatNormalize(v) {
+    const out = {};
+    const src = (v && typeof v === 'object') ? v : {};
+    for (const k of Object.keys(gpnFeatDefaults)) {
+        out[k] = (typeof src[k] === 'boolean') ? src[k] : (gpnFeatDefaults[k] !== false);
+    }
+    return out;
+}
+
+/** 存储升级钩子：旧结构缺键时补齐（version 从任意旧值升到当前） */
+function gpnFeatMigrate(value, fromVersion, toVersion) {
+    try {
+        const normalized = gpnFeatNormalize(value);
+        const missing = Object.keys(gpnFeatDefaults).filter((k) => !value || typeof value[k] !== 'boolean');
+        if (missing.length) log('开关持久化：升级存储（补齐 ' + missing.length + ' 个键：' + missing.join('、') + '）');
+        return normalized;
+    } catch (e) {
+        warn('开关持久化：升级出错 ⇒ 用默认值', e);
+        return gpnFeatNormalize(null);
+    }
 }
 
 async function gpnFeatStorageLoad(ctx) {
@@ -135,15 +161,20 @@ async function gpnFeatStorageLoad(ctx) {
         }
         gpnFeatStore = await ctx.storage.open({
             scope: 'global',
-            version: 1,
+            version: 2,                              // ★ 提升到 2：旧存档会走 migrate 补齐缺键
             defaults: Object.assign({}, gpnFeatDefaults),
             validate: gpnFeatValidate,
+            migrate: gpnFeatMigrate,                 // ★ 官方 API："增加 version 时用 migrate 处理旧数据"
         });
         const saved = await gpnFeatStore.read();
+        // ★ 读回后再逐键兜底一次：缺键/坏值一律回落到默认（避免"某个键凭空变开"，实机踩过）
+        const norm = gpnFeatNormalize(saved);
         let applied = 0;
         for (const k of Object.keys(gpnFeatDefaults)) {
-            if (typeof saved[k] === 'boolean') { FEATURES_LIVE[k] = saved[k]; applied++; }
+            FEATURES_LIVE[k] = norm[k];
+            applied++;
         }
+        if (FEATURES_LIVE.verboseLog === undefined) FEATURES_LIVE.verboseLog = false;
         const offList = Object.keys(gpnFeatDefaults).filter((k) => !featOn(k) && k !== 'verboseLog');
         log('开关持久化：已从存储读入 ' + applied + ' 项' + (offList.length ? ('（已关闭：' + offList.join('、') + '）') : '（全部开启）'));
         return true;
@@ -6946,7 +6977,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l23 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l24 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
