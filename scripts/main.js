@@ -1285,25 +1285,33 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
         setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
 
-        // 星星果系：阳光 + 12 条弹道的穿透/溅射
-        if (featOn('starfruit')) {
-            // !! v2.8.2 补：CFG 里一直有 sunCost:125，但【从来没有写进数据】——
-            //    v2.8.1 之前游戏里星星果一直是 150 阳光。这里补上。
-            setField('PlantProps', 'starfruit', 'SunCost', CFG.starfruit.sunCost);
-            // 本次：天使星星果 175 阳光、流星果 550 阳光（原版 500）+ 种植冷却 10 秒
-            setField('PlantProps', 'pinkstarfruit', 'SunCost', CFG.starfruit.pinkSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'SunCost', CFG.starfruit.shootingSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'Cooldown', CFG.starfruit.shootingCooldown);
+        // 星星果系：阳光/冷却（★两态，挪到包裹外）+ 12 条弹道的穿透/溅射（开=写、关=删）
+        setField('PlantProps', 'starfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.sunCost : VANILLA.starfruit.sunCost);
+        setField('PlantProps', 'pinkstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.pinkSunCost : VANILLA.starfruit.pinkSunCost);
+        setField('PlantProps', 'shootingstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.shootingSunCost : VANILLA.starfruit.shootingSunCost);
+        setField('PlantProps', 'shootingstarfruit', 'Cooldown', featOn('starfruit') ? CFG.starfruit.shootingCooldown : VANILLA.starfruit.shootingCooldown);
+        {
             const STAR_PRJ = ['star', 'star1', 'star2', 'star_pf',
                 'pinkstar', 'pinkstar1', 'pinkstar2', 'pinkstar_pf',
                 'shootingstar', 'shootingstar1', 'shootingstar2', 'shootingstar_pf'];
             const list = PvZ2ObjectContainer.ProjectileProps;
+            const onStar = featOn('starfruit');
             if (Array.isArray(list)) {
                 for (const e of list) {
                     if (!e || !Array.isArray(e.aliases)) continue;
                     if (!e.aliases.some((a) => STAR_PRJ.indexOf(a) !== -1)) continue;
                     if (!e.objdata) e.objdata = {};
                     const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (!onStar) {
+                        // ★ 关掉 ⇒ 清掉我们打过的全部标记与溅射条目（原版星果弹道没有这些字段）
+                        putAbsent(PIERCE_KEY);
+                        putAbsent(PIERCE_ALWAYS_KEY);
+                        putAbsent(SPLASH_RATIO_KEY);
+                        putAbsent(STAR_KIND_KEY);
+                        putAbsent('SplashDamage');
+                        continue;
+                    }
                     // v2.8.0：标出这条弹道属于哪一株（A2 追击的触发判定要用）
                     const kind = gpnStarKindOf(e.aliases[0]);
                     // v1.0.0：三种星果的穿透各自一份；钳制后 = 1 ⇒ 干脆不打穿透标记
@@ -1398,43 +1406,68 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
         }
         // ---- 裂荚射手：阳光【显式写回原版 200】（原注释错写成「200 -> 225」；写一遍防被别的 mod 改掉）----
-        if (featOn('splitpea')) {
-            setField('PlantProps', CFG.splitpea.plantType, 'SunCost', CFG.splitpea.sunCost);
-        }
+        setField('PlantProps', CFG.splitpea.plantType, 'SunCost', featOn('splitpea') ? CFG.splitpea.sunCost : VANILLA.splitpea.sunCost);   // ★两态：关掉写回原版 125
         // ---- 寒冰射手：单格范围冰减速 + 概率冰锥（伤害跟随寒冰射手）----
-        if (featOn('snowpea')) {
+        //  ★ 两态化：开=写数据+建冰锥；关=**删掉**弹道溅射、**移除**克隆冰锥、写回原版两字段。
+        //     （原来整块被 featOn 包住 ⇒ 关掉时不执行 ⇒ 冰锥与单格减速都还在。）
+        {
             const SP = CFG.snowpea, PC = PvZ2ObjectContainer;   // 容器是 makeDataPatcher 的入参
+            const onSP = featOn('snowpea');
             const pea = (PC.ProjectileProps || []).find((x) => x && (x.aliases || []).indexOf(SP.peaType) !== -1);
             const peaDmg = pea && pea.objdata ? pea.objdata.Damage : null;
-            setField('ProjectileProps', SP.peaType, 'SplashDamage',
-                [{ ChillDuration: SP.chillDuration, Range: { w: 1, h: 1 } }]);
-            const spike = gpnCloneProjectile(PC, SP.cloneFrom, SP.spikeAlias, (od) => {
-                od.ChillDuration = SP.chillDuration;
-                od.FreezeDuration = SP.freezeDuration;
-                od.SplashDamage = [{ ChillDuration: SP.chillDuration,
-                    FreezeDuration: SP.splashFreezeDuration, Range: { w: 1, h: 1 } }];
-                if (peaDmg != null) od.Damage = peaDmg;
-            });
-            if (spike) {
-                // ★ 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
+            const findIdx = (arr, alias) => Array.isArray(arr) ? arr.findIndex((x) => x && (x.aliases || []).indexOf(alias) !== -1) : -1;
+            if (onSP) {
+                setField('ProjectileProps', SP.peaType, 'SplashDamage',
+                    [{ ChillDuration: SP.chillDuration, Range: { w: 1, h: 1 } }]);
+                const spike = gpnCloneProjectile(PC, SP.cloneFrom, SP.spikeAlias, (od) => {
+                    od.ChillDuration = SP.chillDuration;
+                    od.FreezeDuration = SP.freezeDuration;
+                    od.SplashDamage = [{ ChillDuration: SP.chillDuration,
+                        FreezeDuration: SP.splashFreezeDuration, Range: { w: 1, h: 1 } }];
+                    if (peaDmg != null) od.Damage = peaDmg;
+                });
+                if (spike) {
+                    // ★ 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
+                    try {
+                        const tl = PC.ProjectileTypes;
+                        if (Array.isArray(tl) && !tl.some((x) => (x.aliases || []).indexOf(SP.spikeAlias) !== -1)) {
+                            const ts = tl.find((x) => (x.aliases || []).indexOf(SP.cloneFrom) !== -1);
+                            if (ts) tl.push({ objclass: ts.objclass, aliases: [SP.spikeAlias],
+                                objdata: Object.assign({}, ts.objdata) });
+                        }
+                    } catch (e) { warn('寒冰射手：ProjectileTypes 注册失败', e); }
+                    setField('PlantProps', SP.plantType, 'ChanceToFreeze', SP.freezeChance);
+                    setField('PlantProps', SP.plantType, 'PeaFreezeType', SP.spikeAlias);
+                } else { warn('寒冰射手：冰锥没建起来，ChanceToFreeze 保持原样'); }
+            } else {
+                // ---- 关掉：把寒冰射手还原成原版 ----
                 try {
-                    const tl = PC.ProjectileTypes;
-                    if (Array.isArray(tl) && !tl.some((x) => (x.aliases || []).indexOf(SP.spikeAlias) !== -1)) {
-                        const ts = tl.find((x) => (x.aliases || []).indexOf(SP.cloneFrom) !== -1);
-                        if (ts) tl.push({ objclass: ts.objclass, aliases: [SP.spikeAlias],
-                            objdata: Object.assign({}, ts.objdata) });
+                    const pi = findIdx(PC.ProjectileProps, SP.peaType);
+                    if (pi >= 0 && PC.ProjectileProps[pi].objdata) {
+                        track(PC.ProjectileProps[pi].objdata, 'SplashDamage');
+                        if (typeof gpnVanilla === 'function') {
+                            const v = gpnVanilla('ProjectileProps', SP.peaType, 'SplashDamage');
+                            if (v.had) PC.ProjectileProps[pi].objdata.SplashDamage = v.value;
+                            else { try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e2) { /* ignore */ } }
+                        } else { try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e3) { /* ignore */ } }
                     }
-                } catch (e) { warn('寒冰射手：ProjectileTypes 注册失败', e); }
-                setField('PlantProps', SP.plantType, 'ChanceToFreeze', SP.freezeChance);
-                setField('PlantProps', SP.plantType, 'PeaFreezeType', SP.spikeAlias);
-            } else { warn('寒冰射手：冰锥没建起来，ChanceToFreeze 保持原样'); }
+                    const si = findIdx(PC.ProjectileProps, SP.spikeAlias);
+                    if (si >= 0) PC.ProjectileProps.splice(si, 1);          // 原版没有这个弹道 ⇒ 删掉
+                    const ti = findIdx(PC.ProjectileTypes, SP.spikeAlias);
+                    if (ti >= 0) PC.ProjectileTypes.splice(ti, 1);
+                    log('寒冰射手：关掉 ⇒ 已移除克隆冰锥并还原弹道溅射');
+                } catch (eC) { warn('寒冰射手：还原时出错', eC); }
+            }
+            setField('PlantProps', SP.plantType, 'ChanceToFreeze', onSP ? SP.freezeChance : 0);
+            setField('PlantProps', SP.plantType, 'PeaFreezeType', onSP ? SP.spikeAlias : SP.peaType);
         }
         // 甜椒投手：阳光 + 种植冷却 + 灼烧标记
+        // ★ 两态：阳光/冷却挪到包裹外（关掉时必须写回原版 200/20）
+        setField('PlantProps', 'pepperpult', 'SunCost', featOn('pepperpult') ? CFG.pepperpult.sunCost : VANILLA.pepperpult.sunCost);
+        setField('PlantProps', 'pepperpult', 'Cooldown', featOn('pepperpult') ? CFG.pepperpult.packetCooldown : VANILLA.pepperpult.cooldown);
         if (featOn('pepperpult')) {
-            setField('PlantProps', 'pepperpult', 'SunCost', CFG.pepperpult.sunCost);
             // !! v2.8.2 修：真实字段叫 Cooldown，不叫 PacketCooldown ——
             //    之前写错了名字，等于凭空加了个没人读的字段，游戏里冷却一直是 20 秒。
-            setField('PlantProps', 'pepperpult', 'Cooldown', CFG.pepperpult.packetCooldown);
             // 给甜椒弹道打上「落地要灼烧」的私有标记。
             // v2.7.1 修正：运行时 ProjectileProps 用的是【小写对象别名】
             //   pepper / pepper1 / pepper2 / pepper_pf，
@@ -1463,7 +1496,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (!e.aliases.some((a) => want.indexOf(a) !== -1)) continue;
                     if (!e.objdata) e.objdata = {};
                     track(e.objdata, BURN_RATIO_KEY);
-                    e.objdata[BURN_RATIO_KEY] = CFG.pepperpult.burnTotalRatio;
+                    // ★ 两态：开=打标记；关=删掉标记（否则关掉后落地/护盾/障碍仍会铺火）
+                    if (featOn('pepperpult')) e.objdata[BURN_RATIO_KEY] = CFG.pepperpult.burnTotalRatio;
+                    else { try { delete e.objdata[BURN_RATIO_KEY]; } catch (e2) { /* ignore */ } }
                     pepHit++;
                 }
                 if (!pepHit) {
@@ -2945,6 +2980,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     if (typeof DandelionPlant.prototype.detectEnemy === 'function') {
         const recDet = methodRecord(DandelionPlant, 'detectEnemy');
         DandelionPlant.prototype.detectEnemy = function () {
+            if (!featOn('dandelion')) return recDet.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版索敌（不再额外一颗子弹）
             try {
                 return gpnDandelionCandidates(this).some((c) => c.zombies.length || c.tombs.length);
             } catch (e) { warn('蒲公英索敌出错', e); }
@@ -3595,6 +3631,7 @@ function makePepperBurnPatch(CommonShot, deps) {
         const rec2 = methodRecord(CommonShot, 'specialOnGroundHit');
         CommonShot.prototype.specialOnGroundHit = function () {
             const r = rec2.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 触地不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(触地)出错', e); }
@@ -3613,6 +3650,7 @@ function makePepperBurnPatch(CommonShot, deps) {
         const rec3 = methodRecord(CommonShot, 'hitFloor');
         CommonShot.prototype.hitFloor = function () {
             const r = rec3.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 落地不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(落地)出错', e); }
@@ -3636,6 +3674,7 @@ function makePepperBurnPatch(CommonShot, deps) {
             // 先把格子取出来：原版在这之前已经 dealDamage 过，障碍物可能已经被打碎
             const cell = tomb && tomb.inLnC;
             const r = rec4.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 打障碍物不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps, cell);
             } catch (e) { warn('甜椒灼烧(障碍物)出错', e); }
@@ -3659,7 +3698,8 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToPlant === 'function') {
         const rec5 = methodRecord(CommonShot, 'dealDamageToPlant');
         CommonShot.prototype.dealDamageToPlant = function (plant) {
-            gpnPepperEnforceReflect(this);   // 【修 BUG】弄臣反弹的弹先"去投掷物化"，再让引擎判伞叶
+            gpnPepperEnforceReflect(this);   // 【修 BUG】弄臣反弹的弹先"去投掷物化"，再让引擎判伞叶（这条始终保留）
+            if (!featOn('pepperpult')) return rec5.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 不做伞叶/铺火判定
             // 只对【被弹反的投掷物】生效：enemyType 翻成 plant 且带灼烧标记（= 我们的甜椒弹）
             // ⚠️ 但**弄臣僵尸反弹的**不算投掷物 ⇒ 完全不走我们这两条伞叶判定（也不播格挡动画）
             const jugglerReflected = (this.__gpnReflectBy === 'juggler');
@@ -4867,6 +4907,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             let r;
             try { r = rec.original.apply(this, arguments); }
             finally { this.__gpnFooding = false; }
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 大招不解除安抚
             try {
                 if (C.clearPlantDebuff) {
                     const n = gpnScanPlants(this, deps, true, (p) => gpnClearSoothe(p, deps, fx, this));
@@ -4885,6 +4926,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'detectEnemies');
         P.detectEnemies = function () {
             if (rec.original.apply(this, arguments)) return true;
+            if (!featOn('phatbeet')) return false;   // 【运行期开关】关掉 ⇒ 不因"范围内有被安抚植物"而开火
             try {
                 return gpnScanPlants(this, deps, false,
                     (p) => !(p.objdataOwn && p.objdataOwn.ImmuneToBoomBox) && p.boomboxCD > 0) > 0;
@@ -4897,6 +4939,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
     if (Zombie && Zombie.prototype && typeof Zombie.prototype.defaultShouldSpeedScale === 'function') {
         const rec = methodRecord(Zombie, 'defaultShouldSpeedScale');
         Zombie.prototype.defaultShouldSpeedScale = function () {
+            if (!featOn('phatbeet')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 无音乐免疫
             if (!(this.__gpnJamClearCD > 0) || !FrontYard
                 || typeof FrontYard.getCurrentJam !== 'function') {
                 return rec.original.apply(this, arguments);
@@ -6708,7 +6751,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l17 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l18 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
