@@ -584,7 +584,7 @@ const CFG = {
     },
     redstinger: {                      // 红针花：承伤倍率 + 左键循环切换形态
         plantType: 'redstinger',
-        sunCost: 200,                  //   阳光消耗（原版 150 ⇒ 本次 150 -> 200）
+        sunCost: 175,                  //   阳光消耗（原版 150 ⇒ 曾改 200 ⇒ 用户指定改为 **175**）
         tier1: 0.2,                    //   inArea 1（第 4~6 列）承伤倍率（原 0.3333333）= 80% 减伤
         tier2: 0.1,                    //   inArea 2（第 7~9 列）承伤倍率（原 0.2）= 90% 减伤
         knockbackDistance: 0.05,       //   inArea 1 的子弹击退力度（格）—— 走引擎自带的 knockbackDistance（同飞天豌豆/龙葵）
@@ -7049,7 +7049,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l36 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l37 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
