@@ -6479,6 +6479,9 @@ function findSprite(n) {
                                 setSize(row, cw, ch);
                                 setText(findDeep(row, 'ToolTip', 0) || row, it.label);
                                 // ★ 括号小字（照原版"最大帧率"那行的小字样式）：目前只有"诊断日志"需要
+                                //   ⚠ 原文案是「(需重新启动游戏)」—— **已过期**：本模组的开关（含诊断日志）
+                                //     都是**点一下立刻生效**（切换处理器里紧接着就 renderAll + apply 数据补丁），
+                                //     所以改成说明它"只影响日志、不影响游戏"。
                                 let hintNode = null;
                                 if (it.key === 'verboseLog') {
                                     try {
@@ -6489,7 +6492,7 @@ function findSprite(n) {
                                             noWidget(h);
                                             for (const c of (h.components || [])) {
                                                 if (c && typeof c.string === 'string') {
-                                                    c.string = '(需重新启动游戏)';
+                                                    c.string = '(仅影响日志)';
                                                     try { c.fontSize = Math.max(18, Math.round((c.fontSize || 32) * 0.5)); } catch (eF) { }
                                                     try { c.lineHeight = Math.max(20, Math.round((c.lineHeight || 36) * 0.5)); } catch (eL2) { }
                                                     try { c.color = ccColor(120, 110, 100, 255); } catch (eC) { }
@@ -7006,7 +7009,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l31 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l32 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
