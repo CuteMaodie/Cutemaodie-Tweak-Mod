@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.0.0';
+const MOD_VERSION = '1.1.0';
 /* ★ 实例身份：每次模块被加载都会生成一个新的 ID。
  *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -7049,7 +7049,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l35 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l36 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
