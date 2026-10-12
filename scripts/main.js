@@ -1385,22 +1385,27 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', featOn('redstinger') ? CFG.redstinger.tier1 : VANILLA.redstinger.tier1);
         setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', featOn('redstinger') ? CFG.redstinger.tier2 : VANILLA.redstinger.tier2);
         setField('PlantProps', CFG.redstinger.plantType, 'SunCost', featOn('redstinger') ? CFG.redstinger.sunCost : VANILLA.redstinger.sunCost);
-        if (featOn('redstinger')) {   // 下面这段是"弹道击退"，只在开着时写（关掉不还原原版弹道，属已知文案/道具类）
-            // 击退：inArea1（半防御半攻击）专用弹道是 redstinger_weak ——
-            //   引擎 RedStinger.animationListener 里 inArea==1 时走 PeaTypeWeak，别名就是它，别的形态/植物都不用这条 ⇒
-            //   直接写数据即可（引擎在 specialOnObjdataSet 里把这三个字段搬到子弹上，命中时自己调 knockBack）。
-            //   两个附加字段与「飞天豌豆 / 暗影龙葵」同一口径：地面推不挑飞 + 不打断已有击退。
-            {
-                const plist = PvZ2ObjectContainer.ProjectileProps;
-                if (Array.isArray(plist)) {
-                    for (const e of plist) {
-                        if (!e || !Array.isArray(e.aliases)) continue;
-                        if (e.aliases.indexOf('redstinger_weak') === -1) continue;
-                        if (!e.objdata) e.objdata = {};
-                        const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+        // ---- 红针花 inArea1 的「子弹击退」：★两态 ----
+        //   原版 redstinger_weak 只有 Damage/Size（已核对 Objects/ProjectileProps.json）
+        //   ⇒ 开：写三个击退字段；关：**删掉**它们（恢复原版弹道）。
+        {
+            const plist = PvZ2ObjectContainer.ProjectileProps;
+            const onRs = featOn('redstinger');
+            if (Array.isArray(plist)) {
+                for (const e of plist) {
+                    if (!e || !Array.isArray(e.aliases)) continue;
+                    if (e.aliases.indexOf('redstinger_weak') === -1) continue;
+                    if (!e.objdata) e.objdata = {};
+                    const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (onRs) {
                         put('KnockbackDistance', CFG.redstinger.knockbackDistance);
                         put('CancelsKnockbackFlying', true);
                         put('CannotInterruptOtherKnockback', true);
+                    } else {
+                        putAbsent('KnockbackDistance');
+                        putAbsent('CancelsKnockbackFlying');
+                        putAbsent('CannotInterruptOtherKnockback');
                     }
                 }
             }
@@ -1456,6 +1461,26 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     const ti = findIdx(PC.ProjectileTypes, SP.spikeAlias);
                     if (ti >= 0) PC.ProjectileTypes.splice(ti, 1);
                     log('寒冰射手：关掉 ⇒ 已移除克隆冰锥并还原弹道溅射');
+                    // ★【Q5 诊断】把运行时的真实状态打出来（判断"单格减速"到底还在不在）
+                    try {
+                        const _dump = (alias) => {
+                            const hit = (PC.ProjectileProps || []).filter((x) => x && (x.aliases || []).indexOf(alias) !== -1);
+                            if (!hit.length) return alias + '=(无此条目)';
+                            return hit.map((x) => {
+                                const o = x.objdata || {};
+                                const sd = o.SplashDamage;
+                                return alias + '[chill=' + (o.ChillDuration === undefined ? '-' : o.ChillDuration)
+                                    + ',freeze=' + (o.FreezeDuration === undefined ? '-' : o.FreezeDuration)
+                                    + ',splash=' + (sd === undefined ? '无' : (Array.isArray(sd) ? ('有(' + sd.length + ')') : '有(非数组)')) + ']';
+                            }).join(' + ');
+                        };
+                        const _types = (PC.ProjectileTypes || []).filter((x) => x && (x.aliases || []).indexOf(SP.spikeAlias) !== -1).length;
+                        const _p = (PC.PlantProps || []).filter((x) => x && (x.aliases || []).indexOf(SP.plantType) !== -1)[0];
+                        const _po = (_p && _p.objdata) || {};
+                        log('【Q5诊断】' + _dump(SP.peaType) + ' ｜ ' + _dump(SP.spikeAlias) + ' ｜ ' + _dump('pea_snow1') + ' ｜ ' + _dump('pea_snow2')
+                            + ' ｜ ProjectileTypes 含' + SP.spikeAlias + '=' + _types + ' 个'
+                            + ' ｜ 寒冰射手 ChanceToFreeze=' + _po.ChanceToFreeze + ' PeaFreezeType=' + _po.PeaFreezeType);
+                    } catch (eD) { clog('【Q5诊断】出错：' + eD); }
                 } catch (eC) { warn('寒冰射手：还原时出错', eC); }
             }
             setField('PlantProps', SP.plantType, 'ChanceToFreeze', onSP ? SP.freezeChance : 0);
@@ -1536,18 +1561,29 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 注意：击退【不在这里】—— 它是逐发按暗影态在 _shoot 里设的（见 makeNightShadePatch），
         //       否则非暗影态的子弹也会带击退（v2.4.2 的 BUG）。
         const prjs = PvZ2ObjectContainer.ProjectileProps;
-        if (featOn('nightshade') && Array.isArray(prjs) && prjs.length) {
-            for (const e of prjs) {
-                if (!e || !Array.isArray(e.aliases)) continue;
-                if (!e.aliases.some((a) => typeof a === 'string' && a.indexOf('nightshade') === 0)) continue;
-                if (!e.objdata) e.objdata = {};
-                const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
-                put('CancelsKnockbackFlying', true);          // 与飞天豌豆一致：地面推，不挑飞
-                put('CannotInterruptOtherKnockback', true);   // 与飞天豌豆一致：不打断已有击退
-                // 穿透数同样走统一钳制（小数向下取整 / < 1 ⇒ 1）；1 = 不穿透 ⇒ 干脆不写标记
-                const nsPierce = gpnPierceN(CFG.nightshade.pierceTargets);
-                if (nsPierce >= 2) put(PIERCE_KEY, nsPierce);
-                else { track(e.objdata, PIERCE_KEY); delete e.objdata[PIERCE_KEY]; }
+        {
+            const onNs = featOn('nightshade');
+            if (Array.isArray(prjs) && prjs.length) {
+                for (const e of prjs) {
+                    if (!e || !Array.isArray(e.aliases)) continue;
+                    if (!e.aliases.some((a) => typeof a === 'string' && a.indexOf('nightshade') === 0)) continue;
+                    if (!e.objdata) e.objdata = {};
+                    const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (onNs) {
+                        put('CancelsKnockbackFlying', true);          // 与飞天豌豆一致：地面推，不挑飞
+                        put('CannotInterruptOtherKnockback', true);   // 与飞天豌豆一致：不打断已有击退
+                        // 穿透数同样走统一钳制（小数向下取整 / < 1 ⇒ 1）；1 = 不穿透 ⇒ 干脆不写标记
+                        const nsPierce = gpnPierceN(CFG.nightshade.pierceTargets);
+                        if (nsPierce >= 2) put(PIERCE_KEY, nsPierce);
+                        else putAbsent(PIERCE_KEY);
+                    } else {
+                        // ★ 关掉 ⇒ 清掉我们打过的字段（原版 nightshade 弹道没有它们）
+                        putAbsent('CancelsKnockbackFlying');
+                        putAbsent('CannotInterruptOtherKnockback');
+                        putAbsent(PIERCE_KEY);
+                    }
+                }
             }
         }
         // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
@@ -1766,6 +1802,8 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square) {
     const original = Shot.prototype.beforeZombieHit;
 
     Shot.prototype.beforeZombieHit = function (zombie) {
+        // 【运行期开关】关掉 ⇒ 只走原版单体命中，不再把 debuff 扩散成 1×3
+        if (!featOn('bloomingheart')) return original.call(this, zombie);
         if (!zombie || !zombie.inLnC || !zombie.inLane) return original.call(this, zombie);
 
         // 以命中目标所在格为中心、同排 3 格宽的判定框
@@ -2993,6 +3031,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     const rec = methodRecord(DandelionPlant, 'animationListener');
     DandelionPlant.prototype.animationListener = function (e) {
         const r = rec.original.apply(this, arguments);
+        if (!featOn('dandelion')) return r;   // 【运行期开关】关掉 ⇒ 不再多发一颗子弹（这就是它真正的实现处）
         try {
             const n = CFG.dandelion.extraShots;
             if (n > 0 && e && e.name === 'Shoot' && !this.fooding && !this.isAirRaidPlant
@@ -3023,6 +3062,8 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const recD = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect, details, o) {
+            // 【运行期开关】关掉 ⇒ 不做"对飞行/BOSS 伤害×2 + 眩晕"（原样走引擎）
+            if (!featOn('dandelion')) return recD.original.apply(this, arguments);
             let info = null;
             try {
                 if (z && this.__gpnDandelionKind) info = gpnDandelionHitInfo(z, this.__gpnDandelionKind);
@@ -3734,6 +3775,7 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.splat === 'function') {
         const rec6 = methodRecord(CommonShot, 'splat');
         CommonShot.prototype.splat = function () {
+            if (!featOn('pepperpult')) return rec6.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 被护盾吸收时也不铺火
             try {
                 if (this.__gpnBurnRatio > 0 && !this.__gpnBurned) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(被吸收)出错', e); }
@@ -5184,10 +5226,15 @@ function gpnMkJellyTune(plant) {
     if (!(plant.__gpnMkBaseJelly > 0)) {
         plant.__gpnMkBaseJelly = (od.JellyToughness > 0) ? od.JellyToughness : (C.jellyBaseHp > 0 ? C.jellyBaseHp : 2500);
     }
-    const wantHp = plant.__gpnMkBaseJelly + (C.jellyBonusHp > 0 ? C.jellyBonusHp : 0);
+    // ★ 两态：开 = 基础 + 加成（2500+2500=5000）/ 0.3；关 = 原版 2500 / 0.6 / 5
+    //   （原版值来自 Objects/PlantProps.json，已逐字段核对）
+    const onMk = featOn('murkadamia');
+    const wantHp = onMk ? (plant.__gpnMkBaseJelly + (C.jellyBonusHp > 0 ? C.jellyBonusHp : 0)) : plant.__gpnMkBaseJelly;
     if (od.JellyToughness !== wantHp) od.JellyToughness = wantHp;
-    if (C.jellyCooldown > 0 && od.JellyCooldown !== C.jellyCooldown) od.JellyCooldown = C.jellyCooldown;
-    if (C.jellyInitialPct > 0 && od.JellyInitialPct !== C.jellyInitialPct) od.JellyInitialPct = C.jellyInitialPct;
+    const wantCd = onMk ? C.jellyCooldown : 5;
+    if (wantCd > 0 && od.JellyCooldown !== wantCd) od.JellyCooldown = wantCd;
+    const wantPct = onMk ? C.jellyInitialPct : 0.6;
+    if (wantPct > 0 && od.JellyInitialPct !== wantPct) od.JellyInitialPct = wantPct;
 }
 
 /** 每帧：真隐身窗口 + 半透明保活 */
@@ -5242,6 +5289,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'specialPlantUpdate');
         P.specialPlantUpdate = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】关掉 ⇒ 不每帧维持数值/隐身/半透明
             try { gpnMkTick(this, deps); }
             catch (e) { warn('夏威夷果：每帧处理出错', e); }
             return r;
@@ -5256,6 +5304,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'specialPlantUpdateForce');
         P.specialPlantUpdateForce = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】
             try { gpnMkKeepJellyOpaque(this, deps); }
             catch (e) { warn('夏威夷果：护住暗影物质透明度出错', e); }
             return r;
@@ -5270,6 +5319,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'shouldMaterial');
         P.shouldMaterial = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】
             try {
                 if (this.__gpnMkHidden && this.material && this.material.passes) {
                     const pass = this.material.passes[0];
@@ -6751,7 +6801,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l18 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l19 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
