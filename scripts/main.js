@@ -881,6 +881,37 @@ function gpnPierceZh(n) {
  *     gpnAlmOverview()             // 结构化数据（可 copy(gpnAlmOverview()) 取出）
  * ========================================================================== */
 
+/* 图鉴「两态」用的状态（模块级，跨 apply 保留）：
+ *   · GPN_ALM_SNAPSHOT_DONE —— 是否已抓过原件快照（只在**第一次** apply 抓，那一刻还没被我们改过）
+ *   · GPN_ALM_ORIG          —— [{ alias, od: 原件 objdata 的深拷贝 }]
+ *   ⚠ 跨实例（保存并重载）时模块会被重新求值 ⇒ 这两个会重置，而那时数据可能已被旧实例改过；
+ *     届时按"当前状态"重新抓快照（会把我们自己的文案当成原件，但那一轮仍能正确两态）。 */
+let GPN_ALM_SNAPSHOT_DONE = false;
+const GPN_ALM_ORIG = [];
+/** objdata 的深拷贝 —— 只处理 JSON 安全值（对象/数组/字符串/数字/布尔/null），
+ *  图鉴文案结构就是这么朴素；遇到其它类型退回引用（不影响正确性，只影响"完全还原"）。 */
+function gpnAlmDeepClone(v) {
+    if (v === null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) {
+        const a = new Array(v.length);
+        for (let i = 0; i < v.length; i++) a[i] = gpnAlmDeepClone(v[i]);
+        return a;
+    }
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = gpnAlmDeepClone(v[k]);
+    return o;
+}
+/** 快照提示：只在 verboseLog 打开时打，且"株数变化"时再打一次（避免刷屏） */
+function log_alm_snapshot(n) {
+    try {
+        if (!verboseOn()) return;
+        if (n === GPN_ALM_LAST_SNAP_N) return;
+        GPN_ALM_LAST_SNAP_N = n;
+        log('【图鉴两态】已抓原件快照：' + n + ' 株（此后每次开关变化都从原件重建，开/关两个方向都即时生效）');
+    } catch (e) { /* 只影响这一行日志 */ }
+}
+let GPN_ALM_LAST_SNAP_N = -1;
+
 /** 我们改过图鉴的植物：**[图鉴 alias, 对应功能开关名]**。
  *  为什么不只是数组：图鉴 alias 与开关名**并不一一对应** ——
  *    · 心蕊：图鉴是复数 `bloominghearts`，开关是 `bloomingheart`；
@@ -1259,6 +1290,40 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     log('   回读验证（splitpea）：' + readBack);
                 } catch (e) { /* 只影响诊断 */ }
             };
+
+            // ★★★ 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）★★★
+            //   【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
+            //   【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
+            //          ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
+            //          ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
+            //   【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
+            //          之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
+            //          ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
+            //   ⚠ 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
+            if (!GPN_ALM_SNAPSHOT_DONE) {
+                for (const _p of GPN_ALM_CHANGED) {
+                    let _e = null;
+                    for (const _x of AL) {
+                        if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_p[0]) !== -1) { _e = _x; break; }
+                    }
+                    if (_e && _e.objdata) GPN_ALM_ORIG.push({ alias: _p[0], od: gpnAlmDeepClone(_e.objdata) });
+                }
+                GPN_ALM_SNAPSHOT_DONE = true;
+                log_alm_snapshot(GPN_ALM_ORIG.length);
+            }
+            for (const _rec of GPN_ALM_ORIG) {
+                let _e = null;
+                for (const _x of AL) {
+                    if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_rec.alias) !== -1) { _e = _x; break; }
+                }
+                if (!_e) continue;
+                if (!_e.objdata) _e.objdata = {};
+                const _t = _e.objdata, _o = _rec.od;
+                for (const _k of Object.keys(_t)) {
+                    if (!Object.prototype.hasOwnProperty.call(_o, _k)) delete _t[_k];
+                }
+                for (const _k of Object.keys(_o)) _t[_k] = gpnAlmDeepClone(_o[_k]);
+            }
 
             // ---- 巴豆（追加"所有啃食者一起倒下"）----
             if (featOn('chilibean')) {
@@ -5948,7 +6013,9 @@ export default {
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
     _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
-    _applyDataPatch: gpnApplyDataPatch, // 同上：数据补丁（自检用来验证两态）
+    // ⚠ 必须用**函数**形式：`gpnApplyDataPatch` 要到 setup 里（L6140 附近）才被赋值，
+    //    这里直接写变量名会把此刻的 `null` 快照走 ⇒ 导出的永远是 null（自检拿不到，白测）。
+    _applyDataPatch: () => gpnApplyDataPatch,   // 同上：数据补丁（自检用来验证两态）
     _gatedBody: gpnGatedBody,            // 同上：门禁包装器本体（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
@@ -6939,7 +7006,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l30 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l31 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
