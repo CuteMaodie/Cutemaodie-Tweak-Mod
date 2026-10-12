@@ -837,8 +837,11 @@ function methodRecord(Cls, name) {
 /* =========================================================================
  * 1. 数值：运行时改 PlantProps / ProjectileProps
  * =======================================================================*/
-/** 数字 -> 中文（图鉴文本用；1~10 用汉字，其它回落到阿拉伯数字） */
-const GPN_ZH_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+/** 数字 -> 中文（图鉴文本用；0~20 用汉字，其它回落到阿拉伯数字）
+ *  为什么到 20：图鉴里有「能承受滚动前行的僵尸 N 次打击」这类句子，
+ *  只到 10 会在 11+ 时变成「…11 次打击」那样半文半白。 */
+const GPN_ZH_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
+    '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十'];
 /** 穿透/打中数统一钳制：小数向下取整；非有限数或 < 1 ⇒ 1（1 = 不穿透，永远不出现 0） */
 function gpnPierceN(v) {
     const n = Math.floor(Number(v));
@@ -858,7 +861,7 @@ function gpnFollowPierce() {
 
 function gpnZhNum(n) {
     n = Math.round(n);
-    return (n >= 0 && n <= 10) ? GPN_ZH_NUM[n] : String(n);
+    return (n >= 0 && n < GPN_ZH_NUM.length) ? GPN_ZH_NUM[n] : String(n);
 }
 
 /** 穿透文案专用的中文数字：2 写成「两」（量词习惯：穿透两个目标），其余沿用 gpnZhNum */
@@ -866,6 +869,129 @@ function gpnPierceZh(n) {
     return (Math.round(n) === 2) ? '两' : gpnZhNum(n);
 }
 
+/* ============================================================================
+ * ★ 图鉴文案总览（**纯只读**）
+ *   背景：40 处图鉴写入散在 apply() 里，文案是「拼」出来的（含 CFG 现算表达式），
+ *         想知道最终长什么样、得手工代值 —— 这个总览把「实际写进去的文案」原样读出来。
+ *   特点：**不写任何数据、不加任何原型补丁**；只在被调用时遍历 PlantAlmanac。
+ *   用法（F12 Console，随时可用，无需重进游戏）：
+ *     gpnAlmDumpAll()              // 只看我们改过的
+ *     gpnAlmDumpAll('all')         // 我们改过的 + 其余仅列名
+ *     gpnAlmDumpOne('starfruit')   // 只看某一株
+ *     gpnAlmOverview()             // 结构化数据（可 copy(gpnAlmOverview()) 取出）
+ * ========================================================================== */
+
+/** 我们改过图鉴的植物：**[图鉴 alias, 对应功能开关名]**。
+ *  为什么不只是数组：图鉴 alias 与开关名**并不一一对应** ——
+ *    · 心蕊：图鉴是复数 `bloominghearts`，开关是 `bloomingheart`；
+ *    · 星星果系 3 株：图鉴 alias 各不同，开关**都是** `starfruit`。
+ *  这张表既是「哪些算我们改的」的唯一出处，也是给后来人的提醒。 */
+const GPN_ALM_CHANGED = [
+    ['chilibean', 'chilibean'], ['spikerock', 'spikerock'], ['bloominghearts', 'bloomingheart'],
+    ['nightshade', 'nightshade'], ['turnip', 'turnip'], ['sweetpotato', 'sweetpotato'],
+    ['tallnut', 'tallnut'], ['perfumeshroom', 'perfumeshroom'],
+    ['starfruit', 'starfruit'], ['pinkstarfruit', 'starfruit'], ['shootingstarfruit', 'starfruit'],
+    ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
+    ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
+    ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
+];
+
+function gpnAlmList() {
+    try {
+        const C = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+        return (C && Array.isArray(C.PlantAlmanac)) ? C.PlantAlmanac : null;
+    } catch (e) { return null; }
+}
+/** 取一株的图鉴文本（中/英）—— 只读 */
+function gpnAlmTextOf(alias) {
+    const AL = gpnAlmList();
+    if (!AL) return null;
+    let e = null;
+    for (const x of AL) { if (x && Array.isArray(x.aliases) && x.aliases.indexOf(alias) !== -1) { e = x; break; } }
+    if (!e || !e.objdata) return null;
+    const od = e.objdata;
+    const grab = (v) => (v && typeof v === 'object')
+        ? { zh: String(v.zh || ''), en: String(v.en || '') }
+        : { zh: String(v || ''), en: '' };
+    const out = { alias: alias, aliases: e.aliases.slice(), intro: null, brief: null, special: [] };
+    if (od.Introduction) out.intro = grab(od.Introduction);
+    if (od.BriefIntroduction) out.brief = grab(od.BriefIntroduction);
+    if (Array.isArray(od.Special)) {
+        for (const row of od.Special) { if (row && row.DESCRIPTION) out.special.push(grab(row.DESCRIPTION)); }
+    }
+    return out;
+}
+/** 结构化总览 —— 只读。返回 { total, changed:[{alias,feat,on,intro,brief,special}], others:[alias] } */
+function gpnAlmOverview() {
+    const AL = gpnAlmList();
+    if (!AL) return { total: 0, changed: [], others: [], error: '拿不到 PlantAlmanac（数据容器未就绪）' };
+    const seen = Object.create(null);
+    const changed = [];
+    for (const pair of GPN_ALM_CHANGED) {
+        const a = pair[0], feat = pair[1];
+        const x = gpnAlmTextOf(a);
+        if (!x) continue;
+        x.feat = feat;
+        try { x.on = featOn(feat); } catch (e) { x.on = true; }
+        changed.push(x);
+        seen[a] = true;
+    }
+    const others = [];
+    for (const e of AL) {
+        if (!e || !Array.isArray(e.aliases)) continue;
+        const a0 = e.aliases[0];
+        if (!a0 || seen[a0]) continue;
+        others.push(a0);
+    }
+    return { total: AL.length, changed: changed, others: others };
+}
+/** 打印一株的文本（内部共用） */
+function gpnAlmPrintOne(x) {
+    if (x.intro) { log('   [介绍 zh] ' + x.intro.zh); log('   [介绍 en] ' + x.intro.en); }
+    if (x.brief) { log('   [简介 zh] ' + x.brief.zh); log('   [简介 en] ' + x.brief.en); }
+    for (let i = 0; i < x.special.length; i++) {
+        log('   [特点' + (i + 1) + ' zh] ' + x.special[i].zh);
+        log('   [特点' + (i + 1) + ' en] ' + x.special[i].en);
+    }
+}
+/** 打印总览。mode：省略 / 'changed' = 只看我们改过的；'all' = 附带其余仅列名 */
+function gpnAlmDumpAll(mode) {
+    const wantAll = (mode === 'all');
+    const o = gpnAlmOverview();
+    if (o.error) { log('【图鉴文案总览】' + o.error); return o; }
+    log('【图鉴文案总览】图鉴共 ' + o.total + ' 条 ｜ 我们改过 ' + o.changed.length + ' 株'
+        + (wantAll ? (' ｜ 其余 ' + o.others.length + ' 株仅列名') : " ｜（含全部请 gpnAlmDumpAll('all')）"));
+    for (const x of o.changed) {
+        log('──────── ' + x.alias + '（开关 ' + x.feat + ' = ' + (x.on ? '开' : '关') + '）');
+        gpnAlmPrintOne(x);
+    }
+    if (wantAll) {
+        log('──────── 其余 ' + o.others.length + ' 株（未改动，仅列名）');
+        log('   ' + o.others.join('、'));
+    }
+    return o;
+}
+/** 打印一株 —— 只读；找不到时给出提示 */
+function gpnAlmDumpOne(alias) {
+    const x = gpnAlmTextOf(alias);
+    if (!x) {
+        const hint = (alias === 'bloomingheart') ? '（心蕊在图鉴里的 alias 是复数 bloominghearts）' : '';
+        log('【图鉴文案总览】找不到 ' + alias + hint);
+        return null;
+    }
+    log('──────── ' + x.alias + '（aliases: ' + x.aliases.join(',') + '）');
+    gpnAlmPrintOne(x);
+    return x;
+}
+/* 挂到全局，方便控制台直接调用（只读接口，随手可用） */
+try {
+    const _g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+    if (_g) {
+        _g.gpnAlmOverview = gpnAlmOverview;
+        _g.gpnAlmDumpAll = gpnAlmDumpAll;
+        _g.gpnAlmDumpOne = gpnAlmDumpOne;
+    }
+} catch (e) { /* 忽略 */ }
 /* dynamic original value: the "off" branch must READ it, never hardcode it.
  *   Lesson (caught by selftest): I hardcoded phatbeet off=150, but its real original value
  *   can be anything (the mock uses 999 as a sentinel) => hardcoding is simply wrong.
@@ -5827,6 +5953,10 @@ export default {
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
+    _almOverview: gpnAlmOverview,      // 同上：图鉴文案总览（只读；自检核对 alias 配对）
+    _almTextOf: gpnAlmTextOf,          // 同上：取一株的图鉴文本（只读）
+    _ALM_CHANGED: GPN_ALM_CHANGED,     // 同上：[图鉴 alias, 功能开关名] 名单（自检守卫用）
+    _zhNum: gpnZhNum,                  // 同上：中文数字（0~20 汉字，超出回落阿拉伯）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
     _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
@@ -6809,7 +6939,20 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l28 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l29 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
+            //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
+            if (verboseOn()) {
+                try {
+                    const _ao = gpnAlmOverview();
+                    if (_ao && !_ao.error) {
+                        log('【图鉴文案总览】已就绪：图鉴共 ' + _ao.total + ' 条 ｜ 我们改过 '
+                            + _ao.changed.length + ' 株 ｜ 详情请执行 gpnAlmDumpAll()');
+                    } else {
+                        log('【图鉴文案总览】暂不可用（' + ((_ao && _ao.error) || '数据容器未就绪') + '）');
+                    }
+                } catch (eAO) { /* 只影响这一行日志 */ }
+            }
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
