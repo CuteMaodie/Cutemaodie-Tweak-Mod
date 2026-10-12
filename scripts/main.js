@@ -6602,6 +6602,18 @@ function sceneName() {
 }
 function hookWin() {
     try {
+        // ★★ 第一件事：把"本实例的入口行加载器"登记到**全局注册表**。
+        //    为什么必须放在最前面（实机证据 config-l24）：
+        //      下面有提前返回 `if (hooked && origWin && origWin.isValid) return true;`，
+        //      而 GP-NEXT「保存并重载」后新实例的 hookedScene 恰好已是 mainScene、
+        //      origWin 又是**同一个** SettingWindow 节点（场景没销毁）⇒ 新实例**每次都从这里返回**，
+        //      于是"登记"那段永远不执行 ⇒ 注册表里留的是**旧实例的闭包**
+        //      ⇒ 原型上的派发器调用旧闭包（旧闭包带"过期实例不插手"守卫）⇒ 什么都不做
+        //      ⇒ 入口行插不进去（必须进关卡再退出才能恢复）。
+        try {
+            const _rg = gpnGlobalReg();
+            if (_rg) _rg.ensure = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
+        } catch (eRg0) { /* 忽略 */ }
         // 每个场景各有自己的 SettingWindow 组件，必须按场景重新挂钩
         //（曾经只挂启动时那一个，导致世界地图的设置窗没有入口行）
         const cur = sceneName();
@@ -6632,13 +6644,8 @@ function hookWin() {
         //   新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
         //   派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
         {
-            // ★★ 关键：把本实例的 ensureEntry 登记到**全局注册表**（而不是存在原型上）。
-            //    实机证据（config-l22）：hookWin 有提前 return，第 2 代不会刷新原型上那个函数，
-            //    于是派发器永远调用第 1 代的闭包（操作旧窗体）⇒ 重载后入口行插不进去。
-            try {
-                const _rg = gpnGlobalReg();
-                if (_rg) _rg.ensure = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
-            } catch (eRg) { /* 忽略 */ }
+            // 注：本实例 ensureEntry 的**登记已挪到 hookWin() 最前面**（每次调用都执行，
+            //     不会被下面的提前 return 跳过）。这里只保留"装派发器"这一件事。
             if (!proto.__gpnCfgHooked) {
                 proto.__gpnCfgHooked = true;
                 proto.onEnable = function () {
@@ -6977,7 +6984,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l24 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l25 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
