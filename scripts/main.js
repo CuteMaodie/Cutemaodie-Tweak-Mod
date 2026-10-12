@@ -671,6 +671,94 @@ let gpnCtx = null;                       // setup 的 ctx（配置界面注册 o
 let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
 let gpnPlantsRef = null;                  // 由 setup 登记：plants 模块（引擎 getPlantProps 在这里）
 
+/* ============================================================================
+ * ★ 跨实例"活动令牌"（生命周期核心）
+ *   背景（实机证据）：GP-NEXT 的「保存并重载」会**重新求值本模块并重跑 setup()**，
+ *   但旧实例的 onDispose **从未被调用** ⇒ 两套逻辑并行，面板/点击互相覆盖。
+ *   做法：把"当前活动实例"记在一个**跨模块实例共享**的全局对象上；
+ *         每个运行期回调都先问"我还是活动实例吗"，不是就立刻静默。
+ *   ⚠️ 不能只依赖 onDispose —— 实机证明它不会来。
+ * ========================================================================== */
+const GPN_ACTIVE_KEY = '__GPN_CTM_ACTIVE_V1__';
+/** 跨实例共享的"我方窗体"登记表：键=实例ID，值={ panel, origWin }。
+ *  用途：新实例抢占令牌后，把上一个实例**残留的窗体关掉**（否则两个面板叠在同一位置）。
+ *  注意窗体会随场景销毁 ⇒ 用之前必须判 isValid。 */
+function gpnPanelReg() {
+    try {
+        const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+        if (!g) return null;
+        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', retired: Object.create(null), panels: Object.create(null) };
+        if (!g[GPN_ACTIVE_KEY].panels) g[GPN_ACTIVE_KEY].panels = Object.create(null);
+        return g[GPN_ACTIVE_KEY].panels;
+    } catch (e) { return null; }
+}
+/** 关掉"除我自己以外"所有实例登记过的窗体（新实例启动时调用） */
+function gpnCloseStalePanels() {
+    let closed = 0;
+    try {
+        const reg = gpnPanelReg();
+        if (!reg) return 0;
+        for (const k of Object.keys(reg)) {
+            if (k === GPN_INSTANCE_ID) continue;
+            try {
+                const ent = reg[k];
+                if (ent && ent.panel && ent.panel.isValid) { ent.panel.active = false; closed++; }
+                delete reg[k];
+            } catch (e) { /* 忽略 */ }
+        }
+        if (closed) log('[CTM] 已关掉上一个实例残留的窗体 ' + closed + ' 个');
+    } catch (e) { /* 忽略 */ }
+    return closed;
+}
+function gpnGlobalReg() {
+    try {
+        const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+        if (!g) return null;
+        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', seq: 0, retired: Object.create(null) };
+        if (g[GPN_ACTIVE_KEY].seq === undefined) g[GPN_ACTIVE_KEY].seq = 0;
+        return g[GPN_ACTIVE_KEY];
+    } catch (e) { return null; }
+}
+/** 本实例的代次（每个模块实例一个，抢占令牌时分配） */
+let gpnInstanceSeq = 0;
+/** 本实例是否仍是"当前活动实例"（被更高代次的实例顶替 ⇒ 过期 ⇒ 一律静默）
+ *  判据用**代次比较**而不是"令牌是否相等"：
+ *    · 自检会在同一进程内多次加载模块；若用"相等"判定，旧实例的 cleanup 会被误判成过期。
+ *    · 只有"存在代次比我更大的实例"才真的说明我被顶替了。 */
+function gpnIsActiveInstance() {
+    try {
+        const r = gpnGlobalReg();
+        if (!r) return true;                                   // 拿不到注册表 ⇒ 按活动处理
+        if (!r.active || !r.seq) return true;                  // 还没人抢过 ⇒ 我说了算（自检场景）
+        return !(gpnInstanceSeq > 0 && r.seq > gpnInstanceSeq);
+    } catch (e) { return true; }
+}
+/** 抢占活动令牌；若发现上一个实例还留着"退役回调"，就地调用它 */
+function gpnClaimInstance() {
+    try {
+        const r = gpnGlobalReg();
+        if (!r) return;
+        const prev = r.active;
+        // ⚠️ **不要**调用 `r.retired[prev]()`：那个闭包改的是**它自己模块实例**的 `gpnDisposed`。
+        //    自检会在同一进程内反复加载模块，"上一个实例"的模块级变量可能就属于当前实例
+        //    ⇒ 一调用就把自己标成"已销毁"，所有补丁都不装（实测 59 条断言失败）。
+        //    令牌赋值本身就够：旧实例的所有回调都会先查 `gpnIsActiveInstance()` 而静默。
+        try { delete r.retired[prev]; } catch (e2) { /* 忽略 */ }
+        r.active = GPN_INSTANCE_ID;
+        r.seq = (r.seq || 0) + 1;                              // ★ 代次递增
+        gpnInstanceSeq = r.seq;
+        log('[CTM] 活动实例令牌 = ' + GPN_INSTANCE_ID + '（第 ' + gpnInstanceSeq + ' 代，上一个 = ' + (prev || '无') + '）');
+    } catch (e) { /* 忽略 */ }
+}
+/** 本实例马上要让位给别的新实例（由 onDispose 或"被抢占"时调用）：只做必要的自己人清理 */
+function gpnRetireSelf() {
+    if (gpnDisposed) return;
+    gpnDisposed = true;
+    try { gpnOnRetire(); } catch (e) { /* 忽略 */ }
+}
+/** 由配置界面块登记：让位时关掉自己的窗体（避免两个面板叠着） */
+let gpnOnRetire = null;
+
 /* ★ 统一取"数据容器"。
  *   ⚠️ 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
  *   （曾经写成 `typeof box === 'object'` ⇒ 对类永远为假 ⇒ 诊断谎报"无容器"，排查被误导很久。）
@@ -5801,6 +5889,30 @@ export default {
 
     setup(ctx) {
         try { gpnCtx = ctx; } catch (e) { /* 忽略 */ }   // 供配置界面/生命周期使用
+        // ★★ 第一件事：抢占"活动实例令牌"（旧实例若还在，就地让它退役）
+        //    为什么必须在最前面：GP-NEXT 重载会重跑 setup，而旧实例的 onDispose 不会来
+        //    ⇒ 必须由新实例主动把旧的按住，否则两套逻辑并行（实机表现：面板点不开、开关错乱）。
+        // 让位时的自己人清理：关掉本实例的窗体（否则新旧两个面板会叠在同一位置）
+        try {
+            gpnOnRetire = function () {
+                try {
+                    const reg = gpnPanelReg();
+                    const ent = reg && reg[GPN_INSTANCE_ID];
+                    if (ent && ent.panel && ent.panel.isValid) ent.panel.active = false;
+                    if (reg) delete reg[GPN_INSTANCE_ID];
+                } catch (e0) { /* 忽略 */ }
+            };
+        } catch (eOn) { /* 忽略 */ }
+        try { gpnClaimInstance(); } catch (eC) { /* 忽略 */ }
+        // ★ 抢占令牌后立刻关掉上一个实例残留的窗体（实机：重载后两个面板会叠着）
+        try { gpnCloseStalePanels(); } catch (eSp) { /* 忽略 */ }
+        // ★ onDispose 也提到最前面注册（原来在面板块内，面板安装一旦抛错就永远注册不上）
+        try {
+            const RT0 = ctx && ctx.runtime;
+            if (RT0 && typeof RT0.onDispose === 'function') {
+                RT0.onDispose(() => { try { gpnRetireSelf(); } catch (e0) { /* 忽略 */ } }, '实例退役');
+            }
+        } catch (eR0) { /* 忽略 */ }
         try {
             const all = (typeof window !== 'undefined' && window && window.__gpnInstances) ? window.__gpnInstances : [];
             log('[CTM] INSTANCE=' + GPN_INSTANCE_ID + ' ｜ 本进程已加载过的实例: ' + (all.length ? all.join(',') : '(无)') + (all.length > 1 ? '  ★★ 这是多实例！' : ''));
@@ -6284,6 +6396,11 @@ function findSprite(n) {
                         clone.active = false;
                         origWin.parent.addChild(clone);
                         panel = clone;
+                        // ★ 登记到跨实例共享表（新实例启动时能关掉它）
+                        try {
+                            const reg = gpnPanelReg();
+                            if (reg) reg[GPN_INSTANCE_ID] = { panel: clone, origWin: origWin };
+                        } catch (eReg) { /* 忽略 */ }
                         clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
                         // ★ 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
                         buildRows(ccg);
@@ -6477,13 +6594,27 @@ function hookWin() {
         const proto = Object.getPrototypeOf(comp);
         const origOn = proto.onEnable;
         if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
-        if (!proto.__gpnCfgHooked) {
-            proto.__gpnCfgHooked = true;
-            proto.onEnable = function () {
-                const r = origOn.apply(this, arguments);
-                try { origWin = this.node; lastWinActive = false; setTimeout(ensureEntry, 300); } catch (e) { }
-                return r;
-            };
+        // ★ 关键修复：挂钩必须是【派发器】，每次调用都问"当前活动实例是谁"。
+        //   旧写法 `if (!proto.__gpnCfgHooked)` 把标记挂在**引擎原型**上（重载后依然存在），
+        //   新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
+        //   派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
+        {
+            const regKey = '__gpnCfgEnsureEntry';
+            try {
+                proto[regKey] = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
+            } catch (eRg) { /* 忽略 */ }
+            if (!proto.__gpnCfgHooked) {
+                proto.__gpnCfgHooked = true;
+                proto.onEnable = function () {
+                    const r = origOn.apply(this, arguments);
+                    try {
+                        const node = this.node;
+                        const cur = proto[regKey];
+                        if (typeof cur === 'function') setTimeout(cur, 300);   // ★ 转发给"当前活动实例"
+                    } catch (e) { }
+                    return r;
+                };
+            }
         }
         hooked = true;
         clog('已挂上设置窗 onEnable（场景=' + cur + '）');
@@ -6809,7 +6940,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l21 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l22 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
