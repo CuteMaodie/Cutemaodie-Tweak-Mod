@@ -1447,14 +1447,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             } else {
                 // ---- 关掉：把寒冰射手还原成原版 ----
                 try {
+                    // ★ 原版 pea_snow 没有 SplashDamage（已核对 Objects/ProjectileProps.json：
+                    //    只有 Damage:20 / ChillDuration:10 / IceBlockSize / Size）⇒ 直接删除。
+                    //    ⚠️ 不能用 gpnVanilla 取「原值」：首次 apply 时我们已经先写了 SplashDamage，
+                    //       那时记录到的就是「我们自己的值」，还原时等于又写回去（实机诊断抓到的 BUG）。
                     const pi = findIdx(PC.ProjectileProps, SP.peaType);
                     if (pi >= 0 && PC.ProjectileProps[pi].objdata) {
                         track(PC.ProjectileProps[pi].objdata, 'SplashDamage');
-                        if (typeof gpnVanilla === 'function') {
-                            const v = gpnVanilla('ProjectileProps', SP.peaType, 'SplashDamage');
-                            if (v.had) PC.ProjectileProps[pi].objdata.SplashDamage = v.value;
-                            else { try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e2) { /* ignore */ } }
-                        } else { try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e3) { /* ignore */ } }
+                        try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e2) { /* ignore */ }
                     }
                     const si = findIdx(PC.ProjectileProps, SP.spikeAlias);
                     if (si >= 0) PC.ProjectileProps.splice(si, 1);          // 原版没有这个弹道 ⇒ 删掉
@@ -6801,7 +6801,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l19 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l20 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
