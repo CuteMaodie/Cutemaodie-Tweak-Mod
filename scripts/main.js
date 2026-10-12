@@ -1293,7 +1293,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 addSpecial('bloominghearts',
                     '被减防的僵尸对这些植物的啃食伤害降低：心蕊 ×' + P50 + '%、甜薯 / 热辣海枣 ×' + P75 + '%',
                     'Zombies with this defence reduction deal less chewing damage to these plants: '
-                    + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%');
+                    + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%.');
             }
             // ---- 暗影龙葵（追加穿透 + 击退）----
             if (featOn('nightshade')) {
@@ -1362,7 +1362,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     addSpecial('starfruit',
                         FB >= 1
                             ? '追击子弹可额外穿透' + gpnPierceZh(FB)
-                                + '个目标,溅射伤害继承比略微提高，且极短时间眩晕目标'
+                                + '个目标，溅射伤害继承比略微提高，且极短时间眩晕目标'
                             : '追击子弹的溅射伤害继承比略微提高，且极短时间眩晕目标',
                         FB >= 1
                             ? 'Follow-up bullets pierce ' + FB
@@ -1393,8 +1393,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     }
                     if (gpnFollowMergeOn()) {
                         addSpecial('starfruit',
-                            '追击在' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
-                            + ST_R + '% × Σ(各次触发时的攻击力)',
+                            '追击在 ' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
+                            + ST_R + '% × Σ（各次触发时的攻击力）',
                             'If triggered multiple times within ' + CFG.starfruit.followMergeWindow
                             + ' s, it follows up only once; each bullet deals ' + ST_R
                             + '% × Σ(the attack power at each trigger).');
@@ -1411,7 +1411,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
                 // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
                 const NO_DUR = Math.round(CFG.noctarine.normalLifespan / 20 * 100);
-                addSpecial('noctarine', '造成伤害仅为攻击力的' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
+                addSpecial('noctarine', '造成伤害仅为攻击力的 ' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
                     'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
             }
             // ---- 蒲公英（原话"一行"→"两颗"）----
@@ -1430,7 +1430,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 addSpecial('pepperpult',
                     // 口径：火铺在【子弹的落点】；总伤害按【这一发子弹的伤害】的 burnTotalRatio 算
                     '命中后，在落点产生 ' + PP_C + '×' + PP_C + ' 的火，持续 '
-                    + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的'
+                    + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的 '
                     + Math.round(CFG.pepperpult.burnTotalRatio * 100) + '%',
                     'On hit, it creates a ' + PP_C + '×' + PP_C + ' fire at the landing spot for '
                     + CFG.pepperpult.burnSeconds + ' second(s). The total damage of a single fire equals '
@@ -6939,7 +6939,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l29 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l30 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
