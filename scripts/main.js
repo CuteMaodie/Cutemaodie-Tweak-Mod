@@ -6316,7 +6316,11 @@ function findSprite(n) {
                         } else { clog('入口行：模板里找不到 website 节点，齿轮未加入'); }
                     } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
                     let locked = 0;
-                    row.on('touch-end', () => {
+                    // ★★ 把"打开面板"抽成具名函数并登记到全局注册表，行点击改为**派发**。
+                    //    为什么：入口行可能由**旧实例**插进【同一个窗口对象】（诊断日志已证实），
+                    //    那行的处理器绑定旧实例（它的 panel/origWin 是旧的）⇒ 点了没反应。
+                    //    现在点击时**现查**当前活动实例的实现 ⇒ 无论这行谁插的都能打开。
+                    function openPanel() {
                         try {
                             if (gpnDisposed) return;                       // 旧运行时不响应
                             const now = Date.now();
@@ -6327,6 +6331,14 @@ function findSprite(n) {
                             if (origWin) origWin.active = false;
                             panel.active = true;
                             clog('已打开配置窗体（入口行被点击）');
+                        } catch (e) { warn('【配置界面】打开出错', e); }
+                    }
+                    try { const _rgo = gpnGlobalReg(); if (_rgo) _rgo.open = openPanel; } catch (eO) { /* 忽略 */ }
+                    row.on('touch-end', () => {
+                        try {
+                            const _rgp = gpnGlobalReg();
+                            if (_rgp && typeof _rgp.open === 'function') { _rgp.open(); return; }
+                            openPanel();
                         } catch (e) { warn('【配置界面】打开出错', e); }
                     });
                     return row;
@@ -6582,12 +6594,26 @@ function findSprite(n) {
         const tpl = kids.find((k) => String((k && k.name) || '') === 'KeyBinds') || kids[kids.length - 1];
         if (!tpl) { if (missLog++ < 3) clog('当前设置窗里找不到模板行（kids=' + kids.length + '）'); return; }
         entryTemplate = tpl;
-        if (kids.some((k) => k && k.name === 'gpnConfigRow')) {
-            if (panel && panel.active === true) buildRows(ccg);
-            return;
+        const _oldRow = kids.filter((k) => k && k.name === 'gpnConfigRow');
+        if (_oldRow.length) {
+            // ★ 关键：这行若是**别的实例**插的，它的点击处理器绑的是旧实例（点了没反应，诊断已证实）
+            //   ⇒ 删掉它、用本实例重插一行，让行的处理器与窗体都归当前活动实例。
+            let owner = null;
+            try { const _rgr = gpnGlobalReg(); owner = _rgr && _rgr.rowOwner; } catch (eRo) { /* 忽略 */ }
+            if (owner && owner !== GPN_INSTANCE_ID) {
+                clog('入口行属于旧实例(' + owner + ') ⇒ 删除并重建（本实例=' + GPN_INSTANCE_ID + '）');
+                for (const _r of _oldRow) {
+                    try { _r.removeFromParent(); } catch (eRm) { try { _r.destroy(); } catch (eRd) { /* 忽略 */ } }
+                }
+                if (box.updateLayout) box.updateLayout();
+            } else {
+                if (panel && panel.active === true) buildRows(ccg);
+                return;
+            }
         }
         const er = buildEntryRow(ccg);
         box.addChild(er);
+        try { const _rgs = gpnGlobalReg(); if (_rgs) _rgs.rowOwner = GPN_INSTANCE_ID; } catch (eRso) { /* 忽略 */ }
         if (box.updateLayout) box.updateLayout();
         clog('入口行已插入（模板=' + tpl.name + '，场景=' + sceneName() + '）');
     } catch (e) { warn('【配置界面】插入入口行出错', e); }
@@ -6984,7 +7010,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l25 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l27 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
