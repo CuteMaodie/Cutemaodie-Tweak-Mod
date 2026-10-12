@@ -3,9 +3,9 @@
 PvZ2 Gardendless 的杂项强化模组（GP-Next **JS 模组**）。
 
 - 作者：可爱小耄（CuteMaodie）。
-- 目标版本：`0.14.0`（GP-Next `1.4.6`）
+- 目标版本：`0.15.0`（GP-Next `1.5.5`）
 - 形式：`pack.json` + `scripts/main.js`
-- 依赖：无（不需要开任何实验性 / 运行时扩展开关）
+- 依赖：无 —— 但**要先用 GP-Next 的「实验性 → JS Modding」开启 JS**（一次性，由你确认风险；不开则 JS 模组无法加载）
 
 ## 文件清单
 
@@ -84,7 +84,10 @@ PvZ2 Gardendless 的杂项强化模组（GP-Next **JS 模组**）。
 
 ## 1. 安装
 
-把整个文件夹放进「**模组 → 打开目录**」里显示的**数据目录**下的：
+**前置（只需要做一次）**：在 GP-Next 里 **「实验性 → JS Modding」确认风险并开启 JS** ——
+本模组是 **JS 模组**，不开这一项**根本加载不了**。（这不是本模组特有的要求，所有 JS 模组都一样。）
+
+然后把整个文件夹放进「**模组 → 打开目录**」里显示的**数据目录**下的：
 
     你的用户目录\AppData\Roaming\com.pvzge.game\gp-next\packs\Cutemaodie's Tweak Mod\
 
