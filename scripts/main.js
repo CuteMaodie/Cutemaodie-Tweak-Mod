@@ -1101,9 +1101,28 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // ============================================================
         if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
             const AL = PvZ2ObjectContainer.PlantAlmanac;
+            // 我们名单里的 alias 集合（只对它们做"写不到就 warn"，避免误报）
+            const gpnAlmAliasSet = Object.create(null);
+            for (const _p of GPN_ALM_CHANGED) gpnAlmAliasSet[_p[0]] = true;
+            // ★ findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
+            //   ⚠️ 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
+            //      心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
+            //      万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
+            //      现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
+            const gpnAlmWarned = Object.create(null);
+            const gpnAlmWarnMiss = (what, alias) => {
+                if (!gpnAlmAliasSet[alias]) return;          // 只提醒"我们名单里的"，避免误报
+                if (gpnAlmWarned[alias]) return;             // 每个 alias 只提醒一次（apply 会跑很多遍）
+                gpnAlmWarned[alias] = true;
+                warn('图鉴：' + what + ' 里找不到 alias「' + alias + '」—— 没写进去（请核对拼写）');
+            };
             const findAl = (alias) => {
                 for (const e of AL) {
                     if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1) return e;
+                }
+                const alt = (alias.slice(-1) === 's') ? alias.slice(0, -1) : (alias + 's');
+                for (const e of AL) {
+                    if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alt) !== -1) return e;
                 }
                 return null;
             };
@@ -1117,15 +1136,17 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             };
             const writeIntro = (alias, zh, en) => {
                 const e = findAl(alias);
-                return e ? setLoc(e.objdata, 'Introduction', zh, en) : false;
+                if (!e) { gpnAlmWarnMiss('介绍(Introduction)', alias); return false; }
+                return setLoc(e.objdata, 'Introduction', zh, en);
             };
             const writeBrief = (alias, zh, en) => {
                 const e = findAl(alias);
-                return e ? setLoc(e.objdata, 'BriefIntroduction', zh, en) : false;
+                if (!e) { gpnAlmWarnMiss('简介(BriefIntroduction)', alias); return false; }
+                return setLoc(e.objdata, 'BriefIntroduction', zh, en);
             };
             const addSpecial = (alias, zh, en) => {
                 const e = findAl(alias);
-                if (!e || !e.objdata) return false;
+                if (!e || !e.objdata) { gpnAlmWarnMiss('特点(Special)', alias); return false; }
                 const od = e.objdata;
                 const list = Array.isArray(od.Special) ? od.Special : null;
                 if (list) {
@@ -7009,7 +7030,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l33 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l34 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
