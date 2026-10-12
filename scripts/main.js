@@ -714,7 +714,7 @@ function gpnGlobalReg() {
     try {
         const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
         if (!g) return null;
-        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', seq: 0, retired: Object.create(null) };
+        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', seq: 0, retired: Object.create(null), panels: Object.create(null), ensure: null };
         if (g[GPN_ACTIVE_KEY].seq === undefined) g[GPN_ACTIVE_KEY].seq = 0;
         return g[GPN_ACTIVE_KEY];
     } catch (e) { return null; }
@@ -6537,6 +6537,8 @@ function findSprite(n) {
                 /* ---------- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---------- */
                 function ensureEntry() {
     try {
+        // ★ 过期实例不插手（双保险：注册表已被新实例覆盖时，旧闭包即使被调到也不改界面）
+        if (typeof gpnIsActiveInstance === 'function' && !gpnIsActiveInstance()) return;
         if (!origWin || origWin.active === false) { lastWinActive = false; return; }
         if (lastWinActive) return;
         lastWinActive = true;
@@ -6599,18 +6601,22 @@ function hookWin() {
         //   新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
         //   派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
         {
-            const regKey = '__gpnCfgEnsureEntry';
+            // ★★ 关键：把本实例的 ensureEntry 登记到**全局注册表**（而不是存在原型上）。
+            //    实机证据（config-l22）：hookWin 有提前 return，第 2 代不会刷新原型上那个函数，
+            //    于是派发器永远调用第 1 代的闭包（操作旧窗体）⇒ 重载后入口行插不进去。
             try {
-                proto[regKey] = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
+                const _rg = gpnGlobalReg();
+                if (_rg) _rg.ensure = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
             } catch (eRg) { /* 忽略 */ }
             if (!proto.__gpnCfgHooked) {
                 proto.__gpnCfgHooked = true;
                 proto.onEnable = function () {
                     const r = origOn.apply(this, arguments);
                     try {
-                        const node = this.node;
-                        const cur = proto[regKey];
-                        if (typeof cur === 'function') setTimeout(cur, 300);   // ★ 转发给"当前活动实例"
+                        // ★ 现查"当前活动实例"登记的 ensureEntry（旧实例的已被新实例覆盖）
+                        const _rg2 = gpnGlobalReg();
+                        const cur = _rg2 && _rg2.ensure;
+                        if (typeof cur === 'function') setTimeout(cur, 300);
                     } catch (e) { }
                     return r;
                 };
@@ -6940,7 +6946,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l22 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l23 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
