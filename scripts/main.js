@@ -3817,11 +3817,19 @@ function makePushSkipPatch(FootballMech) {
     if (!FootballMech) { warn('跳过推植物修正：拿不到 footballmech'); return null; }
 
     const recs = [];
-    const build = (prop, toward, dirSign, awayArgs) => {
+    // ★ 先把两个原方法存到类上（必须在包裹之前）—— 供"运行期门禁"原样回退用
+    //   注意别写成 __gpn* 之外的名字：引擎/别的 mod 不会用到这种带前缀的键。
+    try {
+        FootballMech.__gpnOrigLeft = FootballMech.pushPlantLeft;
+        FootballMech.__gpnOrigRight = FootballMech.pushPlantRight;
+    } catch (e) { /* 忽略 */ }
+    const build = (prop, toward, dirSign, awayArgs, orig) => {
         const name = prop === 'lefter' ? 'pushPlantLeft' : 'pushPlantRight';
         if (typeof FootballMech[name] !== 'function') { warn('跳过 ' + name + '：不是函数'); return; }
 
         FootballMech[name] = function (plant, dmg, dur, cbA, cbB, needSpace) {
+            // 【运行期开关】关掉 ⇒ 完全走原版（补丁常驻，行为现查）
+            if (!featOn('pushPlantFix') && typeof orig === 'function') return orig.apply(this, arguments);
             if (dmg === undefined) dmg = 0;
             if (dur === undefined) dur = 0.5;
             if (cbA === undefined) cbA = function () { };
@@ -3871,8 +3879,8 @@ function makePushSkipPatch(FootballMech) {
     // 先把原方法存下来（必须在包裹之前）
     const origLeft = FootballMech.pushPlantLeft;
     const origRight = FootballMech.pushPlantRight;
-    build('lefter', 'lefter', 1, []);
-    build('righter', 'righter', -1, [false]);
+    build('lefter', 'lefter', 1, [], origLeft);
+    build('righter', 'righter', -1, [false], origRight);
     // 回填 original（build 里为了能在包裹后递归调用，拿的是包裹后的函数；这里补上真正的原版以便还原）
     for (const r of recs) r.original = r.name === 'pushPlantLeft' ? origLeft : origRight;
     return recs;
@@ -6530,26 +6538,26 @@ let ticks = 0;
                 } catch (eR) { clog('注册 onDispose 失败：' + eR); }
             } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
-            if (featOn('chilibean')) {
+            {
                 const chili = makeChiliPatches(chiliMod.ChiliBean, zombieMod.Zombie, zombieMod.ZombiePoison);
                 recs.push(...chili.recs);
             }
 
             // ---- 3. 钢地刺 ----
-            if (featOn('spikerock')) {
+            {
                 const spy = makeSpikerockPatch(spikerockMod.SpikerockPlant);
                 if (spy) recs.push(spy);
             }
 
             // ---- 4. 心蕊 ----
-            if (featOn('bloomingheart')) {
+            {
                 const bloom = makeBloomingHeartPatch(bloomMod.bloomingheartShot,
                     charMgrMod.Rectangle, squareMod.Square);
                 if (bloom) recs.push(bloom);
             }
 
             // ---- 5. 暗影龙葵：先重写 _shoot 打标记，再装穿透 ----
-            if (featOn('nightshade')) {
+            {
                 const night = makeNightShadePatch(nightMod.NightShadePlant,
                     prjMod.PrjFunctions, ccMod.Vec2, characterMod.CharacterType);
                 if (night) recs.push(night);
@@ -6558,7 +6566,7 @@ let ticks = 0;
 
             // 私有字段桥 / 溅射 / 穿透都长在 commonShot 上：
             // 暗影龙葵、星星果、甜椒投手任意一个开着就得装（各自靠私有标记判定，互不干扰）
-            if (featOn('nightshade') || featOn('starfruit') || featOn('pepperpult') || featOn('dandelion')) {
+            {
                 const pierce = makePiercePatch(shotMod.commonShot,
                     characterMod.CharacterType, charMgrMod.ZombieDamageDetails,
                     zombiesMod && zombiesMod.ZombieEnum);
@@ -6566,7 +6574,7 @@ let ticks = 0;
             }
 
             // ---- 18. 飓风甘蓝：全屏寒风 ----
-            if (featOn('hurrikale')) {
+            {
                 const hur = makeHurrikalePatch(hurrikaleMod && hurrikaleMod.HurrikalePlant,
                     zombieMod && zombieMod.Zombie, {
                         Square: squareMod.Square,
@@ -6580,7 +6588,7 @@ let ticks = 0;
             }
 
             // ---- 19. 魔音甜菜 ----
-            if (featOn('phatbeet')) {
+            {
                 const pb = makePhatBeetPatch(phatbeetMod && phatbeetMod.PhatBeetPlant, {
                     Square: squareMod.Square,
                     Rectangle: charMgrMod.Rectangle,
@@ -6602,7 +6610,7 @@ let ticks = 0;
                 if (spf) recs.push(...spf);
             }
             // ---- 23. 红针花：左键循环切换形态 ----
-            if (featOn('redstinger')) {
+            {
                 const rs = makeRedStingerPatch(redStingerMod && redStingerMod.RedStingerPlant, {
                     cc: ccMod, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2,
                     Square: squareMod.Square, FrontYard: frontYardMod && frontYardMod.FrontYard,
@@ -6610,7 +6618,7 @@ let ticks = 0;
                 if (rs) recs.push(...rs);
             }
             // ---- 24. 暗影夏威夷果：暗影态本体隐身（视觉）+ 暗影物质耐久 + 打光后真隐身 ----
-            if (featOn('murkadamia')) {
+            {
                 const mk = makeMurkadamiaPatch(murkadamiaMod && murkadamiaMod.MurkadamiaNutPlant, {
                     cc: ccMod,
                 });
@@ -6675,7 +6683,7 @@ let ticks = 0;
             } catch (e) { warn('寒冰射手：金卡钩子出错', e); }
 
             // ---- 17. A2 星星果追击攻击 ----
-            if (featOn('starfruit') && CFG.starfruit.followEnabled) {
+            {
                 const follow = makeStarFollowPatch(shotMod.commonShot, {
                     Square: squareMod.Square,
                     Vec2: ccMod.Vec2,
@@ -6689,7 +6697,7 @@ let ticks = 0;
             }
 
             // ---- 16. 甜椒投手：落点 3x3 灼烧 ----
-            if (featOn('pepperpult')) {
+            {
                 const burn = makePepperBurnPatch(shotMod.commonShot, {
                     Square: squareMod.Square,
                     SquareType: squareMod.SquareType,
@@ -6719,25 +6727,25 @@ let ticks = 0;
             }
 
             // ---- 6. 甜薯：自回血 + 受到治疗加成 ----
-            if (featOn('sweetpotato')) {
+            {
                 const sweet = makeSweetPotatoPatch(plantMod.Plant);
                 if (sweet) recs.push(...sweet);
             }
 
             // ---- 7. 白萝卜：受伤间隔（挂在扣血叶子上，不影响覆盖层）----
-            if (featOn('turnip')) {
+            {
                 const turnip = makeTurnipPatch(plantMod.Plant);
                 if (turnip) recs.push(turnip);
             }
 
             // ---- 8. 心蕊 DEBUFF -> 对心蕊/甜薯/热辣海枣的啃食伤害减免 ----
-            if (featOn('bloomingheart')) {
+            {
                 const victim = makeBloomingHeartVictimPatch(plantMod.Plant);
                 if (victim) recs.push(victim);
             }
 
             // ---- 9. 香水菇：香水火 13.5 秒（原版 9）+ 施加 6 层心蕊 DEBUFF ----
-            if (featOn('perfumeshroom')) {
+            {
                 const perfume = makePerfumeShroomPatch(perfumeMod.PerfumeFire, squareMod.Square,
                     zombieMod.Zombie, gfmMod.GroundFiresManager, buffCache);
                 if (perfume) recs.push(...perfume);
@@ -6749,7 +6757,7 @@ let ticks = 0;
             }
 
             // ---- 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5 ----
-            if (featOn('noctarine')) {
+            {
                 const noct = makeNoctarinePatch(noctarineMod.NoctarinePlant);
                 if (noct) recs.push(noct);
                 const gas = makeNoctarineGasPatch(gasMod.noctarineBuffParticle);
@@ -6757,25 +6765,25 @@ let ticks = 0;
             }
 
             // ---- 14. 腐尸豆荚：召唤权重 ----
-            if (featOn('zoybeanpod')) {
+            {
                 const zoy = makeZoybeanPatch(zoybeanMod.ZoybeanPodPlant);
                 if (zoy) recs.push(zoy);
             }
 
             // ---- 15. 蒲公英：额外一颗子弹 ----
-            if (featOn('dandelion')) {
+            {
                 const dan = makeDandelionPatch(dandelionMod.DandelionPlant, squareMod.Square, shotMod.commonShot);
                 if (dan) recs.push(...dan);
             }
 
             // ---- 12. 推植物：跳过「不可推」的挡路植物（不再飞出屏幕）----
-            if (featOn('pushPlantFix')) {
+            {
                 const pushFix = makePushSkipPatch(charMgrMod.footballmech);
                 if (pushFix) recs.push(...pushFix);
             }
 
             // ---- 11. 高坚果：同原始坚果，可扛 3 次巨人砸击 ----
-            if (featOn('tallnut')) {
+            {
                 // !! WallNut.ts 导出的名字是 WallNutPlant（大写 N），不是 WallnutPlant ——
                 //    写错会拿到 undefined，补丁会「静默跳过」（v2.4.0 就是这个 BUG：扛 3 次砸击没生效）
                 const wallNutCls = wallNutMod.WallNutPlant || wallNutMod.WallnutPlant;
@@ -6801,7 +6809,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l20 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l21 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
