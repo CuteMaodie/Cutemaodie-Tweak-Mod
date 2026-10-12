@@ -1579,9 +1579,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (si >= 0) PC.ProjectileProps.splice(si, 1);          // 原版没有这个弹道 ⇒ 删掉
                     const ti = findIdx(PC.ProjectileTypes, SP.spikeAlias);
                     if (ti >= 0) PC.ProjectileTypes.splice(ti, 1);
-                    log('寒冰射手：关掉 ⇒ 已移除克隆冰锥并还原弹道溅射');
-                    // ★【Q5 诊断】把运行时的真实状态打出来（判断"单格减速"到底还在不在）
-                    try {
+                    // 【诊断】寒冰射手还原后的运行时状态（只在 verboseLog 打开时打印）
+                    if (verboseOn()) try {
                         const _dump = (alias) => {
                             const hit = (PC.ProjectileProps || []).filter((x) => x && (x.aliases || []).indexOf(alias) !== -1);
                             if (!hit.length) return alias + '=(无此条目)';
@@ -1708,8 +1707,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
         //   排查完把 gpnAlmTempVerbose 改回 false 即静默）
         _almDumpTail('apply() 结束');
-        // ★ 决定性诊断：打印"apply 自己看到的开关"与"它算出来的值"
-        try {
+        // 【诊断】打印"apply 自己看到的开关"与"它算出来的值"（只在 verboseLog 打开时打印）
+        if (verboseOn()) try {
             gpnApplyCount = (gpnApplyCount || 0) + 1;
             const _findSun = (alias) => {
                 try {
@@ -3479,83 +3478,8 @@ function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
     return blocked;
 }
 
-/* ============================================================================
- * 【临时诊断】UI 结构侦查（为"游戏内配置界面"做前置调查）—— **纯只读打印，不改任何东西**
- *
- * 要回答的问题：
- *   ① 主菜单（`mainScene`）的 UI 根节点/层级长什么样 —— 入口按钮要注入到哪一层？
- *   ② 原版"设置"按钮在哪个节点、兄弟节点有哪些（好照着做邻居）？
- *   ③ `SettingWindow` 窗体的节点树（行容器 / 一行里有哪些 Sprite/Label / 行高）—— 仿外观要知道从哪借样式；
- *   ④ `*Window*` 节点上挂了哪些组件（`Button` / `Label` / `Sprite` / 自定义）—— 判断能否安全接管点击事件。
- *
- * 触发：切场景时自动 dump 一次（延时 1.5s 等场景构建完）；任意时刻按 `O` 键 dump 当前场景。
- * 输出：场景树最多 500 节点 / 60 行（超出标注"已截断"），另附"Window 节点 + 组件"一节。
- * ⚠️ 调查结束请连同 `gpnUiProbeDump` / `gpnUiProbeLastScene` 与其调用点一起删除。
- * ========================================================================== */
-function gpnUiProbeDump(why) {
-    try {
-        const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
-        const dir = ccg && ccg.director;
-        if (!dir || typeof dir.getScene !== 'function') { log('UI侦查[' + why + ']：拿不到 cc.director'); return; }
-        const scene = dir.getScene();
-        if (!scene) { log('UI侦查[' + why + ']：当前没有场景'); return; }
-        const G = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
-        // ⚠️ 上一版用空格缩进 ⇒ **控制台把行首空格吃掉了**，层级全丢。
-        //    这里改用 "|--" 前缀（可见字符）表示层级。
-        const pad = (depth) => '|' + '--'.repeat(Math.min(depth, 8));
-        const compDesc = (c) => {
-            const cn = G(() => (c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?', '?');
-            const extra = [];
-            if (c && typeof c.string === 'string') extra.push('text="' + String(c.string).slice(0, 18) + '"');
-            if (c && c.color && typeof c.color.r === 'number') extra.push('color=' + c.color.r + ',' + c.color.g + ',' + c.color.b);
-            if (c && c.handle && c.handle.node) extra.push('slider');
-            if (c && typeof c.progress === 'number') extra.push('progress=' + c.progress);
-            return cn + (extra.length ? '(' + extra.join(' ') + ')' : '');
-        };
-        log('===== UI侦查[' + why + '] 场景="' + G(() => scene.name, '?') + '" =====');
-        // ① 场景树（前缀表示层级；上限放宽到 260 行 / 1200 节点）
-        let count = 0, lines = 0;
-        const MAXN = 1200, MAXL = 260;
-        const walk = (n, depth) => {
-            if (!n || count >= MAXN || lines >= MAXL) return;
-            count++;
-            const kids = G(() => n.children, []) || [];
-            const act = G(() => n.active, true) ? '' : '[X]';
-            if (lines < MAXL) {
-                log('树 ' + pad(depth) + ' ' + act + G(() => n.name, '?') + ' (子' + kids.length + ')');
-                lines++;
-            }
-            for (let i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
-        };
-        walk(scene, 0);
-        log('----- 场景树：打印 ' + count + ' 个节点' + ((count >= MAXN || lines >= MAXL) ? '（已截断）' : '') + ' -----');
-        // ② 定向：把"设置窗 + 一个普通窗口（InfoWindow，做对照）"的子树连组件一起 dump
-        lines = 0;
-        const dumpWin = (n, depth) => {
-            if (!n || lines >= MAXL) return;
-            const nm = String(G(() => n.name, '') || '');
-            const kids = G(() => n.children, []) || [];
-            const comps = (G(() => n.components, []) || []).map(compDesc).join(' + ');
-            log('窗 ' + pad(depth) + ' ' + (G(() => n.active, true) ? '' : '[X]') + nm + ' [组件: ' + (comps || '无') + '] (子' + kids.length + ')');
-            lines++;
-            for (let i = 0; i < kids.length && lines < MAXL; i++) dumpWin(kids[i], depth + 1);
-        };
-        const isWin = (n) => {
-            const nm = String(G(() => n.name, '') || '');
-            return nm.indexOf('SettingWindow') === 0 || nm.indexOf('InfoWindow') === 0;
-        };
-        const findAndDump = (n) => {
-            if (!n || lines >= MAXL) return;
-            if (isWin(n)) { log('--- 命中窗口子树：' + String(G(() => n.name, '')) + ' ---'); dumpWin(n, 0); return; }
-            const kids = G(() => n.children, []) || [];
-            for (let i = 0; i < kids.length; i++) findAndDump(kids[i]);
-        };
-        findAndDump(scene);
-        log('===== UI侦查结束 =====');
-    } catch (e) { warn('UI侦查出错', e); }
-}
 
-let gpnUiProbeLastScene = '';
+
 
 /* 寒冰射手金卡：把"数据层"改金卡的动作抽成可重复调用的函数（开=金卡，关=还原）
  *  · 数据层 = PlantFeatures[].OBTAINWORLD（引擎卡面 getPlantBGSpriteByObtainWorld 读它）
@@ -3567,7 +3491,6 @@ let gpnSnowPeaGoldApply = null;
 let gpnTestToggles = null;
 let gpnTestToggles2 = null;
 let gpnApplyDataPatch = null;
-let gpnVerSpike = null;      // 钢地刺专用验证（自动切 + 打印表值/活对象）
 
 /* ============================================================================
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
@@ -5946,7 +5869,6 @@ export default {
         } catch (eR0) { /* 忽略 */ }
         try {
             const all = (typeof window !== 'undefined' && window && window.__gpnInstances) ? window.__gpnInstances : [];
-            log('[CTM] INSTANCE=' + GPN_INSTANCE_ID + ' ｜ 本进程已加载过的实例: ' + (all.length ? all.join(',') : '(无)') + (all.length > 1 ? '  ★★ 这是多实例！' : ''));
         } catch (e) { /* 忽略 */ }
         const IMPORTS = [
             'chunks:///_virtual/JSONs.ts',            // 0
@@ -6019,7 +5941,6 @@ export default {
                 try { gpnPlantsRef = () => (plantsMod && plantsMod.plants) || null; } catch (e) { /* 忽略 */ }
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
                 const firstOk = dataPatch.apply();
-                log('数据补丁：首次 apply 结果 = ' + firstOk + '（false = 容器/数组还没到位，将自愈重试）');
                 if (firstOk !== true) gpnStartDataPatchRetry(() => gpnApplyDataPatch);
                 gpnApplyDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
 
@@ -6049,131 +5970,9 @@ export default {
                 warn('拿不到 PvZ2ObjectContainer，数值改动未生效');
             }
 
-            // ---- 1b.【临时诊断】UI 结构侦查的触发：切场景自动 dump + 按 O 键 dump ----
-            //   纯只读打印（见 gpnUiProbeDump 的说明）；调查结束整段删除。
-            //   注意：`setup()` 本就在引擎初始化之后才跑 ⇒ 这里直接安装，不去依赖
-            //   `cc.Game.EVENT_ENGINE_INITED` 之类的事件常量（写错会静默不生效）。
-            try {
-                gpnUiProbeLastScene = '';
-                if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
-                    document.addEventListener('keydown', (ev) => {
-                        try {
-                            const k = ev && (ev.key || ev.code);
-                            if (k === 'o' || k === 'O' || k === 'KeyO') gpnUiProbeDump('手动按 O 键');
-                        } catch (e) { /* 只影响诊断 */ }
-                    });
-                }
-                // 切场景：轮询（0.5s）发现场景名变化就 dump 一次（延时 1.5s 等场景构建完）
-                setInterval(() => {
-                    try {
-                        const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
-                        const nm = sc ? String(sc.name || '') : '';
-                        if (nm && nm !== gpnUiProbeLastScene) {
-                            gpnUiProbeLastScene = nm;
-                            // 【临时诊断】自动 dump 已停用（会刷屏、把【验证】日志冲掉）；需要时按 O 手动 dump
-                        }
-                    } catch (e) { /* 只影响诊断 */ }
-                }, 500);
-                log('UI侦查：已就绪（切场景自动 dump；或按 O 键 dump 当前场景）');
-            } catch (e) { warn('UI侦查：安装失败', e); }
 
-            // ---- 1c.【临时诊断】"即时生效"可行性验证（阶段⓪）----
-            //   ⚠️ 实机教训：先试过"按键 1/2"（与游戏选卡冲突）和"F7/F8 + 左上角点击"，
-            //      **装了钩子但一次都没触发** ⇒ 说明键盘/鼠标事件到不了我们的监听器（引擎吞了）。
-            //   ⇒ 本版改为**自动定时切换**：完全不需要任何输入，日志一定会出现。
-            //     观察法：进关卡种一株裂荚，**盯住它**，它自己会每隔几秒"摆正/恢复翻转"一次。
-            //   触发：  ① `AUTO` 每 6 秒自动切一次裂荚（进关卡后 6 秒开始）；
-            //           ② 仍保留 F7/F8（万一键盘其实能到）；③ 左上角点击同样保留。
-            //   ⚠️ 只改内存、不写 features.json ⇒ 退出即还原。调查结束整段删除。
-            try {
-                const gpnVerScene = () => {
-                    try {
-                        const sc = (ccMod && ccMod.director && ccMod.director.getScene) ? ccMod.director.getScene() : null;
-                        return sc ? String(sc.name || '?') : '(无场景)';
-                    } catch (e) { return '(取场景失败)'; }
-                };
-                const gpnVerOn = (ev) => {
-                    try {
-                        const tag = (ev && ev.type) || '?';
-                        const before = featOn('splitpea');
-                        featSet('splitpea', !before);
-                        log('【验证】收到 ' + tag + ' ｜ 场景=' + gpnVerScene()
-                            + ' ｜ 裂荚 ' + (before ? '开' : '关') + ' → ' + (featOn('splitpea') ? '开' : '关')
-                            + '（补丁常驻、钩子运行期现查 ⇒ 应立即生效，无需重进）');
-                    } catch (e) { warn('【验证】裂荚切换失败', e); }
-                };
-                const gpnVerOn2 = (ev) => {
-                    try {
-                        const tag = (ev && ev.type) || '?';
-                        const before = featOn('spikerock');
-                        featSet('spikerock', !before);
-                        let reap = '(没找到数据补丁)';
-                        try {
-                            if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); reap = '已重新应用'; }
-                        } catch (e) { reap = '重新应用出错：' + e; }
-                        log('【验证】收到 ' + tag + ' ｜ 钢地刺 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
-                            + '；数据补丁 ' + reap + '（阳光 ' + (featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost) + '）');
-                    } catch (e) { warn('【验证】钢地刺切换失败', e); }
-                };
-                // ① 自动定时切换（核心：不需要任何输入）
-                try {
-                    /* 【临时诊断·已停用】自动切裂荚：阶段② 起会干扰界面观察，故关闭（需要时手动恢复） */
-                } catch (e) { warn('【验证】自动定时器安装失败', e); }
-                // ①b 【钢地刺专用】每 6 秒自动切钢地刺并**重新应用数据**，同时打印：
-                //      · 容器表里的阳光值（= 我们写入的结果）
-                //      · "活对象"的引用与取值（引擎 `getPlantProps()` 读的就是它）
-                //    目的：判断"表"与"活对象"是不是**同一个对象** ⇒ 决定 B′ 是"双写"还是"只改一处"。
-                try {
-                    gpnVerSpike = () => {
-                        try {
-                            const PC2 = jsonMod && jsonMod.PvZ2ObjectContainer;
-                            const hit = (name) => {
-                                try {
-                                    const list = PC2 && PC2[name];
-                                    if (!Array.isArray(list)) return null;
-                                    return list.find((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf('spikerock') !== -1) || null;
-                                } catch (e) { return null; }
-                            };
-                            const entry = hit('PlantProps');
-                            const before = featOn('spikerock');
-                            featSet('spikerock', !before);
-                            let reap = '(无数据补丁)';
-                            try {
-                                if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') { gpnApplyDataPatch.apply(); reap = '已重应用'; }
-                            } catch (e) { reap = '重应用出错'; }
-                            const after = hit('PlantProps');
-                            const od = (after && after.objdata) ? after.objdata : null;
-                            const gv = (k) => (od && od[k] !== undefined) ? od[k] : '(无)';
-                            log('【验证·钢地刺】开关 ' + (before ? '开' : '关') + ' → ' + (featOn('spikerock') ? '开' : '关')
-                                + ' ｜ 场景=' + gpnVerScene() + ' ｜ 数据补丁 ' + reap
-                                + ' ｜ 表里 SunCost=' + gv('SunCost')
-                                + ' / Cooldown=' + gv('Cooldown')
-                                + ' / MaxSpike=' + gv('MaxSpike')
-                                + ' ｜ 条目同一对象=' + (entry === after)
-                                + ' ｜ objdata 同一对象=' + (!!entry && !!after && entry.objdata === after.objdata));
-                        } catch (e) { warn('【验证·钢地刺】出错', e); }
-                    };
-                    /* 【临时诊断·已停用】自动切钢地刺：同上 */
-                } catch (e) { warn('【验证】钢地刺定时器安装失败', e); }
-                // ② 键盘 / ③ 鼠标（保留，作为佐证：能到的话日志里会写 keydown/mouseup）
-                if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
-                    document.addEventListener('mouseup', (ev) => {
-                        try {
-                            const x = Number(ev && (ev.clientX != null ? ev.clientX : ev.pageX));
-                            const y = Number(ev && (ev.clientY != null ? ev.clientY : ev.pageY));
-                            if (isFinite(x) && isFinite(y) && x >= 0 && x <= 200 && y >= 0 && y <= 200) gpnVerOn2(ev);
-                        } catch (e) { /* 只影响诊断 */ }
-                    });
-                    document.addEventListener('keydown', (ev) => {
-                        try {
-                            const k = String((ev && (ev.key || ev.code)) || '');
-                            if (k === 'F7') gpnVerOn(ev);
-                            if (k === 'F8') gpnVerOn2(ev);
-                        } catch (e) { /* 只影响诊断 */ }
-                    }, true);   // 捕获阶段：万一引擎在冒泡阶段吞掉事件，这里也能收到
-                }
-                log('【验证】已就绪（无需任何输入）：每 6 秒自动切一次裂荚；每 6 秒自动切一次钢地刺并打印表值/活对象');
-            } catch (e) { warn('【验证】安装失败', e); }
+
+
 
             // ---- 1d. 配置界面（入口行挂在原版设置窗底部；点它打开我们自己的窗体）----
             //   ⚠️ 本块是【整体重写版】：早期用"字符串打补丁"往旧代码里反复插入小补丁，导致层级/顺序反复出错
@@ -6312,7 +6111,7 @@ function findSprite(n) {
                                 } catch (e) { warn('【配置界面】恢复默认出错', e); }
                             });
                             row.addChild(gear);
-                            clog('入口行：已加入恢复默认齿轮');
+                            if (verboseOn()) clog('入口行：已加入恢复默认齿轮');
                         } else { clog('入口行：模板里找不到 website 节点，齿轮未加入'); }
                     } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
                     let locked = 0;
@@ -6356,8 +6155,8 @@ function findSprite(n) {
                                 else { setRightAlign(e.labelNode, false); setText(e.labelNode, on ? '开' : '关'); }
                             }
                             if (e.hint) { try { for (const c of (e.hint.components || [])) { if (c && c.color !== undefined) c.color = blocked ? ccColor(210, 200, 190, 255) : ccColor(120, 110, 100, 255); } } catch (eHC) { } }
-                            if (i < 3) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
-                        } catch (err) { clog('render 出错 ' + e.key + '：' + err); }
+                            if (i < 3) if (verboseOn()) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
+                        } catch (err) { if (verboseOn()) clog('render 出错 ' + e.key + '：' + err); }
                     });
                 }
 
@@ -6373,7 +6172,7 @@ function findSprite(n) {
                     try {
                         const ccg = ccNode();
                         const scene = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
-                        if (!scene) { clog('卡片探测：拿不到场景'); return; }
+                        if (!scene) { if (verboseOn()) clog('卡片探测：拿不到场景'); return; }
                         const seen = [];
                         const walk = (node, depth) => {
                             if (!node || depth > 14 || seen.length > 6000) return;
@@ -6400,8 +6199,8 @@ function findSprite(n) {
                             for (const kk of (node.children || [])) walk(kk, depth + 1);
                         };
                         walk(scene, 0);
-                        clog('卡片探测：命中组件 ' + found + ' 个、刷新成功 ' + done + ' 个 ｜ 样本: ' + (shapes.length ? shapes.join(' , ') : '(无)'));
-                    } catch (e) { clog('卡片探测出错：' + e); }
+                        if (verboseOn()) clog('卡片探测：命中组件 ' + found + ' 个、刷新成功 ' + done + ' 个 ｜ 样本: ' + (shapes.length ? shapes.join(' , ') : '(无)'));
+                    } catch (e) { if (verboseOn()) clog('卡片探测出错：' + e); }
                 }
 
                 /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
@@ -6409,7 +6208,7 @@ function findSprite(n) {
                     try {
                         if (panel && panel.isValid) return panel;
                         // ★ 跨场景重建：清空旧行数据（否则 buildRows 会因为 entries 非空而跳过 ⇒ 新窗体会是空的）
-                        if (entries.length) clog('重建面板：清空旧行数据 ' + entries.length + ' 行');
+                        if (entries.length) if (verboseOn()) clog('重建面板：清空旧行数据 ' + entries.length + ' 行');
                         entries.length = 0;
                         panelRowsBox = null;
                         const clone = ccg.instantiate(origWin);
@@ -6444,10 +6243,10 @@ function findSprite(n) {
                             const reg = gpnPanelReg();
                             if (reg) reg[GPN_INSTANCE_ID] = { panel: clone, origWin: origWin };
                         } catch (eReg) { /* 忽略 */ }
-                        clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
+                        if (verboseOn()) clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
                         // ★ 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
                         buildRows(ccg);
-                        clog('建窗体后立即建行：entries=' + entries.length + ' ｜ rowsBox=' + (panelRowsBox ? panelRowsBox.name : '无'));
+                        if (verboseOn()) clog('建窗体后立即建行：entries=' + entries.length + ' ｜ rowsBox=' + (panelRowsBox ? panelRowsBox.name : '无'));
                         return clone;
                     } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
                 }
@@ -6564,11 +6363,11 @@ function findSprite(n) {
                         const needH = Math.max(1440, Math.max(60, Math.floor(ch * 0.6)) + perCol * ch + ch);
                         setSize(panelRowsBox, contentW, needH);
                         if (panelRowsBox.updateLayout) panelRowsBox.updateLayout();
-                        clog('已铺 ' + idx + ' 行（2 列，行宽 ' + cw + '，行高 ' + ch + '，内容区高度 ' + needH + '）');
+                        if (verboseOn()) clog('已铺 ' + idx + ' 行（2 列，行宽 ' + cw + '，行高 ' + ch + '，内容区高度 ' + needH + '）');
                         // 【诊断】确认每行真的找到了 sprite 与状态 Label（避免"看着像改了、其实没改到"）
                         entries.slice(0, 4).forEach((e) => {
                             try {
-                                clog('  行自检 ' + e.key + ' ｜ sprite=' + (e.sprite ? '有' : '无')
+                                if (verboseOn()) clog('  行自检 ' + e.key + ' ｜ sprite=' + (e.sprite ? '有' : '无')
                                     + ' ｜ 状态Label=' + (e.labelNode ? '有' : '无')
                                     + (e.sprite ? (' ｜ 当前色=' + e.sprite.color.r + ',' + e.sprite.color.g + ',' + e.sprite.color.b) : ''));
                             } catch (eD) { /* 忽略 */ }
@@ -7010,7 +6809,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l27 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l28 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
