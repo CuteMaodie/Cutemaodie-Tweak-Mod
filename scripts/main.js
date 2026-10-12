@@ -1099,492 +1099,505 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         //   ⇒ 阳光 / 冷却改了会自动显示，不用动图鉴。
         //   规则：能保留就保留（追加），只有【原话说错了】的才改写。
         // ============================================================
-        if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
-            const AL = PvZ2ObjectContainer.PlantAlmanac;
-            // 我们名单里的 alias 集合（只对它们做"写不到就 warn"，避免误报）
-            const gpnAlmAliasSet = Object.create(null);
-            for (const _p of GPN_ALM_CHANGED) gpnAlmAliasSet[_p[0]] = true;
-            // ★ findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
-            //   ⚠️ 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
-            //      心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
-            //      万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
-            //      现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
-            const gpnAlmWarned = Object.create(null);
-            const gpnAlmWarnMiss = (what, alias) => {
-                if (!gpnAlmAliasSet[alias]) return;          // 只提醒"我们名单里的"，避免误报
-                if (gpnAlmWarned[alias]) return;             // 每个 alias 只提醒一次（apply 会跑很多遍）
-                gpnAlmWarned[alias] = true;
-                warn('图鉴：' + what + ' 里找不到 alias「' + alias + '」—— 没写进去（请核对拼写）');
-            };
-            const findAl = (alias) => {
-                for (const e of AL) {
-                    if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1) return e;
-                }
-                const alt = (alias.slice(-1) === 's') ? alias.slice(0, -1) : (alias + 's');
-                for (const e of AL) {
-                    if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alt) !== -1) return e;
-                }
-                return null;
-            };
-            const setLoc = (holder, field, zh, en) => {
-                if (!holder) return false;
-                let o = holder[field];
-                if (!o || typeof o !== 'object') { track(holder, field); holder[field] = {}; o = holder[field]; }
-                if (typeof zh === 'string') { track(o, 'zh'); o.zh = zh; }
-                if (typeof en === 'string') { track(o, 'en'); o.en = en; }
-                return true;
-            };
-            const writeIntro = (alias, zh, en) => {
-                const e = findAl(alias);
-                if (!e) { gpnAlmWarnMiss('介绍(Introduction)', alias); return false; }
-                return setLoc(e.objdata, 'Introduction', zh, en);
-            };
-            const writeBrief = (alias, zh, en) => {
-                const e = findAl(alias);
-                if (!e) { gpnAlmWarnMiss('简介(BriefIntroduction)', alias); return false; }
-                return setLoc(e.objdata, 'BriefIntroduction', zh, en);
-            };
-            const addSpecial = (alias, zh, en) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata) { gpnAlmWarnMiss('特点(Special)', alias); return false; }
-                const od = e.objdata;
-                const list = Array.isArray(od.Special) ? od.Special : null;
-                if (list) {
-                    for (const row of list) {
-                        const d = row && row.DESCRIPTION;
-                        if (d && d.zh === zh) return true;      // 已经加过（apply 会跑多次）
-                    }
-                }
-                track(od, 'Special');
-                od.Special = (list || []).concat([{
-                    NAME: { zh: '特点', en: 'Special' },
-                    DESCRIPTION: { zh, en },
-                }]);
-                return true;
-            };
-            const editSpecial = (alias, needle, zh, en) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata || !Array.isArray(e.objdata.Special)) return false;
-                for (const row of e.objdata.Special) {
-                    const d = row && row.DESCRIPTION;
-                    if (!d) continue;
-                    const hit = (typeof d.zh === 'string'
-                            && (d.zh.indexOf(needle) !== -1 || (typeof zh === 'string' && d.zh === zh)))
-                        || (typeof d.en === 'string' && d.en.indexOf(needle) !== -1);
-                    if (!hit) continue;
-                    if (typeof zh === 'string') { track(d, 'zh'); d.zh = zh; }
-                    if (typeof en === 'string') { track(d, 'en'); d.en = en; }
-                    return true;
-                }
-                warn('图鉴：找不到要改的 Special 行（' + alias + ' / ' + needle + '）');
-                return false;
-            };
-            // 在「含某关键词的那个本地化对象」上【追加】一句。
-            //  图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
-            //  所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
-            const appendLoc = (alias, needles, zhSuffix, enSuffix) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata) { warn('图鉴：找不到这个植物的条目（' + alias + '）'); return false; }
-                const list = Array.isArray(needles) ? needles : [needles];
-                const found = [];       // [{o, path}]
-                const walk = (o, path) => {
-                    if (!o || typeof o !== 'object') return;
-                    if (typeof o.zh === 'string') found.push({ o: o, path: path || '(root)' });
-                    if (Array.isArray(o)) {
-                        o.forEach((x, i) => walk(x, path + '[' + i + ']'));
-                    } else {
-                        for (const k of Object.keys(o)) walk(o[k], path ? (path + '.' + k) : k);
-                    }
-                };
-                walk(e.objdata, '');
-                let hit = null, hitNeedle = null;
-                for (const nd of list) {                      // 按 given 顺序优先（先找"更像正文"的那句）
-                    for (const f of found) {
-                        if (f.o.zh.indexOf(nd) !== -1) { hit = f; hitNeedle = nd; break; }
-                    }
-                    if (hit) break;
-                }
-                if (!hit) {
-                    warn('图鉴：' + alias + ' 里找不到含「' + list.join(' / ') + '」的文案，没改');
-                    if (dbgOn(CFG.splitpea.debugLog)) {
-                        // ① 把这个植物自己的所有文案连"路径"打出来
-                        log('  图鉴[' + alias + '] 共有 ' + found.length + ' 条中文文案：');
-                        for (const f of found) log('    ' + f.path + ' = ' + String(f.o.zh).slice(0, 70));
-                        // ② 全表扫一遍：万一这句挂在别的条目/别的表上（只报告，不改）
-                        try {
-                            const needle0 = list[0];
-                            for (const e2 of (AL || [])) {
-                                if (!e2 || !e2.objdata) continue;
-                                const hits2 = [];
-                                const w2 = (o2, p2) => {
-                                    if (!o2 || typeof o2 !== 'object') return;
-                                    if (typeof o2.zh === 'string' && o2.zh.indexOf(needle0) !== -1) hits2.push(p2);
-                                    if (Array.isArray(o2)) o2.forEach((x, i) => w2(x, p2 + '[' + i + ']'));
-                                    else for (const k of Object.keys(o2)) w2(o2[k], p2 ? (p2 + '.' + k) : k);
-                                };
-                                w2(e2.objdata, '');
-                                for (const p2 of hits2) {
-                                    log('  别处也有一份：aliases=' + JSON.stringify(e2.aliases) + ' 路径=' + p2);
-                                }
-                            }
-                            const fl = PvZ2ObjectContainer && PvZ2ObjectContainer.PlantFeatures;
-                            if (Array.isArray(fl)) {
-                                for (const fe of fl) {
-                                    if (!fe || String(fe.CODENAME || '').toLowerCase() !== String(alias).toLowerCase()) continue;
-                                    for (const k of Object.keys(fe)) {
-                                        const v = fe[k];
-                                        if (v && typeof v === 'object' && typeof v.zh === 'string') {
-                                            log('  PlantFeatures[' + alias + '].' + k + ' = ' + String(v.zh).slice(0, 70));
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e) { /* 没有就算了 */ }
-                    }
-                    return false;
-                }
-                const d = hit.o;
-                // 【诊断】图鉴追加的"零输出记账"（只在 dump 时输出一次）：
-                //   记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
-                //   用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
-                gpnAlmAppendCalls++;
-                const _zhBefore = (typeof d.zh === 'string') ? d.zh : '';
-                const _zhHitBefore = (typeof zhSuffix === 'string') ? (_zhBefore.indexOf(zhSuffix) !== -1) : null;
-                gpnAlmAppendLog.push({
-                    n: gpnAlmAppendCalls,
-                    path: hit.path,
-                    needle: hitNeedle,
-                    hitBefore: _zhHitBefore,
-                    lenBefore: _zhBefore.length,
-                    tail: _zhBefore.slice(-24),
-                });
-                if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
-                    track(d, 'zh'); d.zh = d.zh + zhSuffix;
-                    gpnAlmAppendWrites++;
-                    // ★ 只在【真的写入】时打日志，且最多打 5 条（2026/10/10 实机定论：这段代码
-                    //   每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
-                    //   但判据是可靠的 —— 文本【不会】被重复追加，用户实机确认图鉴文案正常）。
-                    if (dbgOn(CFG.splitpea.debugLog) && gpnAlmAppendWrites <= 5) {
-                        log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加（第 '
-                            + gpnAlmAppendWrites + ' 次写入；本次是第 ' + gpnAlmAppendCalls + ' 次进入）');
-                    }
-                }
-                if (typeof enSuffix === 'string' && typeof d.en === 'string'
-                    && d.en.indexOf(enSuffix) === -1) {
-                    track(d, 'en'); d.en = d.en + enSuffix;
-                }
-                return true;
-            };
-
-            // 【诊断】把图鉴追加的记账打出来（唯一输出点；只打前 5 条明细 + 汇总）
-            const gpnAlmDump = (why) => {
-                try {
-                    log('图鉴【记账 dump】原因：' + why
-                        + '；apply() 累计调用 ' + gpnAlmApplyCalls + ' 次'
-                        + '；appendLoc 进入 ' + gpnAlmAppendCalls + ' 次'
-                        + '；实际写入 zh ' + gpnAlmAppendWrites + ' 次');
-                    gpnAlmAppendLog.slice(0, 5).forEach((x) => {
-                        log('   #' + x.n + ' path=' + x.path + ' needle=' + x.needle
-                            + ' 进入时"已含后缀"=' + x.hitBefore + ' 长度=' + x.lenBefore
-                            + ' 尾部="…' + x.tail + '"');
-                    });
-                    // ★ 关键验证：现在再读一次那份文案，看"我们写的还在不在"
-                    //   （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
-                    const arr = (typeof findAl === 'function') ? findAl('splitpea') : null;
-                    const obj = arr && arr.objdata;
-                    let readBack = '(取不到)';
-                    if (obj) {
-                        const walk2 = (o) => {
-                            if (!o || typeof o !== 'object') return null;
-                            if (typeof o.zh === 'string' && o.zh.indexOf('向后方两倍') !== -1) return o;
-                            if (Array.isArray(o)) { for (const x of o) { const r2 = walk2(x); if (r2) return r2; } return null; }
-                            for (const k of Object.keys(o)) { const r2 = walk2(o[k]); if (r2) return r2; }
-                            return null;
-                        };
-                        const t2 = walk2(obj);
-                        if (t2) {
-                            const hasIt = (typeof CFG.splitpea.extraZh === 'string') && t2.zh.indexOf(CFG.splitpea.extraZh) !== -1;
-                            readBack = '长度 ' + t2.zh.length + '，是否仍含我们追加的后缀=' + hasIt
-                                + '，出现次数=' + (t2.zh.split(CFG.splitpea.extraZh).length - 1);
-                        } else { readBack = '(找不到含该关键词的文案)'; }
-                    }
-                    log('   回读验证（splitpea）：' + readBack);
-                } catch (e) { /* 只影响诊断 */ }
-            };
-
-            // ★★★ 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）★★★
-            //   【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
-            //   【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
-            //          ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
-            //          ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
-            //   【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
-            //          之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
-            //          ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
-            //   ⚠ 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
-            if (!GPN_ALM_SNAPSHOT_DONE) {
-                for (const _p of GPN_ALM_CHANGED) {
-                    let _e = null;
-                    for (const _x of AL) {
-                        if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_p[0]) !== -1) { _e = _x; break; }
-                    }
-                    if (_e && _e.objdata) GPN_ALM_ORIG.push({ alias: _p[0], od: gpnAlmDeepClone(_e.objdata) });
-                }
-                GPN_ALM_SNAPSHOT_DONE = true;
-                log_alm_snapshot(GPN_ALM_ORIG.length);
-            }
-            for (const _rec of GPN_ALM_ORIG) {
-                let _e = null;
-                for (const _x of AL) {
-                    if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_rec.alias) !== -1) { _e = _x; break; }
-                }
-                if (!_e) continue;
-                if (!_e.objdata) _e.objdata = {};
-                const _t = _e.objdata, _o = _rec.od;
-                for (const _k of Object.keys(_t)) {
-                    if (!Object.prototype.hasOwnProperty.call(_o, _k)) delete _t[_k];
-                }
-                for (const _k of Object.keys(_o)) _t[_k] = gpnAlmDeepClone(_o[_k]);
-            }
-
-            // ---- 巴豆（追加"所有啃食者一起倒下"）----
-            if (featOn('chilibean')) {
-                // Intro 的中文保持原版不动；英文用带补充的那句
-                writeIntro('chilibean', null,
-                    'Chili Beans deliver a crippling bout of gastrointestinal distress. Every zombie that is eating it drops at once.');
-                writeBrief('chilibean', '所有正在啃食它的僵尸一起死亡，并释放眩晕气体',
-                    'Every zombie eating it dies together, and releases stunning gas.');
-                editSpecial('chilibean', '吃掉他的僵尸直接死亡',
-                    '被僵尸吃下后，杀死所有正在啃食它的僵尸，并释放眩晕气体',
-                    'After being eaten, it kills every zombie that is eating it and releases stunning gas.');
-            }
-            // ---- 钢地刺（原话写错：三次 / 3 个）----
-            if (featOn('spikerock')) {
-                const SPK = CFG.spikerock.maxSpike;
-                writeBrief('spikerock', '对走过的僵尸造成伤害，并破坏 ' + SPK + ' 个滚动的物体',
-                    'Damages zombies that walk over it, and destroys ' + SPK + ' rolling objects.');
-                editSpecial('spikerock', '能承受滚动前行',
-                    '能承受滚动前行的僵尸' + gpnZhNum(SPK) + '次打击',
-                    'Can withstand ' + SPK + ' hits from rolling zombies.');
-            }
-            // ---- 心蕊（追加 1×3 + 啃食减伤）----
-            if (featOn('bloomingheart')) {
-                writeIntro('bloominghearts',
-                    '心蕊向僵尸投掷子弹，使之本格及其同排左右各一格中的所有僵尸防御力下降。',
-                    'Blooming Hearts throw bullets that lower the defence of zombies in its own tile and the tiles one to either side in the same lane.');
-                writeBrief('bloominghearts', '向僵尸投掷子弹，使以命中点为中心 1×3 范围内的僵尸防御力下降',
-                    'Throws bullets that lower the defence of zombies in a 1×3 area centred on the hit.');
-                const VDS = CFG.bloomingheart.victimDamageScale || {};
-                const P50 = Math.round((VDS.bloominghearts != null ? VDS.bloominghearts : 0.5) * 100);
-                const P75 = Math.round((VDS.sweetpotato != null ? VDS.sweetpotato : 0.75) * 100);
-                addSpecial('bloominghearts',
-                    '被减防的僵尸对这些植物的啃食伤害降低：心蕊 ×' + P50 + '%、甜薯 / 热辣海枣 ×' + P75 + '%',
-                    'Zombies with this defence reduction deal less chewing damage to these plants: '
-                    + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%.');
-            }
-            // ---- 暗影龙葵（追加穿透 + 击退）----
-            if (featOn('nightshade')) {
-                // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
-                const NS_K = gpnPierceText(CFG.nightshade.pierceTargets);
-                addSpecial('nightshade',
-                    NS_K >= 1
-                        ? '身上有暗影能量时，抛出的叶片可穿透' + gpnPierceZh(NS_K) + '个目标，且会把僵尸轻微击退'
-                        : '身上有暗影能量时，抛出的叶片会把僵尸轻微击退',
-                    NS_K >= 1
-                        ? 'When powered by shadow energy, its thrown leaves pierce ' + NS_K
-                            + ' targets and slightly knock zombies back.'
-                        : 'When powered by shadow energy, its thrown leaves slightly knock zombies back.');
-            }
-            // ---- 白萝卜（追加受伤间隔）----
-            if (featOn('turnip')) {
-                addSpecial('turnip', CFG.turnip.damageGateSeconds + ' 秒内只能受到一次伤害',
-                    'Can only take damage once every ' + CFG.turnip.damageGateSeconds + ' seconds.');
-            }
-            // ---- 甜薯（追加回血 + 治疗加成）----
-            if (featOn('sweetpotato')) {
-                const SP_HP = CFG.sweetpotato.selfHealPerSecond;
-                const SP_MULT = Math.round(CFG.sweetpotato.healReceivedMultiplier * 100);
-                addSpecial('sweetpotato', '每秒回复 ' + SP_HP + ' 点生命，且受到的任何治疗 ×' + SP_MULT + '%',
-                    'Recovers ' + SP_HP + ' HP per second, and all healing it receives is ×' + SP_MULT + '%.');
-            }
-            // ---- 高坚果（追加免疫位移 + 抗砸）----
-            if (featOn('tallnut')) {
-                addSpecial('tallnut', '免疫位移', 'Immune to being moved.');
-                const TN_N = Math.max(1, Math.round(1 / CFG.tallnut.smashHpFraction) - 1);
-                addSpecial('tallnut', '可承受砸击 ' + TN_N + ' 次', 'Can withstand ' + TN_N + ' smashes.');
-            }
-            // ---- 香水菇（改现有的「特点」行）----
-            if (featOn('perfumeshroom')) {
-                // 原有的「特点」行保持原话不动，新增能力单独开一条。
-                // !!「啃食伤害降低」其实是 bloomingheart 那个补丁的效果 ——
-                //    所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
-                let PM_ZH = '使僵尸防御降低';
-                let PM_EN = 'Zombies hit have their defence lowered';
-                if (featOn('bloomingheart')) {
-                    PM_ZH += '，且防御降低的僵尸对心蕊、热辣海枣、甜薯造成的啃食伤害降低';
-                    PM_EN += ', and those zombies deal less chewing damage to Blooming Heart, Hot Date and Sweet Potato';
-                }
-                addSpecial('perfumeshroom', PM_ZH, PM_EN + '.');
-            }
-            // ---- 星星果系（追加穿透 / 溅射 / 追击）----
-            if (featOn('starfruit')) {
-                // Intro 保持原版不动（下面这些说明都改成新增 Special）
-                // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
-                //   （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
-                const STAR_K = gpnPierceText(CFG.starfruit.pierceTargets);
-                const PINK_K = gpnPierceText(CFG.starfruit.pinkPierceTargets);
-                const SHOOT_K = gpnPierceText(CFG.starfruit.shootingPierceTargets);
-                const pierceZh = (k, splash) => (k >= 1
-                    ? '子弹可以穿透' + gpnPierceZh(k) + '个目标，并在击中时造成单格' + splash + '溅射伤害'
-                    : '子弹在击中时造成单格' + splash + '溅射伤害');
-                const pierceEn = (k, splash) => (k >= 1
-                    ? 'Its bullets pierce ' + k + ' target(s) and deal a ' + splash + ' splash on hit.'
-                    : 'Its bullets deal a ' + splash + ' splash on hit.');
-                addSpecial('starfruit', pierceZh(STAR_K, '少量'), pierceEn(STAR_K, 'small'));
-                // 追击相关的说明只在"追击开关也开着"时才写
-                const ST_FOLLOW = !!CFG.starfruit.followEnabled;
-                if (ST_FOLLOW) {
-                    // 追击弹比【星星果普攻】多打中几个 = followPierceBonus（默认 1）；= 0 ⇒ 不写"额外穿透"
-                    const FB = gpnFollowPierce() - gpnPierceN(CFG.starfruit.pierceTargets);
-                    addSpecial('starfruit',
-                        FB >= 1
-                            ? '追击子弹可额外穿透' + gpnPierceZh(FB)
-                                + '个目标，溅射伤害继承比略微提高，且极短时间眩晕目标'
-                            : '追击子弹的溅射伤害继承比略微提高，且极短时间眩晕目标',
-                        FB >= 1
-                            ? 'Follow-up bullets pierce ' + FB
-                                + ' extra target(s), inherit a slightly higher splash ratio, and briefly stun the target.'
-                            : 'Follow-up bullets inherit a slightly higher splash ratio and briefly stun the target.');
-                }
-                if (ST_FOLLOW) {
-                    addSpecial('starfruit', '当索敌范围内的目标被流星果、天使星星果攻击时，进行一次追击',
-                        'When a target in its range is attacked by a Shooting Starfruit or Pink Starfruit, it performs a follow-up attack.');
-                }
-                if (ST_FOLLOW) {
-                    // 第 3 条：追击子弹的伤害口径（合并开/关两种说法；数值从 CFG 现算）。
-                    //   这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
-                    const ST_R = Math.round(CFG.starfruit.followDamageRatio * 100);
-                    {
-                        const alST = findAl('starfruit');
-                        if (alST && alST.objdata && Array.isArray(alST.objdata.Special)) {
-                            const keep = alST.objdata.Special.filter((row) => {
-                                const z = row && row.DESCRIPTION && row.DESCRIPTION.zh;
-                                return !(typeof z === 'string'
-                                    && (z.indexOf('追击子弹伤害×') === 0 || z.indexOf('追击在') === 0));
-                            });
-                            if (keep.length !== alST.objdata.Special.length) {
-                                track(alST.objdata, 'Special');
-                                alST.objdata.Special = keep;
-                            }
-                        }
-                    }
-                    if (gpnFollowMergeOn()) {
-                        addSpecial('starfruit',
-                            '追击在 ' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
-                            + ST_R + '% × Σ（各次触发时的攻击力）',
-                            'If triggered multiple times within ' + CFG.starfruit.followMergeWindow
-                            + ' s, it follows up only once; each bullet deals ' + ST_R
-                            + '% × Σ(the attack power at each trigger).');
-                    } else {
-                        addSpecial('starfruit', '追击子弹伤害×' + ST_R + '%',
-                            'Follow-up bullets deal ×' + ST_R + '% damage.');
-                    }
-                }
-                addSpecial('pinkstarfruit', pierceZh(PINK_K, '少量'), pierceEn(PINK_K, 'small'));
-                addSpecial('shootingstarfruit', pierceZh(SHOOT_K, '中等'), pierceEn(SHOOT_K, 'medium'));
-            }
-            // ---- 暗影油桃（追加削弱说明）----
-            if (featOn('noctarine')) {
-                const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
-                // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
-                const NO_DUR = Math.round(CFG.noctarine.normalLifespan / 20 * 100);
-                addSpecial('noctarine', '造成伤害仅为攻击力的 ' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
-                    'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
-            }
-            // ---- 蒲公英（原话"一行"→"两颗"）----
-            if (featOn('dandelion')) {
-                const DN_N = 1 + CFG.dandelion.extraShots;
-                writeIntro('dandelion',
-                    '蒲公英向身前的三行中发射' + (DN_N === 2 ? '两' : gpnZhNum(DN_N)) + '颗爆炸性蒲公英子弹。',
-                    'Dandelions fire ' + DN_N + ' explosive dandelion bullets into the three lanes in front of them.');
-                addSpecial('dandelion', '可击晕飞行僵尸，且对其造成更高伤害',
-                    'Stuns flying zombies and deals extra damage to them.');
-            }
-            // ---- 甜椒投手（追加落点灼烧）----
-            if (featOn('pepperpult')) {
-                // 拆成两条：原文整条太长，图鉴那一行会在「清」字处自动折行、排版错位
-                const PP_C = CFG.pepperpult.burnCells;
-                addSpecial('pepperpult',
-                    // 口径：火铺在【子弹的落点】；总伤害按【这一发子弹的伤害】的 burnTotalRatio 算
-                    '命中后，在落点产生 ' + PP_C + '×' + PP_C + ' 的火，持续 '
-                    + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的 '
-                    + Math.round(CFG.pepperpult.burnTotalRatio * 100) + '%',
-                    'On hit, it creates a ' + PP_C + '×' + PP_C + ' fire at the landing spot for '
-                    + CFG.pepperpult.burnSeconds + ' second(s). The total damage of a single fire equals '
-                    + Math.round(CFG.pepperpult.burnTotalRatio * 100) + "% of the bullet's damage.");
-                addSpecial('pepperpult', '火焰可清零其中植物的冻结进度',
-                    'The fire also clears the freeze progress of the plants inside it.');
-            }
-            // ---- 飓风甘蓝（原话"本行"→"全屏"）----
-            if (featOn('hurrikale')) {
-                writeIntro('hurrikale', '飓风甘蓝利用强风将全屏的僵尸向后推。',
-                    'Hurrikales push back all zombies on the screen with a chilling wind.');
-                writeBrief('hurrikale', '吹出强寒风，推动所有行的僵尸',
-                    'Blows a strong chilling wind that pushes zombies in every lane.');
-                editSpecial('hurrikale', '飞行僵尸', '吹飞全屏所有的飞行僵尸',
-                    'Blows away every flying zombie on the screen.');
-                const HK_SCALE = CFG.hurrikale.otherLanePushScale;
-                addSpecial('hurrikale',
-                    '非本行的推动力度只有本行的' + (HK_SCALE === 0.5 ? '一半' : Math.round(HK_SCALE * 100) + '%'),
-                    HK_SCALE === 0.5
-                        ? 'Pushes zombies outside its own lane with only half the force.'
-                        : 'Pushes zombies outside its own lane with only ' + Math.round(HK_SCALE * 100) + '% of the force.');
-            }
-            // ---- 魔音甜菜（Phat Beet）----
-            if (featOn('phatbeet')) {
-                const PB_N = CFG.phatbeet.normalStun;
-                const PB_F = CFG.phatbeet.plantfoodStun;
-                const PB_J = CFG.phatbeet.jamClearSeconds;
-                addSpecial('phatbeet', '普通攻击使命中的僵尸眩晕 ' + PB_N + ' 秒',
-                    'Its normal attack stuns the zombies it hits for ' + PB_N + ' second(s).');
-                addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
-                    'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
-                addSpecial('phatbeet', '大招使命中的僵尸眩晕 ' + PB_F + ' 秒并向上击起，并令命中僵尸不受魔音舞台效果影响，持续 ' + PB_J + ' 秒',
-                    'Its Plant Food stuns the zombies it hits for ' + PB_F + ' second(s) and knocks them'
-                    + ' upward, and frees the hit zombies from the current Jam Stage Effect for ' + PB_J + ' second(s).');
-            }
-            // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
-            if (featOn('snowpea')) {
-                writeIntro('snowpea',
-                    '寒冰射手发射寒冰子弹或冰锥，能使僵尸前进变得缓慢或冻结僵尸。',
-                    'Snow Peas fire frozen peas or icicles that slow or freeze zombies.');
-                editSpecial('snowpea', '子弹会对僵尸造成伤害并冰冻',
-                    '子弹会对僵尸造成伤害并冰冻，并有概率发射冻结僵尸的冰锥',
-                    'Its peas damage and chill zombies, and it may fire an icicle that freezes them.');
-            }
-            // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下）----
-            if (featOn('redstinger')) {
-                addSpecial('redstinger', '可以通过鼠标左键点击主动切换形态',
-                    'You can click it with the left mouse button to switch its form at will.');
-                addSpecial('redstinger', '攻击形态火力最强，中间形态攻击可造成微弱击退，并提升一定防御力，防御形态大幅提高防御力',
-                    'Its attack form has the strongest firepower; its middle form attacks knock enemies back slightly and grant extra defence; its defence form greatly boosts its defence.');
-            }
-            // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用）----
-            if (featOn('splitpea')) {
-                // 先找正文那句（更可靠），再退一步找标题「射速」
-                appendLoc('splitpea', ['向后方两倍', '射速'], CFG.splitpea.extraZh, CFG.splitpea.extraEn);
-                // 再加一条能主动操作的特点
-                addSpecial('splitpea', '可以通过鼠标左键点击进行前后互换',
-                    'You can click it with the left mouse button to swap its front and back sides.');
-            }
-            // ---- 暗影夏威夷果：补一条特点（中英）----
-            if (featOn('murkadamia')) {
-                addSpecial('murkadamia', '被暗影强化时本体获得隐身',
-                    'While shadow-boosted, its body becomes invisible.');
-            }
-        }
 
         return true;
     };
+
+    /**
+     * ★★ 图鉴文案（**独立函数**：从 setField() 里搬出来的，见开发记录 §3.58）★★
+     *   【为什么要搬】原来这 480 多行**被包在 `setField()` 里面**，于是有两个毛病：
+     *     ① `setField()` 有两条**提前返回**（列表为空 / 找不到条目）⇒ 一旦命中，
+     *        图鉴块**整块不执行** ⇒ 图鉴文案悄悄没写（引擎数据晚到时就会这样）；
+     *     ② `apply()` 会调用 `setField()` **二十多次** ⇒ 图鉴块被重复执行二十多遍。
+     *   现在它是独立一步：**与 setField 的成败无关**，且每次 apply **只跑一次**。
+     *   ⚠️ 调用点在 apply() 里，用 try/catch 包住 —— 图鉴写失败不应连累数据补丁的返回值。
+     */
+    const applyAlmanacText = () => {
+    if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
+        const AL = PvZ2ObjectContainer.PlantAlmanac;
+        // 我们名单里的 alias 集合（只对它们做"写不到就 warn"，避免误报）
+        const gpnAlmAliasSet = Object.create(null);
+        for (const _p of GPN_ALM_CHANGED) gpnAlmAliasSet[_p[0]] = true;
+        // ★ findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
+        //   ⚠️ 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
+        //      心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
+        //      万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
+        //      现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
+        const gpnAlmWarned = Object.create(null);
+        const gpnAlmWarnMiss = (what, alias) => {
+            if (!gpnAlmAliasSet[alias]) return;          // 只提醒"我们名单里的"，避免误报
+            if (gpnAlmWarned[alias]) return;             // 每个 alias 只提醒一次（apply 会跑很多遍）
+            gpnAlmWarned[alias] = true;
+            warn('图鉴：' + what + ' 里找不到 alias「' + alias + '」—— 没写进去（请核对拼写）');
+        };
+        const findAl = (alias) => {
+            for (const e of AL) {
+                if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1) return e;
+            }
+            const alt = (alias.slice(-1) === 's') ? alias.slice(0, -1) : (alias + 's');
+            for (const e of AL) {
+                if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alt) !== -1) return e;
+            }
+            return null;
+        };
+        const setLoc = (holder, field, zh, en) => {
+            if (!holder) return false;
+            let o = holder[field];
+            if (!o || typeof o !== 'object') { track(holder, field); holder[field] = {}; o = holder[field]; }
+            if (typeof zh === 'string') { track(o, 'zh'); o.zh = zh; }
+            if (typeof en === 'string') { track(o, 'en'); o.en = en; }
+            return true;
+        };
+        const writeIntro = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e) { gpnAlmWarnMiss('介绍(Introduction)', alias); return false; }
+            return setLoc(e.objdata, 'Introduction', zh, en);
+        };
+        const writeBrief = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e) { gpnAlmWarnMiss('简介(BriefIntroduction)', alias); return false; }
+            return setLoc(e.objdata, 'BriefIntroduction', zh, en);
+        };
+        const addSpecial = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata) { gpnAlmWarnMiss('特点(Special)', alias); return false; }
+            const od = e.objdata;
+            const list = Array.isArray(od.Special) ? od.Special : null;
+            if (list) {
+                for (const row of list) {
+                    const d = row && row.DESCRIPTION;
+                    if (d && d.zh === zh) return true;      // 已经加过（apply 会跑多次）
+                }
+            }
+            track(od, 'Special');
+            od.Special = (list || []).concat([{
+                NAME: { zh: '特点', en: 'Special' },
+                DESCRIPTION: { zh, en },
+            }]);
+            return true;
+        };
+        const editSpecial = (alias, needle, zh, en) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata || !Array.isArray(e.objdata.Special)) return false;
+            for (const row of e.objdata.Special) {
+                const d = row && row.DESCRIPTION;
+                if (!d) continue;
+                const hit = (typeof d.zh === 'string'
+                        && (d.zh.indexOf(needle) !== -1 || (typeof zh === 'string' && d.zh === zh)))
+                    || (typeof d.en === 'string' && d.en.indexOf(needle) !== -1);
+                if (!hit) continue;
+                if (typeof zh === 'string') { track(d, 'zh'); d.zh = zh; }
+                if (typeof en === 'string') { track(d, 'en'); d.en = en; }
+                return true;
+            }
+            warn('图鉴：找不到要改的 Special 行（' + alias + ' / ' + needle + '）');
+            return false;
+        };
+        // 在「含某关键词的那个本地化对象」上【追加】一句。
+        //  图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
+        //  所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
+        const appendLoc = (alias, needles, zhSuffix, enSuffix) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata) { warn('图鉴：找不到这个植物的条目（' + alias + '）'); return false; }
+            const list = Array.isArray(needles) ? needles : [needles];
+            const found = [];       // [{o, path}]
+            const walk = (o, path) => {
+                if (!o || typeof o !== 'object') return;
+                if (typeof o.zh === 'string') found.push({ o: o, path: path || '(root)' });
+                if (Array.isArray(o)) {
+                    o.forEach((x, i) => walk(x, path + '[' + i + ']'));
+                } else {
+                    for (const k of Object.keys(o)) walk(o[k], path ? (path + '.' + k) : k);
+                }
+            };
+            walk(e.objdata, '');
+            let hit = null, hitNeedle = null;
+            for (const nd of list) {                      // 按 given 顺序优先（先找"更像正文"的那句）
+                for (const f of found) {
+                    if (f.o.zh.indexOf(nd) !== -1) { hit = f; hitNeedle = nd; break; }
+                }
+                if (hit) break;
+            }
+            if (!hit) {
+                warn('图鉴：' + alias + ' 里找不到含「' + list.join(' / ') + '」的文案，没改');
+                if (dbgOn(CFG.splitpea.debugLog)) {
+                    // ① 把这个植物自己的所有文案连"路径"打出来
+                    log('  图鉴[' + alias + '] 共有 ' + found.length + ' 条中文文案：');
+                    for (const f of found) log('    ' + f.path + ' = ' + String(f.o.zh).slice(0, 70));
+                    // ② 全表扫一遍：万一这句挂在别的条目/别的表上（只报告，不改）
+                    try {
+                        const needle0 = list[0];
+                        for (const e2 of (AL || [])) {
+                            if (!e2 || !e2.objdata) continue;
+                            const hits2 = [];
+                            const w2 = (o2, p2) => {
+                                if (!o2 || typeof o2 !== 'object') return;
+                                if (typeof o2.zh === 'string' && o2.zh.indexOf(needle0) !== -1) hits2.push(p2);
+                                if (Array.isArray(o2)) o2.forEach((x, i) => w2(x, p2 + '[' + i + ']'));
+                                else for (const k of Object.keys(o2)) w2(o2[k], p2 ? (p2 + '.' + k) : k);
+                            };
+                            w2(e2.objdata, '');
+                            for (const p2 of hits2) {
+                                log('  别处也有一份：aliases=' + JSON.stringify(e2.aliases) + ' 路径=' + p2);
+                            }
+                        }
+                        const fl = PvZ2ObjectContainer && PvZ2ObjectContainer.PlantFeatures;
+                        if (Array.isArray(fl)) {
+                            for (const fe of fl) {
+                                if (!fe || String(fe.CODENAME || '').toLowerCase() !== String(alias).toLowerCase()) continue;
+                                for (const k of Object.keys(fe)) {
+                                    const v = fe[k];
+                                    if (v && typeof v === 'object' && typeof v.zh === 'string') {
+                                        log('  PlantFeatures[' + alias + '].' + k + ' = ' + String(v.zh).slice(0, 70));
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) { /* 没有就算了 */ }
+                }
+                return false;
+            }
+            const d = hit.o;
+            // 【诊断】图鉴追加的"零输出记账"（只在 dump 时输出一次）：
+            //   记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
+            //   用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
+            gpnAlmAppendCalls++;
+            const _zhBefore = (typeof d.zh === 'string') ? d.zh : '';
+            const _zhHitBefore = (typeof zhSuffix === 'string') ? (_zhBefore.indexOf(zhSuffix) !== -1) : null;
+            gpnAlmAppendLog.push({
+                n: gpnAlmAppendCalls,
+                path: hit.path,
+                needle: hitNeedle,
+                hitBefore: _zhHitBefore,
+                lenBefore: _zhBefore.length,
+                tail: _zhBefore.slice(-24),
+            });
+            if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
+                track(d, 'zh'); d.zh = d.zh + zhSuffix;
+                gpnAlmAppendWrites++;
+                // ★ 只在【真的写入】时打日志，且最多打 5 条（2026/10/10 实机定论：这段代码
+                //   每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
+                //   但判据是可靠的 —— 文本【不会】被重复追加，用户实机确认图鉴文案正常）。
+                if (dbgOn(CFG.splitpea.debugLog) && gpnAlmAppendWrites <= 5) {
+                    log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加（第 '
+                        + gpnAlmAppendWrites + ' 次写入；本次是第 ' + gpnAlmAppendCalls + ' 次进入）');
+                }
+            }
+            if (typeof enSuffix === 'string' && typeof d.en === 'string'
+                && d.en.indexOf(enSuffix) === -1) {
+                track(d, 'en'); d.en = d.en + enSuffix;
+            }
+            return true;
+        };
+
+        // 【诊断】把图鉴追加的记账打出来（唯一输出点；只打前 5 条明细 + 汇总）
+        const gpnAlmDump = (why) => {
+            try {
+                log('图鉴【记账 dump】原因：' + why
+                    + '；apply() 累计调用 ' + gpnAlmApplyCalls + ' 次'
+                    + '；appendLoc 进入 ' + gpnAlmAppendCalls + ' 次'
+                    + '；实际写入 zh ' + gpnAlmAppendWrites + ' 次');
+                gpnAlmAppendLog.slice(0, 5).forEach((x) => {
+                    log('   #' + x.n + ' path=' + x.path + ' needle=' + x.needle
+                        + ' 进入时"已含后缀"=' + x.hitBefore + ' 长度=' + x.lenBefore
+                        + ' 尾部="…' + x.tail + '"');
+                });
+                // ★ 关键验证：现在再读一次那份文案，看"我们写的还在不在"
+                //   （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
+                const arr = (typeof findAl === 'function') ? findAl('splitpea') : null;
+                const obj = arr && arr.objdata;
+                let readBack = '(取不到)';
+                if (obj) {
+                    const walk2 = (o) => {
+                        if (!o || typeof o !== 'object') return null;
+                        if (typeof o.zh === 'string' && o.zh.indexOf('向后方两倍') !== -1) return o;
+                        if (Array.isArray(o)) { for (const x of o) { const r2 = walk2(x); if (r2) return r2; } return null; }
+                        for (const k of Object.keys(o)) { const r2 = walk2(o[k]); if (r2) return r2; }
+                        return null;
+                    };
+                    const t2 = walk2(obj);
+                    if (t2) {
+                        const hasIt = (typeof CFG.splitpea.extraZh === 'string') && t2.zh.indexOf(CFG.splitpea.extraZh) !== -1;
+                        readBack = '长度 ' + t2.zh.length + '，是否仍含我们追加的后缀=' + hasIt
+                            + '，出现次数=' + (t2.zh.split(CFG.splitpea.extraZh).length - 1);
+                    } else { readBack = '(找不到含该关键词的文案)'; }
+                }
+                log('   回读验证（splitpea）：' + readBack);
+            } catch (e) { /* 只影响诊断 */ }
+        };
+
+        // ★★★ 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）★★★
+        //   【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
+        //   【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
+        //          ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
+        //          ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
+        //   【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
+        //          之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
+        //          ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
+        //   ⚠ 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
+        if (!GPN_ALM_SNAPSHOT_DONE) {
+            for (const _p of GPN_ALM_CHANGED) {
+                let _e = null;
+                for (const _x of AL) {
+                    if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_p[0]) !== -1) { _e = _x; break; }
+                }
+                if (_e && _e.objdata) GPN_ALM_ORIG.push({ alias: _p[0], od: gpnAlmDeepClone(_e.objdata) });
+            }
+            GPN_ALM_SNAPSHOT_DONE = true;
+            log_alm_snapshot(GPN_ALM_ORIG.length);
+        }
+        for (const _rec of GPN_ALM_ORIG) {
+            let _e = null;
+            for (const _x of AL) {
+                if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_rec.alias) !== -1) { _e = _x; break; }
+            }
+            if (!_e) continue;
+            if (!_e.objdata) _e.objdata = {};
+            const _t = _e.objdata, _o = _rec.od;
+            for (const _k of Object.keys(_t)) {
+                if (!Object.prototype.hasOwnProperty.call(_o, _k)) delete _t[_k];
+            }
+            for (const _k of Object.keys(_o)) _t[_k] = gpnAlmDeepClone(_o[_k]);
+        }
+
+        // ---- 巴豆（追加"所有啃食者一起倒下"）----
+        if (featOn('chilibean')) {
+            // Intro 的中文保持原版不动；英文用带补充的那句
+            writeIntro('chilibean', null,
+                'Chili Beans deliver a crippling bout of gastrointestinal distress. Every zombie that is eating it drops at once.');
+            writeBrief('chilibean', '所有正在啃食它的僵尸一起死亡，并释放眩晕气体',
+                'Every zombie eating it dies together, and releases stunning gas.');
+            editSpecial('chilibean', '吃掉他的僵尸直接死亡',
+                '被僵尸吃下后，杀死所有正在啃食它的僵尸，并释放眩晕气体',
+                'After being eaten, it kills every zombie that is eating it and releases stunning gas.');
+        }
+        // ---- 钢地刺（原话写错：三次 / 3 个）----
+        if (featOn('spikerock')) {
+            const SPK = CFG.spikerock.maxSpike;
+            writeBrief('spikerock', '对走过的僵尸造成伤害，并破坏 ' + SPK + ' 个滚动的物体',
+                'Damages zombies that walk over it, and destroys ' + SPK + ' rolling objects.');
+            editSpecial('spikerock', '能承受滚动前行',
+                '能承受滚动前行的僵尸' + gpnZhNum(SPK) + '次打击',
+                'Can withstand ' + SPK + ' hits from rolling zombies.');
+        }
+        // ---- 心蕊（追加 1×3 + 啃食减伤）----
+        if (featOn('bloomingheart')) {
+            writeIntro('bloominghearts',
+                '心蕊向僵尸投掷子弹，使之本格及其同排左右各一格中的所有僵尸防御力下降。',
+                'Blooming Hearts throw bullets that lower the defence of zombies in its own tile and the tiles one to either side in the same lane.');
+            writeBrief('bloominghearts', '向僵尸投掷子弹，使以命中点为中心 1×3 范围内的僵尸防御力下降',
+                'Throws bullets that lower the defence of zombies in a 1×3 area centred on the hit.');
+            const VDS = CFG.bloomingheart.victimDamageScale || {};
+            const P50 = Math.round((VDS.bloominghearts != null ? VDS.bloominghearts : 0.5) * 100);
+            const P75 = Math.round((VDS.sweetpotato != null ? VDS.sweetpotato : 0.75) * 100);
+            addSpecial('bloominghearts',
+                '被减防的僵尸对这些植物的啃食伤害降低：心蕊 ×' + P50 + '%、甜薯 / 热辣海枣 ×' + P75 + '%',
+                'Zombies with this defence reduction deal less chewing damage to these plants: '
+                + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%.');
+        }
+        // ---- 暗影龙葵（追加穿透 + 击退）----
+        if (featOn('nightshade')) {
+            // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
+            const NS_K = gpnPierceText(CFG.nightshade.pierceTargets);
+            addSpecial('nightshade',
+                NS_K >= 1
+                    ? '身上有暗影能量时，抛出的叶片可穿透' + gpnPierceZh(NS_K) + '个目标，且会把僵尸轻微击退'
+                    : '身上有暗影能量时，抛出的叶片会把僵尸轻微击退',
+                NS_K >= 1
+                    ? 'When powered by shadow energy, its thrown leaves pierce ' + NS_K
+                        + ' targets and slightly knock zombies back.'
+                    : 'When powered by shadow energy, its thrown leaves slightly knock zombies back.');
+        }
+        // ---- 白萝卜（追加受伤间隔）----
+        if (featOn('turnip')) {
+            addSpecial('turnip', CFG.turnip.damageGateSeconds + ' 秒内只能受到一次伤害',
+                'Can only take damage once every ' + CFG.turnip.damageGateSeconds + ' seconds.');
+        }
+        // ---- 甜薯（追加回血 + 治疗加成）----
+        if (featOn('sweetpotato')) {
+            const SP_HP = CFG.sweetpotato.selfHealPerSecond;
+            const SP_MULT = Math.round(CFG.sweetpotato.healReceivedMultiplier * 100);
+            addSpecial('sweetpotato', '每秒回复 ' + SP_HP + ' 点生命，且受到的任何治疗 ×' + SP_MULT + '%',
+                'Recovers ' + SP_HP + ' HP per second, and all healing it receives is ×' + SP_MULT + '%.');
+        }
+        // ---- 高坚果（追加免疫位移 + 抗砸）----
+        if (featOn('tallnut')) {
+            addSpecial('tallnut', '免疫位移', 'Immune to being moved.');
+            const TN_N = Math.max(1, Math.round(1 / CFG.tallnut.smashHpFraction) - 1);
+            addSpecial('tallnut', '可承受砸击 ' + TN_N + ' 次', 'Can withstand ' + TN_N + ' smashes.');
+        }
+        // ---- 香水菇（改现有的「特点」行）----
+        if (featOn('perfumeshroom')) {
+            // 原有的「特点」行保持原话不动，新增能力单独开一条。
+            // !!「啃食伤害降低」其实是 bloomingheart 那个补丁的效果 ——
+            //    所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
+            let PM_ZH = '使僵尸防御降低';
+            let PM_EN = 'Zombies hit have their defence lowered';
+            if (featOn('bloomingheart')) {
+                PM_ZH += '，且防御降低的僵尸对心蕊、热辣海枣、甜薯造成的啃食伤害降低';
+                PM_EN += ', and those zombies deal less chewing damage to Blooming Heart, Hot Date and Sweet Potato';
+            }
+            addSpecial('perfumeshroom', PM_ZH, PM_EN + '.');
+        }
+        // ---- 星星果系（追加穿透 / 溅射 / 追击）----
+        if (featOn('starfruit')) {
+            // Intro 保持原版不动（下面这些说明都改成新增 Special）
+            // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
+            //   （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
+            const STAR_K = gpnPierceText(CFG.starfruit.pierceTargets);
+            const PINK_K = gpnPierceText(CFG.starfruit.pinkPierceTargets);
+            const SHOOT_K = gpnPierceText(CFG.starfruit.shootingPierceTargets);
+            const pierceZh = (k, splash) => (k >= 1
+                ? '子弹可以穿透' + gpnPierceZh(k) + '个目标，并在击中时造成单格' + splash + '溅射伤害'
+                : '子弹在击中时造成单格' + splash + '溅射伤害');
+            const pierceEn = (k, splash) => (k >= 1
+                ? 'Its bullets pierce ' + k + ' target(s) and deal a ' + splash + ' splash on hit.'
+                : 'Its bullets deal a ' + splash + ' splash on hit.');
+            addSpecial('starfruit', pierceZh(STAR_K, '少量'), pierceEn(STAR_K, 'small'));
+            // 追击相关的说明只在"追击开关也开着"时才写
+            const ST_FOLLOW = !!CFG.starfruit.followEnabled;
+            if (ST_FOLLOW) {
+                // 追击弹比【星星果普攻】多打中几个 = followPierceBonus（默认 1）；= 0 ⇒ 不写"额外穿透"
+                const FB = gpnFollowPierce() - gpnPierceN(CFG.starfruit.pierceTargets);
+                addSpecial('starfruit',
+                    FB >= 1
+                        ? '追击子弹可额外穿透' + gpnPierceZh(FB)
+                            + '个目标，溅射伤害继承比略微提高，且极短时间眩晕目标'
+                        : '追击子弹的溅射伤害继承比略微提高，且极短时间眩晕目标',
+                    FB >= 1
+                        ? 'Follow-up bullets pierce ' + FB
+                            + ' extra target(s), inherit a slightly higher splash ratio, and briefly stun the target.'
+                        : 'Follow-up bullets inherit a slightly higher splash ratio and briefly stun the target.');
+            }
+            if (ST_FOLLOW) {
+                addSpecial('starfruit', '当索敌范围内的目标被流星果、天使星星果攻击时，进行一次追击',
+                    'When a target in its range is attacked by a Shooting Starfruit or Pink Starfruit, it performs a follow-up attack.');
+            }
+            if (ST_FOLLOW) {
+                // 第 3 条：追击子弹的伤害口径（合并开/关两种说法；数值从 CFG 现算）。
+                //   这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
+                const ST_R = Math.round(CFG.starfruit.followDamageRatio * 100);
+                {
+                    const alST = findAl('starfruit');
+                    if (alST && alST.objdata && Array.isArray(alST.objdata.Special)) {
+                        const keep = alST.objdata.Special.filter((row) => {
+                            const z = row && row.DESCRIPTION && row.DESCRIPTION.zh;
+                            return !(typeof z === 'string'
+                                && (z.indexOf('追击子弹伤害×') === 0 || z.indexOf('追击在') === 0));
+                        });
+                        if (keep.length !== alST.objdata.Special.length) {
+                            track(alST.objdata, 'Special');
+                            alST.objdata.Special = keep;
+                        }
+                    }
+                }
+                if (gpnFollowMergeOn()) {
+                    addSpecial('starfruit',
+                        '追击在 ' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
+                        + ST_R + '% × Σ（各次触发时的攻击力）',
+                        'If triggered multiple times within ' + CFG.starfruit.followMergeWindow
+                        + ' s, it follows up only once; each bullet deals ' + ST_R
+                        + '% × Σ(the attack power at each trigger).');
+                } else {
+                    addSpecial('starfruit', '追击子弹伤害×' + ST_R + '%',
+                        'Follow-up bullets deal ×' + ST_R + '% damage.');
+                }
+            }
+            addSpecial('pinkstarfruit', pierceZh(PINK_K, '少量'), pierceEn(PINK_K, 'small'));
+            addSpecial('shootingstarfruit', pierceZh(SHOOT_K, '中等'), pierceEn(SHOOT_K, 'medium'));
+        }
+        // ---- 暗影油桃（追加削弱说明）----
+        if (featOn('noctarine')) {
+            const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
+            // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
+            const NO_DUR = Math.round(CFG.noctarine.normalLifespan / 20 * 100);
+            addSpecial('noctarine', '造成伤害仅为攻击力的 ' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
+                'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
+        }
+        // ---- 蒲公英（原话"一行"→"两颗"）----
+        if (featOn('dandelion')) {
+            const DN_N = 1 + CFG.dandelion.extraShots;
+            writeIntro('dandelion',
+                '蒲公英向身前的三行中发射' + (DN_N === 2 ? '两' : gpnZhNum(DN_N)) + '颗爆炸性蒲公英子弹。',
+                'Dandelions fire ' + DN_N + ' explosive dandelion bullets into the three lanes in front of them.');
+            addSpecial('dandelion', '可击晕飞行僵尸，且对其造成更高伤害',
+                'Stuns flying zombies and deals extra damage to them.');
+        }
+        // ---- 甜椒投手（追加落点灼烧）----
+        if (featOn('pepperpult')) {
+            // 拆成两条：原文整条太长，图鉴那一行会在「清」字处自动折行、排版错位
+            const PP_C = CFG.pepperpult.burnCells;
+            addSpecial('pepperpult',
+                // 口径：火铺在【子弹的落点】；总伤害按【这一发子弹的伤害】的 burnTotalRatio 算
+                '命中后，在落点产生 ' + PP_C + '×' + PP_C + ' 的火，持续 '
+                + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的 '
+                + Math.round(CFG.pepperpult.burnTotalRatio * 100) + '%',
+                'On hit, it creates a ' + PP_C + '×' + PP_C + ' fire at the landing spot for '
+                + CFG.pepperpult.burnSeconds + ' second(s). The total damage of a single fire equals '
+                + Math.round(CFG.pepperpult.burnTotalRatio * 100) + "% of the bullet's damage.");
+            addSpecial('pepperpult', '火焰可清零其中植物的冻结进度',
+                'The fire also clears the freeze progress of the plants inside it.');
+        }
+        // ---- 飓风甘蓝（原话"本行"→"全屏"）----
+        if (featOn('hurrikale')) {
+            writeIntro('hurrikale', '飓风甘蓝利用强风将全屏的僵尸向后推。',
+                'Hurrikales push back all zombies on the screen with a chilling wind.');
+            writeBrief('hurrikale', '吹出强寒风，推动所有行的僵尸',
+                'Blows a strong chilling wind that pushes zombies in every lane.');
+            editSpecial('hurrikale', '飞行僵尸', '吹飞全屏所有的飞行僵尸',
+                'Blows away every flying zombie on the screen.');
+            const HK_SCALE = CFG.hurrikale.otherLanePushScale;
+            addSpecial('hurrikale',
+                '非本行的推动力度只有本行的' + (HK_SCALE === 0.5 ? '一半' : Math.round(HK_SCALE * 100) + '%'),
+                HK_SCALE === 0.5
+                    ? 'Pushes zombies outside its own lane with only half the force.'
+                    : 'Pushes zombies outside its own lane with only ' + Math.round(HK_SCALE * 100) + '% of the force.');
+        }
+        // ---- 魔音甜菜（Phat Beet）----
+        if (featOn('phatbeet')) {
+            const PB_N = CFG.phatbeet.normalStun;
+            const PB_F = CFG.phatbeet.plantfoodStun;
+            const PB_J = CFG.phatbeet.jamClearSeconds;
+            addSpecial('phatbeet', '普通攻击使命中的僵尸眩晕 ' + PB_N + ' 秒',
+                'Its normal attack stuns the zombies it hits for ' + PB_N + ' second(s).');
+            addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
+                'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
+            addSpecial('phatbeet', '大招使命中的僵尸眩晕 ' + PB_F + ' 秒并向上击起，并令命中僵尸不受魔音舞台效果影响，持续 ' + PB_J + ' 秒',
+                'Its Plant Food stuns the zombies it hits for ' + PB_F + ' second(s) and knocks them'
+                + ' upward, and frees the hit zombies from the current Jam Stage Effect for ' + PB_J + ' second(s).');
+        }
+        // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
+        if (featOn('snowpea')) {
+            writeIntro('snowpea',
+                '寒冰射手发射寒冰子弹或冰锥，能使僵尸前进变得缓慢或冻结僵尸。',
+                'Snow Peas fire frozen peas or icicles that slow or freeze zombies.');
+            editSpecial('snowpea', '子弹会对僵尸造成伤害并冰冻',
+                '子弹会对僵尸造成伤害并冰冻，并有概率发射冻结僵尸的冰锥',
+                'Its peas damage and chill zombies, and it may fire an icicle that freezes them.');
+        }
+        // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下）----
+        if (featOn('redstinger')) {
+            addSpecial('redstinger', '可以通过鼠标左键点击主动切换形态',
+                'You can click it with the left mouse button to switch its form at will.');
+            addSpecial('redstinger', '攻击形态火力最强，中间形态攻击可造成微弱击退，并提升一定防御力，防御形态大幅提高防御力',
+                'Its attack form has the strongest firepower; its middle form attacks knock enemies back slightly and grant extra defence; its defence form greatly boosts its defence.');
+        }
+        // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用）----
+        if (featOn('splitpea')) {
+            // 先找正文那句（更可靠），再退一步找标题「射速」
+            appendLoc('splitpea', ['向后方两倍', '射速'], CFG.splitpea.extraZh, CFG.splitpea.extraEn);
+            // 再加一条能主动操作的特点
+            addSpecial('splitpea', '可以通过鼠标左键点击进行前后互换',
+                'You can click it with the left mouse button to swap its front and back sides.');
+        }
+        // ---- 暗影夏威夷果：补一条特点（中英）----
+        if (featOn('murkadamia')) {
+            addSpecial('murkadamia', '被暗影强化时本体获得隐身',
+                'While shadow-boosted, its body becomes invisible.');
+        }
+    }
+    };
+
 
     const apply = () => {
         // ★ 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
@@ -1960,6 +1973,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 })()
                 + ' ｜ 同一对象? ' + _sameRef + ' ｜ 实例=' + GPN_INSTANCE_ID);
         } catch (e) { /* 只影响诊断 */ }
+        // ★ 图鉴文案：**独立一步**（原来是寄生在 setField 里 ⇒ setField 提前返回时整块不跑）。
+        //   放在数据补丁之后：它只用 PvZ2ObjectContainer + CFG + 开关，不依赖前面算了什么；
+        //   而"关掉后还原成原版"靠的是块内的「原件快照 + 每次重建」（见开发记录 §3.54/§3.58）。
+        try { applyAlmanacText(); } catch (eAlm) { warn("图鉴文本：这次没落下去", eAlm); }
         return undo.length > 0;
     };
 
@@ -1972,7 +1989,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         undo.length = 0;
     };
 
-    return { apply, revert };
+    // _undoCount：自检用（只读）—— 看"已记录的原值条数"有没有增长。
+    //   ⚠ 必须挂在这里：`undo` 是 makeDataPatcher 的**内部变量**，模块级导出闭包看不到它。
+    return { apply, revert, _undoCount: () => undo.length };
 }
 
 /* =========================================================================
@@ -7030,7 +7049,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l34 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l35 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -7124,3 +7143,4 @@ let ticks = 0;
         });
     },
 };
+
