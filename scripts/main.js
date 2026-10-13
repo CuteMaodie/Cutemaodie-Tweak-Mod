@@ -837,6 +837,30 @@ function methodRecord(Cls, name) {
 /* =========================================================================
  * 1. 数值：运行时改 PlantProps / ProjectileProps
  * =======================================================================*/
+/* ★ 鼠标点击去重（修「矿车/格子上一次点击切换两次形态」）
+ *   实测（probe-cart-1 探针）一次按下+抬起会走两条链：
+ *     A = plantMouseReact ← 格子 onMouseDown（按下时）
+ *     B = 格子 onMouseUp 的 delayMouseDownPlantsOnCart.forEach(e => e.onMouseDown(t))（抬起时补发）
+ *   引擎本来用 B 来兜「拖车时不算点击」，而我们在 A 里已经切过一次 ⇒ 重复。
+ *   ⇒ 只把**补发的那一次**挡掉：阈值 180ms（实测两条链相差 44~103ms）。
+ *      这个量级与引擎自己的重复点击护栏一致 —— 引擎在 MouseListener 里也是
+ *      每次点击后置 `MouseClickCoolingDown = 2`（约 2 帧 ≈ 66~100ms，按 30~60fps 估）。
+ *   ⚠️ 副作用（与引擎那道护栏同性质）：180ms 内的两次独立点击会被并成一次。
+ *      正常人手速约 200~300ms ⇒ 绝大多数情况无感；但**很刻意地快速连点**
+ *      （间隔 <180ms）会少切一次。要更灵敏就把 GPN_CLICK_DEDUP_MS 调小（如 120，
+ *      但要 >103ms，否则挡不住补发那一次）。实测数据：两条链相差 44 / 60 / 83 / 103ms。
+ */
+const GPN_CLICK_DEDUP_MS = 180;
+function gpnClickOnce(self, key) {
+    try {
+        const now = Date.now();
+        const last = self[key] || 0;
+        if (now - last < GPN_CLICK_DEDUP_MS) return false;
+        self[key] = now;
+        return true;
+    } catch (e) { return true; }        // 出错就按"允许"处理，绝不因此卡住功能
+}
+
 /** 数字 -> 中文（图鉴文本用；0~20 用汉字，其它回落到阿拉伯数字）
  *  为什么到 20：图鉴里有「能承受滚动前行的僵尸 N 次打击」这类句子，
  *  只到 10 会在 11+ 时变成「…11 次打击」那样半文半白。 */
@@ -5419,6 +5443,8 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
             if (!CFG.redstinger.clickSwitch) return r;
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;             // 只认左键
+            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则形态连切两下）
+            if (!gpnClickOnce(this, '__gpnRsClickAt')) return r;
             const now = (typeof this.inArea === 'number') ? this.inArea : 0;
             const next = (now + 1) % 3;
             this.__gpnFormManual = true;
@@ -5760,6 +5786,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 完全不插手（原版行为）
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;                 // 只认左键
+            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则左右连翻两下）
+            if (!gpnClickOnce(this, '__gpnSpClickAt')) return r;
             const next = !this.__gpnSpFlip;
             applyFlip(this, next);
             if (dbgOn(C.debugLog)) {
@@ -7049,7 +7077,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l37 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l38 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
