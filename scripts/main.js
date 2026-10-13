@@ -33,12 +33,18 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.0.0';
+const MOD_VERSION = '1.1.0';
+/* ★ 实例身份：每次模块被加载都会生成一个新的 ID。
+ *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
+ *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
+const GPN_INSTANCE_ID = Math.random().toString(36).slice(2, 8).toUpperCase();
+let gpnApplyCount = 0;                     // 诊断用：apply() 被调用了几次
+try { if (typeof window !== 'undefined' && window) { if (window.__gpnInstances === undefined) window.__gpnInstances = []; window.__gpnInstances.push(GPN_INSTANCE_ID); } } catch (e) { /* 忽略 */ }
 
 
 /* =========================================================================
  * 功能开关 —— 从同目录的 features.json 读取
- *   · 改完必须【完全退出游戏再重新启动】才生效（按 Save & Reload 没用）
+ *   · 改完必须【完全退出游戏再重新启动】才生效（在「模组」页按「保存并应用」没用）
  *   · 读不到 / 解析失败 -> 全部按【开启】处理，绝不让模组挂掉
  * =======================================================================*/
 const FEATURES = {
@@ -62,7 +68,7 @@ const FEATURES = {
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
     garlic: true,           // 大蒜：每口固定伤害 37.5 / 阳光 75 / 冷却 15 秒
     snowpea: true,          // 寒冰射手：单格冰减速 + 概率冰锥（冻结）
-    redstinger: true,       // 红针花：承伤 ×0.25 / ×0.125 + 左键切形态
+    redstinger: true,       // 红针花：承伤 ×0.2 / ×0.1 + 左键切形态
     murkadamia: true,       // 暗影夏威夷果：暗影态本体隐身 / 暗影物质 5000
     splitpea: true,         // 裂荚射手：左键左右翻转 / 前后豌豆对调
     // ↓ 诊断日志总开关：★注意★ 它在表里登记成 false —— 日志开关故意和别的开关【反着来】：
@@ -71,8 +77,148 @@ const FEATURES = {
     verboseLog: false,      // 诊断日志总开关（默认关；排查时把 features.json 里的 verboseLog 改成 true）
 };
 
+/** 【运行期开关表】= 下面导出的 `_features`，**同一个对象**。
+ *  · `featOn(...)` 一律**运行期现查**这张表 ⇒ 游戏内配置界面改开关能**立刻生效**（不必退出重进）；
+ *  · `featLoad()` 把 features.json 的初值写进它；界面以后写它；
+ *  · 之所以不另建一张表：自检（以及将来可能的"重载"）是**改 `_features` 再 setup**，
+ *    只有让"导出的开关表" = "内部读的表"，那条链路才成立（曾经另建表导致自检 9 项失败）。 */
+const FEATURES_LIVE = FEATURES;
+
 /** 只有【显式写了 false】才算关；键不存在 / 不是布尔 -> 按开 */
-function featOn(name) { return FEATURES[name] !== false; }
+function featOn(name) { return FEATURES_LIVE[name] !== false; }
+
+/** 设置一个开关（运行期，立刻生效）；返回是否真的变化了。
+ *  这是"游戏内配置界面"写入的入口：改值后调用方按需重新应用数据补丁。 */
+function featSet(name, on) {
+    if (!(name in FEATURES_LIVE)) return false;
+    const next = (on !== false);
+    const prev = FEATURES_LIVE[name] !== false;
+    FEATURES_LIVE[name] = next;
+    if (prev !== next) { try { gpnFeatStorageSaveSoon(); } catch (e) { /* 忽略 */ } }
+    if (prev !== next && name === 'snowpea' && gpnSnowPeaGoldApply) { try { gpnSnowPeaGoldApply(); } catch (e2) { /* 忽略 */ } }   // gpnSnowPeaGoldApply 立即重刷
+    return prev !== next;
+}
+
+/* ============================================================================
+ * 开关的持久化（GP-Next 官方存储 ctx.storage）
+ *   目标：配置界面里改过的开关状态，**退出游戏重进后保留**。
+ *   · 只存"布尔开关"（24 个键）；数值仍由代码里的 CFG 决定，不进存储；
+ *   · 启动优先级：代码默认 → features.json 的值（老玩家迁移）→ **存储里的值（最高）**；
+ *   · 官方 API（逐字核对指南）：
+ *       ctx.storage.open({ scope:'global', version:1, defaults, validate }) -> Promise<handle>
+ *       handle.read() -> Promise<T> ；handle.update(fn) -> Promise<T>
+ *   · 存储不可用（老版本 / 自测环境）⇒ 降级为"仅本次会话有效"，只打一条警告。
+ * ========================================================================== */
+const gpnFeatDefaults = {};
+for (const k of Object.keys(FEATURES)) gpnFeatDefaults[k] = FEATURES[k] !== false;
+
+let gpnFeatStore = null;
+let gpnFeatSaveTimer = null;
+
+function gpnFeatSnapshot() {
+    const o = {};
+    for (const k of Object.keys(gpnFeatDefaults)) o[k] = featOn(k);
+    return o;
+}
+
+function gpnFeatValidate(v) {
+    // ★ 宽容校验（实机教训）：原来要求"23 个键全是 boolean"，
+    //   只要存档缺一个键（老版本 / 早期键集）就判**整份无效** ⇒ 引擎静默回落到 defaults（全开）。
+    //   现在只做形状检查，键的补齐与坏值纠正交给 gpnFeatMigrate。
+    return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 把任意旧值归一成"完整、键齐全、值为 boolean"的设置表。
+ *  逐键合并到 defaults 之上：缺键 ⇒ 用默认值；坏值 ⇒ 用默认值。
+ *  （这就是官方说的 migrate："它返回升级后的值，再经 validate 检查"。） */
+function gpnFeatNormalize(v) {
+    const out = {};
+    const src = (v && typeof v === 'object') ? v : {};
+    for (const k of Object.keys(gpnFeatDefaults)) {
+        out[k] = (typeof src[k] === 'boolean') ? src[k] : (gpnFeatDefaults[k] !== false);
+    }
+    return out;
+}
+
+/** 存储升级钩子：旧结构缺键时补齐（version 从任意旧值升到当前） */
+function gpnFeatMigrate(value, fromVersion, toVersion) {
+    try {
+        const normalized = gpnFeatNormalize(value);
+        const missing = Object.keys(gpnFeatDefaults).filter((k) => !value || typeof value[k] !== 'boolean');
+        if (missing.length) log('开关持久化：升级存储（补齐 ' + missing.length + ' 个键：' + missing.join('、') + '）');
+        return normalized;
+    } catch (e) {
+        warn('开关持久化：升级出错 ⇒ 用默认值', e);
+        return gpnFeatNormalize(null);
+    }
+}
+
+async function gpnFeatStorageLoad(ctx) {
+    try {
+        if (!ctx || !ctx.storage || typeof ctx.storage.open !== 'function') {
+            warn('开关持久化：拿不到 ctx.storage ⇒ 本次改动只在本次会话有效（不写盘）');
+            return false;
+        }
+        gpnFeatStore = await ctx.storage.open({
+            scope: 'global',
+            version: 2,                              // ★ 提升到 2：旧存档会走 migrate 补齐缺键
+            defaults: Object.assign({}, gpnFeatDefaults),
+            validate: gpnFeatValidate,
+            migrate: gpnFeatMigrate,                 // ★ 官方 API："增加 version 时用 migrate 处理旧数据"
+        });
+        const saved = await gpnFeatStore.read();
+        // ★ 读回后再逐键兜底一次：缺键/坏值一律回落到默认（避免"某个键凭空变开"，实机踩过）
+        const norm = gpnFeatNormalize(saved);
+        let applied = 0;
+        for (const k of Object.keys(gpnFeatDefaults)) {
+            FEATURES_LIVE[k] = norm[k];
+            applied++;
+        }
+        if (FEATURES_LIVE.verboseLog === undefined) FEATURES_LIVE.verboseLog = false;
+        const offList = Object.keys(gpnFeatDefaults).filter((k) => !featOn(k) && k !== 'verboseLog');
+        log('开关持久化：已从存储读入 ' + applied + ' 项' + (offList.length ? ('（已关闭：' + offList.join('、') + '）') : '（全部开启）'));
+        return true;
+    } catch (e) {
+        warn('开关持久化：读取失败 ⇒ 本次改动只在本次会话有效', e);
+        return false;
+    }
+}
+
+function gpnFeatStorageSaveSoon() {
+    if (gpnDisposed) return;                 // 旧运行时不写盘（避免覆盖新运行时的设置）
+    if (!gpnFeatStore) return;
+    try {
+        if (gpnFeatSaveTimer) clearTimeout(gpnFeatSaveTimer);
+        gpnFeatSaveTimer = setTimeout(() => {
+            gpnFeatSaveTimer = null;
+            try {
+                const snap = gpnFeatSnapshot();
+                Promise.resolve(gpnFeatStore.update(() => snap))
+                    .then(() => {
+                        const offList = Object.keys(snap).filter((k) => !snap[k] && k !== 'verboseLog');
+                        log('开关持久化：已保存' + (offList.length ? ('（已关闭：' + offList.join('、') + '）') : '（全部开启）'));
+                    })
+                    .catch((e2) => warn('开关持久化：保存失败', e2));
+            } catch (e) { warn('开关持久化：保存出错', e); }
+        }, 300);
+    } catch (e) { warn('开关持久化：定时器出错', e); }
+}
+
+function gpnFeatStorageReset() {
+    if (gpnDisposed) return;                 // 旧运行时不再改设置
+    try {
+        for (const k of Object.keys(gpnFeatDefaults)) FEATURES_LIVE[k] = gpnFeatDefaults[k];
+        if (gpnFeatStore) {
+            const snap = gpnFeatSnapshot();
+            Promise.resolve(gpnFeatStore.update(() => snap))
+                .then(() => log('开关持久化：已恢复默认并写回存储'))
+                .catch((e2) => warn('开关持久化：恢复默认写盘失败', e2));
+        } else {
+            log('开关持久化：已恢复默认（本次会话；无存储句柄）');
+        }
+    } catch (e) { warn('开关持久化：恢复默认出错', e); }
+}
+
 
 /** 诊断日志总开关（features.json 的 verboseLog）。注意它在 FEATURES 表里登记为 false ⇒ 默认关。 */
 function verboseOn() { return featOn('verboseLog'); }
@@ -172,11 +318,11 @@ function featLoad() {
         }
         try {
             const obj = JSON.parse(String(txt).replace(/^\uFEFF/, ''));
-            for (const k of Object.keys(FEATURES)) {
-                if (obj[k] === true || obj[k] === false) FEATURES[k] = obj[k];
+            for (const k of Object.keys(FEATURES_LIVE)) {
+                if (obj[k] === true || obj[k] === false) FEATURES_LIVE[k] = obj[k];
             }
             FEATURES_MERGE_EXPLICIT_TRUE = (obj.starfruitFollowMerge === true);
-            const off = Object.keys(FEATURES).filter((k) => !featOn(k) && k !== 'verboseLog');
+            const off = Object.keys(FEATURES_LIVE).filter((k) => !featOn(k) && k !== 'verboseLog');
             log('features.json 已读取 —— ' + (off.length ? ('已关闭：' + off.join('、')) : '全部开启'));
             return obj;
         } catch (e) {
@@ -189,6 +335,27 @@ function featLoad() {
 /* =========================================================================
  * 配置区 —— 要调数值只改这里
  * =======================================================================*/
+/** 【原版值表】"关掉开关时写回什么"的**唯一出处**。
+ *  来源：`CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`（逐字段核对过）。
+ *  为什么要有这张表：开关一旦支持"开/关两种状态"，数据补丁就必须在**关掉时写回原版值**；
+ *  若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
+const VANILLA = {
+    spikerock: { sunCost: 250, maxSpike: 3, cooldown: 5 },
+    // ↓ 全部来自原始数据 `CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`
+    //   （逐字段核对过；并已与用户手工提供的清单交叉验证）
+    //   ⚠️ 注意：这些条目曾在一次 `git checkout e247a7d` 回退中被意外丢掉（导致 VANILLA.nightshade
+    //      为 undefined ⇒ 关掉龙葵时 setup 抛异常）。已按原始数据重新补全。
+    splitpea: { sunCost: 125, cooldown: 5 },
+    nightshade: { sunCost: 75, cooldown: 5 },
+    tallnut: { sunCost: 125, cooldown: 20 },
+    starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
+    noctarine: { sunCost: 150, cooldown: 15 },
+    dandelion: { sunCost: 275, cooldown: 15 },
+    garlic: { sunCost: 50, cooldown: 5, eatDamage: 150 },
+    redstinger: { sunCost: 150, tier1: 0.3333333, tier2: 0.2 },
+    pepperpult: { sunCost: 200, cooldown: 20 },
+};
+
 const CFG = {
     chilibean: {
         // true  = 每只啃食者都跑一次完整的 chilibeanFart（音效/粒子/范围眩晕叠 N 遍）
@@ -199,7 +366,7 @@ const CFG = {
         sunCost: 200,      // 原 250
         maxSpike: 9,       // 原 3 —— 可承受的「滚动僵尸 / 巨人砸击」次数
         teeth: 3,          // 视觉上一共 3 颗牙
-        cooldown: 15,      // 种植冷却秒数（改成 15 秒）
+        cooldown: 15,      // 种植冷却秒数（改成 15 秒；原版 5 秒）
     },
     bloomingheart: {
         splashWidthTiles: 3,   // 1x3：以命中目标为中心，同排左右各一格
@@ -417,7 +584,7 @@ const CFG = {
     },
     redstinger: {                      // 红针花：承伤倍率 + 左键循环切换形态
         plantType: 'redstinger',
-        sunCost: 200,                  //   阳光消耗（原版 150 ⇒ 本次 150 -> 200）
+        sunCost: 175,                  //   阳光消耗（原版 150 ⇒ 曾改 200 ⇒ 用户指定改为 **175**）
         tier1: 0.2,                    //   inArea 1（第 4~6 列）承伤倍率（原 0.3333333）= 80% 减伤
         tier2: 0.1,                    //   inArea 2（第 7~9 列）承伤倍率（原 0.2）= 90% 减伤
         knockbackDistance: 0.05,       //   inArea 1 的子弹击退力度（格）—— 走引擎自带的 knockbackDistance（同飞天豌豆/龙葵）
@@ -485,6 +652,179 @@ function normalizeType(t) {
 }
 
 /** 打补丁前先登记原方法 + 它是不是自有属性 */
+/* ============================================================================
+ * 【开关门禁】统一包装器：把"关掉开关 ⇒ 完全不插手"收敛到**这一处**
+ *   用法：Cls.prototype.m = gpnGatedBody(original, 'featKey', function () { …补丁体… });
+ *   开着 ⇒ 走补丁体；关掉 ⇒ 直接 original.apply ⇒ 与"没打补丁"完全等价
+ *   为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
+ *   __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
+ * ========================================================================== */
+/* ★ 数据补丁自愈：apply() 返回 false 说明"static 数组还没填充 / 容器还没到位"，每秒重试直到成功。
+ *   为什么需要（实机证据）：`PlantProps` 等由 readJsons 填充；实机日志里
+ *   `数据已在 readJsons 之后重新应用` 从未出现 ⇒ 我们唯一的那次"补"没发生，
+ *   于是 setField 一直空写、数值停留原版（表现为"关掉开关阳光不变"）。
+ *   注意：不设硬上限（关卡数据可能是进关卡才加载），但也不会刷屏（只在特定次数打点）。
+ */
+let gpnDataRetryTimer = null;
+let gpnDataRetryCount = 0;
+function gpnStartDataPatchRetry(getPatch) {
+    if (gpnDataRetryTimer) { try { clearInterval(gpnDataRetryTimer); } catch (e) { } }
+    gpnDataRetryTimer = setInterval(() => {
+        gpnDataRetryCount++;
+        try {
+            if (gpnDisposed) { clearInterval(gpnDataRetryTimer); gpnDataRetryTimer = null; return; }
+            const dp = getPatch && getPatch();
+            if (!dp || typeof dp.apply !== 'function') return;
+            const ok = dp.apply();
+            if (ok === true) {
+                log('数据补丁：自愈成功（第 ' + gpnDataRetryCount + ' 次重试后数据已落到容器）');
+                clearInterval(gpnDataRetryTimer); gpnDataRetryTimer = null;
+            } else if (gpnDataRetryCount === 10 || gpnDataRetryCount === 60 || gpnDataRetryCount === 300 || gpnDataRetryCount === 600) {
+                warn('数据补丁：第 ' + gpnDataRetryCount + ' 次重试仍未成功（容器/数组还没到位）');
+            }
+        } catch (e) { /* 单次失败不中断 */ }
+    }, 1000);
+}
+const gpnGateStats = { bodies: 0, calls: 0, bypass: 0, reused: 0 };
+/* ★ 注册表：保证"同一个原函数只被包装一次"
+ *   为什么需要（实测）：setup 跑 N 次时，第 2 次拿到的 original 是"第 1 次包装后的函数"，
+ *   于是又包一层 ⇒ 开着开关时**补丁体会被执行 N 次**（原函数仍只 1 次）。
+ *   对"只改状态"的补丁（钢地刺的 spikeLeft、甜薯回血、香水菇层数、红针花形态）就可能出怪现象。
+ *   而两次 setup 拿到的 o1 **是同一个函数对象** ⇒ 用 WeakMap 按 identity 缓存即可彻底幂等。
+ */
+const gpnGateRegistry = new WeakMap();
+/* ★ 生命周期：模组被停用/重载后置 true。所有"会继续活动"的入口都要检查它，
+ *   否则旧运行时会与新运行时并行（实机已复现：开关错乱、保存报 AbortError）。
+ *   注意：模块级变量在**同一个模块实例**内共享；GP-NEXT 重新加载会得到新的模块实例，
+ *   所以这个标志只用来让"本实例"安静下来，不会影响新实例。 */
+let gpnDisposed = false;
+let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
+let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
+let gpnPlantsRef = null;                  // 由 setup 登记：plants 模块（引擎 getPlantProps 在这里）
+
+/* ============================================================================
+ * ★ 跨实例"活动令牌"（生命周期核心）
+ *   背景（实机证据）：GP-NEXT 的「保存并重载」会**重新求值本模块并重跑 setup()**，
+ *   但旧实例的 onDispose **从未被调用** ⇒ 两套逻辑并行，面板/点击互相覆盖。
+ *   做法：把"当前活动实例"记在一个**跨模块实例共享**的全局对象上；
+ *         每个运行期回调都先问"我还是活动实例吗"，不是就立刻静默。
+ *   ⚠️ 不能只依赖 onDispose —— 实机证明它不会来。
+ * ========================================================================== */
+const GPN_ACTIVE_KEY = '__GPN_CTM_ACTIVE_V1__';
+/** 跨实例共享的"我方窗体"登记表：键=实例ID，值={ panel, origWin }。
+ *  用途：新实例抢占令牌后，把上一个实例**残留的窗体关掉**（否则两个面板叠在同一位置）。
+ *  注意窗体会随场景销毁 ⇒ 用之前必须判 isValid。 */
+function gpnPanelReg() {
+    try {
+        const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+        if (!g) return null;
+        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', retired: Object.create(null), panels: Object.create(null) };
+        if (!g[GPN_ACTIVE_KEY].panels) g[GPN_ACTIVE_KEY].panels = Object.create(null);
+        return g[GPN_ACTIVE_KEY].panels;
+    } catch (e) { return null; }
+}
+/** 关掉"除我自己以外"所有实例登记过的窗体（新实例启动时调用） */
+function gpnCloseStalePanels() {
+    let closed = 0;
+    try {
+        const reg = gpnPanelReg();
+        if (!reg) return 0;
+        for (const k of Object.keys(reg)) {
+            if (k === GPN_INSTANCE_ID) continue;
+            try {
+                const ent = reg[k];
+                if (ent && ent.panel && ent.panel.isValid) { ent.panel.active = false; closed++; }
+                delete reg[k];
+            } catch (e) { /* 忽略 */ }
+        }
+        if (closed) log('[CTM] 已关掉上一个实例残留的窗体 ' + closed + ' 个');
+    } catch (e) { /* 忽略 */ }
+    return closed;
+}
+function gpnGlobalReg() {
+    try {
+        const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+        if (!g) return null;
+        if (!g[GPN_ACTIVE_KEY]) g[GPN_ACTIVE_KEY] = { active: '', seq: 0, retired: Object.create(null), panels: Object.create(null), ensure: null };
+        if (g[GPN_ACTIVE_KEY].seq === undefined) g[GPN_ACTIVE_KEY].seq = 0;
+        return g[GPN_ACTIVE_KEY];
+    } catch (e) { return null; }
+}
+/** 本实例的代次（每个模块实例一个，抢占令牌时分配） */
+let gpnInstanceSeq = 0;
+/** 本实例是否仍是"当前活动实例"（被更高代次的实例顶替 ⇒ 过期 ⇒ 一律静默）
+ *  判据用**代次比较**而不是"令牌是否相等"：
+ *    · 自检会在同一进程内多次加载模块；若用"相等"判定，旧实例的 cleanup 会被误判成过期。
+ *    · 只有"存在代次比我更大的实例"才真的说明我被顶替了。 */
+function gpnIsActiveInstance() {
+    try {
+        const r = gpnGlobalReg();
+        if (!r) return true;                                   // 拿不到注册表 ⇒ 按活动处理
+        if (!r.active || !r.seq) return true;                  // 还没人抢过 ⇒ 我说了算（自检场景）
+        return !(gpnInstanceSeq > 0 && r.seq > gpnInstanceSeq);
+    } catch (e) { return true; }
+}
+/** 抢占活动令牌；若发现上一个实例还留着"退役回调"，就地调用它 */
+function gpnClaimInstance() {
+    try {
+        const r = gpnGlobalReg();
+        if (!r) return;
+        const prev = r.active;
+        // ⚠️ **不要**调用 `r.retired[prev]()`：那个闭包改的是**它自己模块实例**的 `gpnDisposed`。
+        //    自检会在同一进程内反复加载模块，"上一个实例"的模块级变量可能就属于当前实例
+        //    ⇒ 一调用就把自己标成"已销毁"，所有补丁都不装（实测 59 条断言失败）。
+        //    令牌赋值本身就够：旧实例的所有回调都会先查 `gpnIsActiveInstance()` 而静默。
+        try { delete r.retired[prev]; } catch (e2) { /* 忽略 */ }
+        r.active = GPN_INSTANCE_ID;
+        r.seq = (r.seq || 0) + 1;                              // ★ 代次递增
+        gpnInstanceSeq = r.seq;
+        log('[CTM] 活动实例令牌 = ' + GPN_INSTANCE_ID + '（第 ' + gpnInstanceSeq + ' 代，上一个 = ' + (prev || '无') + '）');
+    } catch (e) { /* 忽略 */ }
+}
+/** 本实例马上要让位给别的新实例（由 onDispose 或"被抢占"时调用）：只做必要的自己人清理 */
+function gpnRetireSelf() {
+    if (gpnDisposed) return;
+    gpnDisposed = true;
+    try { gpnOnRetire(); } catch (e) { /* 忽略 */ }
+}
+/** 由配置界面块登记：让位时关掉自己的窗体（避免两个面板叠着） */
+let gpnOnRetire = null;
+
+/* ★ 统一取"数据容器"。
+ *   ⚠️ 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
+ *   （曾经写成 `typeof box === 'object'` ⇒ 对类永远为假 ⇒ 诊断谎报"无容器"，排查被误导很久。）
+ *   判据改成"结构判据"：有 PlantProps / ProjectileProps / PlantAlmanac 任一即可。
+ */
+function gpnResolveDataBox() {
+    const cands = [gpnDataBox, (typeof PvZ2ObjectContainerRef === 'function') ? PvZ2ObjectContainerRef() : null];
+    for (const c of cands) {
+        if (!c) continue;
+        try { if (Array.isArray(c.PlantProps) || Array.isArray(c.ProjectileProps) || Array.isArray(c.PlantAlmanac)) return c; } catch (e) { /* 忽略 */ }
+    }
+    return gpnDataBox || null;
+}
+function gpnGatedBody(original, featKey, body) {
+    try {
+        if (original && typeof original === 'function') {
+            if (original.__gpnGated) return original;               // 已经是包装函数 ⇒ 直接用（标记兜底）
+            const hit = gpnGateRegistry.get(original);
+            if (hit) { gpnGateStats.reused++; return hit; }         // 同一个原函数 ⇒ 复用同一层包装
+        }
+    } catch (e) { /* 忽略 */ }
+    const wrapped = function () {
+        gpnGateStats.calls++;
+        if (gpnDisposed) { gpnGateStats.bypass++; return original.apply(this, arguments); }   // ★ 旧运行时：不插手
+        if (!featOn(featKey)) { gpnGateStats.bypass++; return original.apply(this, arguments); }
+        return body.apply(this, arguments);
+    };
+    try {
+        wrapped.__gpnGated = featKey;                               // 标记：供兜底与自检识别
+        if (original && typeof original === 'function') gpnGateRegistry.set(original, wrapped);
+    } catch (e) { /* 忽略 */ }
+    gpnGateStats.bodies++;
+    return wrapped;
+}
+
 function methodRecord(Cls, name) {
     return {
         Cls,
@@ -497,8 +837,35 @@ function methodRecord(Cls, name) {
 /* =========================================================================
  * 1. 数值：运行时改 PlantProps / ProjectileProps
  * =======================================================================*/
-/** 数字 -> 中文（图鉴文本用；1~10 用汉字，其它回落到阿拉伯数字） */
-const GPN_ZH_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+/* ★ 鼠标点击去重（修「矿车/格子上一次点击切换两次形态」）
+ *   实测（probe-cart-1 探针）一次按下+抬起会走两条链：
+ *     A = plantMouseReact ← 格子 onMouseDown（按下时）
+ *     B = 格子 onMouseUp 的 delayMouseDownPlantsOnCart.forEach(e => e.onMouseDown(t))（抬起时补发）
+ *   引擎本来用 B 来兜「拖车时不算点击」，而我们在 A 里已经切过一次 ⇒ 重复。
+ *   ⇒ 只把**补发的那一次**挡掉：阈值 180ms（实测两条链相差 44~103ms）。
+ *      这个量级与引擎自己的重复点击护栏一致 —— 引擎在 MouseListener 里也是
+ *      每次点击后置 `MouseClickCoolingDown = 2`（约 2 帧 ≈ 66~100ms，按 30~60fps 估）。
+ *   ⚠️ 副作用（与引擎那道护栏同性质）：180ms 内的两次独立点击会被并成一次。
+ *      正常人手速约 200~300ms ⇒ 绝大多数情况无感；但**很刻意地快速连点**
+ *      （间隔 <180ms）会少切一次。要更灵敏就把 GPN_CLICK_DEDUP_MS 调小（如 120，
+ *      但要 >103ms，否则挡不住补发那一次）。实测数据：两条链相差 44 / 60 / 83 / 103ms。
+ */
+const GPN_CLICK_DEDUP_MS = 180;
+function gpnClickOnce(self, key) {
+    try {
+        const now = Date.now();
+        const last = self[key] || 0;
+        if (now - last < GPN_CLICK_DEDUP_MS) return false;
+        self[key] = now;
+        return true;
+    } catch (e) { return true; }        // 出错就按"允许"处理，绝不因此卡住功能
+}
+
+/** 数字 -> 中文（图鉴文本用；0~20 用汉字，其它回落到阿拉伯数字）
+ *  为什么到 20：图鉴里有「能承受滚动前行的僵尸 N 次打击」这类句子，
+ *  只到 10 会在 11+ 时变成「…11 次打击」那样半文半白。 */
+const GPN_ZH_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
+    '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十'];
 /** 穿透/打中数统一钳制：小数向下取整；非有限数或 < 1 ⇒ 1（1 = 不穿透，永远不出现 0） */
 function gpnPierceN(v) {
     const n = Math.floor(Number(v));
@@ -518,7 +885,7 @@ function gpnFollowPierce() {
 
 function gpnZhNum(n) {
     n = Math.round(n);
-    return (n >= 0 && n <= 10) ? GPN_ZH_NUM[n] : String(n);
+    return (n >= 0 && n < GPN_ZH_NUM.length) ? GPN_ZH_NUM[n] : String(n);
 }
 
 /** 穿透文案专用的中文数字：2 写成「两」（量词习惯：穿透两个目标），其余沿用 gpnZhNum */
@@ -526,8 +893,199 @@ function gpnPierceZh(n) {
     return (Math.round(n) === 2) ? '两' : gpnZhNum(n);
 }
 
+/* ============================================================================
+ * ★ 图鉴文案总览（**纯只读**）
+ *   背景：40 处图鉴写入散在 apply() 里，文案是「拼」出来的（含 CFG 现算表达式），
+ *         想知道最终长什么样、得手工代值 —— 这个总览把「实际写进去的文案」原样读出来。
+ *   特点：**不写任何数据、不加任何原型补丁**；只在被调用时遍历 PlantAlmanac。
+ *   用法（F12 Console，随时可用，无需重进游戏）：
+ *     gpnAlmDumpAll()              // 只看我们改过的
+ *     gpnAlmDumpAll('all')         // 我们改过的 + 其余仅列名
+ *     gpnAlmDumpOne('starfruit')   // 只看某一株
+ *     gpnAlmOverview()             // 结构化数据（可 copy(gpnAlmOverview()) 取出）
+ * ========================================================================== */
+
+/* 图鉴「两态」用的状态（模块级，跨 apply 保留）：
+ *   · GPN_ALM_SNAPSHOT_DONE —— 是否已抓过原件快照（只在**第一次** apply 抓，那一刻还没被我们改过）
+ *   · GPN_ALM_ORIG          —— [{ alias, od: 原件 objdata 的深拷贝 }]
+ *   ⚠ 跨实例（保存并重载）时模块会被重新求值 ⇒ 这两个会重置，而那时数据可能已被旧实例改过；
+ *     届时按"当前状态"重新抓快照（会把我们自己的文案当成原件，但那一轮仍能正确两态）。 */
+let GPN_ALM_SNAPSHOT_DONE = false;
+const GPN_ALM_ORIG = [];
+/** objdata 的深拷贝 —— 只处理 JSON 安全值（对象/数组/字符串/数字/布尔/null），
+ *  图鉴文案结构就是这么朴素；遇到其它类型退回引用（不影响正确性，只影响"完全还原"）。 */
+function gpnAlmDeepClone(v) {
+    if (v === null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) {
+        const a = new Array(v.length);
+        for (let i = 0; i < v.length; i++) a[i] = gpnAlmDeepClone(v[i]);
+        return a;
+    }
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = gpnAlmDeepClone(v[k]);
+    return o;
+}
+/** 快照提示：只在 verboseLog 打开时打，且"株数变化"时再打一次（避免刷屏） */
+function log_alm_snapshot(n) {
+    try {
+        if (!verboseOn()) return;
+        if (n === GPN_ALM_LAST_SNAP_N) return;
+        GPN_ALM_LAST_SNAP_N = n;
+        log('【图鉴两态】已抓原件快照：' + n + ' 株（此后每次开关变化都从原件重建，开/关两个方向都即时生效）');
+    } catch (e) { /* 只影响这一行日志 */ }
+}
+let GPN_ALM_LAST_SNAP_N = -1;
+
+/** 我们改过图鉴的植物：**[图鉴 alias, 对应功能开关名]**。
+ *  为什么不只是数组：图鉴 alias 与开关名**并不一一对应** ——
+ *    · 心蕊：图鉴是复数 `bloominghearts`，开关是 `bloomingheart`；
+ *    · 星星果系 3 株：图鉴 alias 各不同，开关**都是** `starfruit`。
+ *  这张表既是「哪些算我们改的」的唯一出处，也是给后来人的提醒。 */
+const GPN_ALM_CHANGED = [
+    ['chilibean', 'chilibean'], ['spikerock', 'spikerock'], ['bloominghearts', 'bloomingheart'],
+    ['nightshade', 'nightshade'], ['turnip', 'turnip'], ['sweetpotato', 'sweetpotato'],
+    ['tallnut', 'tallnut'], ['perfumeshroom', 'perfumeshroom'],
+    ['starfruit', 'starfruit'], ['pinkstarfruit', 'starfruit'], ['shootingstarfruit', 'starfruit'],
+    ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
+    ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
+    ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
+];
+
+function gpnAlmList() {
+    try {
+        const C = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+        return (C && Array.isArray(C.PlantAlmanac)) ? C.PlantAlmanac : null;
+    } catch (e) { return null; }
+}
+/** 取一株的图鉴文本（中/英）—— 只读 */
+function gpnAlmTextOf(alias) {
+    const AL = gpnAlmList();
+    if (!AL) return null;
+    let e = null;
+    for (const x of AL) { if (x && Array.isArray(x.aliases) && x.aliases.indexOf(alias) !== -1) { e = x; break; } }
+    if (!e || !e.objdata) return null;
+    const od = e.objdata;
+    const grab = (v) => (v && typeof v === 'object')
+        ? { zh: String(v.zh || ''), en: String(v.en || '') }
+        : { zh: String(v || ''), en: '' };
+    const out = { alias: alias, aliases: e.aliases.slice(), intro: null, brief: null, special: [] };
+    if (od.Introduction) out.intro = grab(od.Introduction);
+    if (od.BriefIntroduction) out.brief = grab(od.BriefIntroduction);
+    if (Array.isArray(od.Special)) {
+        for (const row of od.Special) { if (row && row.DESCRIPTION) out.special.push(grab(row.DESCRIPTION)); }
+    }
+    return out;
+}
+/** 结构化总览 —— 只读。返回 { total, changed:[{alias,feat,on,intro,brief,special}], others:[alias] } */
+function gpnAlmOverview() {
+    const AL = gpnAlmList();
+    if (!AL) return { total: 0, changed: [], others: [], error: '拿不到 PlantAlmanac（数据容器未就绪）' };
+    const seen = Object.create(null);
+    const changed = [];
+    for (const pair of GPN_ALM_CHANGED) {
+        const a = pair[0], feat = pair[1];
+        const x = gpnAlmTextOf(a);
+        if (!x) continue;
+        x.feat = feat;
+        try { x.on = featOn(feat); } catch (e) { x.on = true; }
+        changed.push(x);
+        seen[a] = true;
+    }
+    const others = [];
+    for (const e of AL) {
+        if (!e || !Array.isArray(e.aliases)) continue;
+        const a0 = e.aliases[0];
+        if (!a0 || seen[a0]) continue;
+        others.push(a0);
+    }
+    return { total: AL.length, changed: changed, others: others };
+}
+/** 打印一株的文本（内部共用） */
+function gpnAlmPrintOne(x) {
+    if (x.intro) { log('   [介绍 zh] ' + x.intro.zh); log('   [介绍 en] ' + x.intro.en); }
+    if (x.brief) { log('   [简介 zh] ' + x.brief.zh); log('   [简介 en] ' + x.brief.en); }
+    for (let i = 0; i < x.special.length; i++) {
+        log('   [特点' + (i + 1) + ' zh] ' + x.special[i].zh);
+        log('   [特点' + (i + 1) + ' en] ' + x.special[i].en);
+    }
+}
+/** 打印总览。mode：省略 / 'changed' = 只看我们改过的；'all' = 附带其余仅列名 */
+function gpnAlmDumpAll(mode) {
+    const wantAll = (mode === 'all');
+    const o = gpnAlmOverview();
+    if (o.error) { log('【图鉴文案总览】' + o.error); return o; }
+    log('【图鉴文案总览】图鉴共 ' + o.total + ' 条 ｜ 我们改过 ' + o.changed.length + ' 株'
+        + (wantAll ? (' ｜ 其余 ' + o.others.length + ' 株仅列名') : " ｜（含全部请 gpnAlmDumpAll('all')）"));
+    for (const x of o.changed) {
+        log('──────── ' + x.alias + '（开关 ' + x.feat + ' = ' + (x.on ? '开' : '关') + '）');
+        gpnAlmPrintOne(x);
+    }
+    if (wantAll) {
+        log('──────── 其余 ' + o.others.length + ' 株（未改动，仅列名）');
+        log('   ' + o.others.join('、'));
+    }
+    return o;
+}
+/** 打印一株 —— 只读；找不到时给出提示 */
+function gpnAlmDumpOne(alias) {
+    const x = gpnAlmTextOf(alias);
+    if (!x) {
+        const hint = (alias === 'bloomingheart') ? '（心蕊在图鉴里的 alias 是复数 bloominghearts）' : '';
+        log('【图鉴文案总览】找不到 ' + alias + hint);
+        return null;
+    }
+    log('──────── ' + x.alias + '（aliases: ' + x.aliases.join(',') + '）');
+    gpnAlmPrintOne(x);
+    return x;
+}
+/* 挂到全局，方便控制台直接调用（只读接口，随手可用） */
+try {
+    const _g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+    if (_g) {
+        _g.gpnAlmOverview = gpnAlmOverview;
+        _g.gpnAlmDumpAll = gpnAlmDumpAll;
+        _g.gpnAlmDumpOne = gpnAlmDumpOne;
+    }
+} catch (e) { /* 忽略 */ }
+/* dynamic original value: the "off" branch must READ it, never hardcode it.
+ *   Lesson (caught by selftest): I hardcoded phatbeet off=150, but its real original value
+ *   can be anything (the mock uses 999 as a sentinel) => hardcoding is simply wrong.
+ *   Rule: record it on first read (including "field did not exist"), then always reuse it.
+ */
+const gpnVanillaMemo = new Map();
+function gpnVanilla(listName, alias, field) {
+    const mk = listName + "|" + alias + "|" + field;
+    if (gpnVanillaMemo.has(mk)) return gpnVanillaMemo.get(mk);
+    let val;
+    try {
+        const Box = (typeof gpnResolveDataBox === "function") ? gpnResolveDataBox() : null;
+        const list = Box && Box[listName];
+        const hit = Array.isArray(list) ? list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0] : null;
+        val = (hit && hit.objdata) ? hit.objdata[field] : undefined;
+    } catch (e) { val = undefined; }
+    const rec = { had: val !== undefined, value: val };
+    gpnVanillaMemo.set(mk, rec);
+    return rec;
+}
+/* restore a field to its recorded original state (delete it if it never existed) */
+function gpnRestoreField(listName, alias, field) {
+    try {
+        const rec = gpnVanilla(listName, alias, field);
+        const Box = (typeof gpnResolveDataBox === "function") ? gpnResolveDataBox() : null;
+        const list = Box && Box[listName];
+        if (!Array.isArray(list)) return false;
+        const hits = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1);
+        for (const e of hits) {
+            if (!e.objdata) continue;
+            if (rec.had) e.objdata[field] = rec.value;
+            else { try { delete e.objdata[field]; } catch (e2) { } }
+        }
+        return true;
+    } catch (e) { return false; }
+}
 function makeDataPatcher(PvZ2ObjectContainer) {
     const undo = [];
+    try { gpnDataBox = PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }   // 供配置界面诊断打印
 
     const track = (objdata, key) => {
         // 同一个字段只记【第一次】的原值：apply() 会被调用多次
@@ -544,7 +1102,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     const setField = (listName, alias, key, value) => {
-        const list = PvZ2ObjectContainer[listName];
+        const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
+        const list = Box && Box[listName];
         if (!Array.isArray(list) || !list.length) return false;
         const hits = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1);
         if (!hits.length) { warn('数据里找不到 ' + listName + '/' + alias); return false; }
@@ -564,424 +1123,563 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         //   ⇒ 阳光 / 冷却改了会自动显示，不用动图鉴。
         //   规则：能保留就保留（追加），只有【原话说错了】的才改写。
         // ============================================================
-        if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
-            const AL = PvZ2ObjectContainer.PlantAlmanac;
-            const findAl = (alias) => {
-                for (const e of AL) {
-                    if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1) return e;
-                }
-                return null;
-            };
-            const setLoc = (holder, field, zh, en) => {
-                if (!holder) return false;
-                let o = holder[field];
-                if (!o || typeof o !== 'object') { track(holder, field); holder[field] = {}; o = holder[field]; }
-                if (typeof zh === 'string') { track(o, 'zh'); o.zh = zh; }
-                if (typeof en === 'string') { track(o, 'en'); o.en = en; }
-                return true;
-            };
-            const writeIntro = (alias, zh, en) => {
-                const e = findAl(alias);
-                return e ? setLoc(e.objdata, 'Introduction', zh, en) : false;
-            };
-            const writeBrief = (alias, zh, en) => {
-                const e = findAl(alias);
-                return e ? setLoc(e.objdata, 'BriefIntroduction', zh, en) : false;
-            };
-            const addSpecial = (alias, zh, en) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata) return false;
-                const od = e.objdata;
-                const list = Array.isArray(od.Special) ? od.Special : null;
-                if (list) {
-                    for (const row of list) {
-                        const d = row && row.DESCRIPTION;
-                        if (d && d.zh === zh) return true;      // 已经加过（apply 会跑多次）
-                    }
-                }
-                track(od, 'Special');
-                od.Special = (list || []).concat([{
-                    NAME: { zh: '特点', en: 'Special' },
-                    DESCRIPTION: { zh, en },
-                }]);
-                return true;
-            };
-            const editSpecial = (alias, needle, zh, en) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata || !Array.isArray(e.objdata.Special)) return false;
-                for (const row of e.objdata.Special) {
-                    const d = row && row.DESCRIPTION;
-                    if (!d) continue;
-                    const hit = (typeof d.zh === 'string'
-                            && (d.zh.indexOf(needle) !== -1 || (typeof zh === 'string' && d.zh === zh)))
-                        || (typeof d.en === 'string' && d.en.indexOf(needle) !== -1);
-                    if (!hit) continue;
-                    if (typeof zh === 'string') { track(d, 'zh'); d.zh = zh; }
-                    if (typeof en === 'string') { track(d, 'en'); d.en = en; }
-                    return true;
-                }
-                warn('图鉴：找不到要改的 Special 行（' + alias + ' / ' + needle + '）');
-                return false;
-            };
-            // 在「含某关键词的那个本地化对象」上【追加】一句。
-            //  图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
-            //  所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
-            const appendLoc = (alias, needles, zhSuffix, enSuffix) => {
-                const e = findAl(alias);
-                if (!e || !e.objdata) { warn('图鉴：找不到这个植物的条目（' + alias + '）'); return false; }
-                const list = Array.isArray(needles) ? needles : [needles];
-                const found = [];       // [{o, path}]
-                const walk = (o, path) => {
-                    if (!o || typeof o !== 'object') return;
-                    if (typeof o.zh === 'string') found.push({ o: o, path: path || '(root)' });
-                    if (Array.isArray(o)) {
-                        o.forEach((x, i) => walk(x, path + '[' + i + ']'));
-                    } else {
-                        for (const k of Object.keys(o)) walk(o[k], path ? (path + '.' + k) : k);
-                    }
-                };
-                walk(e.objdata, '');
-                let hit = null, hitNeedle = null;
-                for (const nd of list) {                      // 按 given 顺序优先（先找"更像正文"的那句）
-                    for (const f of found) {
-                        if (f.o.zh.indexOf(nd) !== -1) { hit = f; hitNeedle = nd; break; }
-                    }
-                    if (hit) break;
-                }
-                if (!hit) {
-                    warn('图鉴：' + alias + ' 里找不到含「' + list.join(' / ') + '」的文案，没改');
-                    if (dbgOn(CFG.splitpea.debugLog)) {
-                        // ① 把这个植物自己的所有文案连"路径"打出来
-                        log('  图鉴[' + alias + '] 共有 ' + found.length + ' 条中文文案：');
-                        for (const f of found) log('    ' + f.path + ' = ' + String(f.o.zh).slice(0, 70));
-                        // ② 全表扫一遍：万一这句挂在别的条目/别的表上（只报告，不改）
-                        try {
-                            const needle0 = list[0];
-                            for (const e2 of (AL || [])) {
-                                if (!e2 || !e2.objdata) continue;
-                                const hits2 = [];
-                                const w2 = (o2, p2) => {
-                                    if (!o2 || typeof o2 !== 'object') return;
-                                    if (typeof o2.zh === 'string' && o2.zh.indexOf(needle0) !== -1) hits2.push(p2);
-                                    if (Array.isArray(o2)) o2.forEach((x, i) => w2(x, p2 + '[' + i + ']'));
-                                    else for (const k of Object.keys(o2)) w2(o2[k], p2 ? (p2 + '.' + k) : k);
-                                };
-                                w2(e2.objdata, '');
-                                for (const p2 of hits2) {
-                                    log('  别处也有一份：aliases=' + JSON.stringify(e2.aliases) + ' 路径=' + p2);
-                                }
-                            }
-                            const fl = PvZ2ObjectContainer && PvZ2ObjectContainer.PlantFeatures;
-                            if (Array.isArray(fl)) {
-                                for (const fe of fl) {
-                                    if (!fe || String(fe.CODENAME || '').toLowerCase() !== String(alias).toLowerCase()) continue;
-                                    for (const k of Object.keys(fe)) {
-                                        const v = fe[k];
-                                        if (v && typeof v === 'object' && typeof v.zh === 'string') {
-                                            log('  PlantFeatures[' + alias + '].' + k + ' = ' + String(v.zh).slice(0, 70));
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e) { /* 没有就算了 */ }
-                    }
-                    return false;
-                }
-                const d = hit.o;
-                if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
-                    track(d, 'zh'); d.zh = d.zh + zhSuffix;
-                }
-                if (typeof enSuffix === 'string' && typeof d.en === 'string'
-                    && d.en.indexOf(enSuffix) === -1) {
-                    track(d, 'en'); d.en = d.en + enSuffix;
-                }
-                if (dbgOn(CFG.splitpea.debugLog)) log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加');
-                return true;
-            };
-
-            // ---- 巴豆（追加"所有啃食者一起倒下"）----
-            if (featOn('chilibean')) {
-                // Intro 的中文保持原版不动；英文用带补充的那句
-                writeIntro('chilibean', null,
-                    'Chili Beans deliver a crippling bout of gastrointestinal distress. Every zombie that is eating it drops at once.');
-                writeBrief('chilibean', '所有正在啃食它的僵尸一起死亡，并释放眩晕气体',
-                    'Every zombie eating it dies together, and releases stunning gas.');
-                editSpecial('chilibean', '吃掉他的僵尸直接死亡',
-                    '被僵尸吃下后，杀死所有正在啃食它的僵尸，并释放眩晕气体',
-                    'After being eaten, it kills every zombie that is eating it and releases stunning gas.');
-            }
-            // ---- 钢地刺（原话写错：三次 / 3 个）----
-            if (featOn('spikerock')) {
-                const SPK = CFG.spikerock.maxSpike;
-                writeBrief('spikerock', '对走过的僵尸造成伤害，并破坏 ' + SPK + ' 个滚动的物体',
-                    'Damages zombies that walk over it, and destroys ' + SPK + ' rolling objects.');
-                editSpecial('spikerock', '能承受滚动前行',
-                    '能承受滚动前行的僵尸' + gpnZhNum(SPK) + '次打击',
-                    'Can withstand ' + SPK + ' hits from rolling zombies.');
-            }
-            // ---- 心蕊（追加 1×3 + 啃食减伤）----
-            if (featOn('bloomingheart')) {
-                writeIntro('bloominghearts',
-                    '心蕊向僵尸投掷子弹，使之本格及其同排左右各一格中的所有僵尸防御力下降。',
-                    'Blooming Hearts throw bullets that lower the defence of zombies in its own tile and the tiles one to either side in the same lane.');
-                writeBrief('bloominghearts', '向僵尸投掷子弹，使以命中点为中心 1×3 范围内的僵尸防御力下降',
-                    'Throws bullets that lower the defence of zombies in a 1×3 area centred on the hit.');
-                const VDS = CFG.bloomingheart.victimDamageScale || {};
-                const P50 = Math.round((VDS.bloominghearts != null ? VDS.bloominghearts : 0.5) * 100);
-                const P75 = Math.round((VDS.sweetpotato != null ? VDS.sweetpotato : 0.75) * 100);
-                addSpecial('bloominghearts',
-                    '被减防的僵尸对这些植物的啃食伤害降低：心蕊 ×' + P50 + '%、甜薯 / 热辣海枣 ×' + P75 + '%',
-                    'Zombies with this defence reduction deal less chewing damage to these plants: '
-                    + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%');
-            }
-            // ---- 暗影龙葵（追加穿透 + 击退）----
-            if (featOn('nightshade')) {
-                // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
-                const NS_K = gpnPierceText(CFG.nightshade.pierceTargets);
-                addSpecial('nightshade',
-                    NS_K >= 1
-                        ? '身上有暗影能量时，抛出的叶片可穿透' + gpnPierceZh(NS_K) + '个目标，且会把僵尸轻微击退'
-                        : '身上有暗影能量时，抛出的叶片会把僵尸轻微击退',
-                    NS_K >= 1
-                        ? 'When powered by shadow energy, its thrown leaves pierce ' + NS_K
-                            + ' targets and slightly knock zombies back.'
-                        : 'When powered by shadow energy, its thrown leaves slightly knock zombies back.');
-            }
-            // ---- 白萝卜（追加受伤间隔）----
-            if (featOn('turnip')) {
-                addSpecial('turnip', CFG.turnip.damageGateSeconds + ' 秒内只能受到一次伤害',
-                    'Can only take damage once every ' + CFG.turnip.damageGateSeconds + ' seconds.');
-            }
-            // ---- 甜薯（追加回血 + 治疗加成）----
-            if (featOn('sweetpotato')) {
-                const SP_HP = CFG.sweetpotato.selfHealPerSecond;
-                const SP_MULT = Math.round(CFG.sweetpotato.healReceivedMultiplier * 100);
-                addSpecial('sweetpotato', '每秒回复 ' + SP_HP + ' 点生命，且受到的任何治疗 ×' + SP_MULT + '%',
-                    'Recovers ' + SP_HP + ' HP per second, and all healing it receives is ×' + SP_MULT + '%.');
-            }
-            // ---- 高坚果（追加免疫位移 + 抗砸）----
-            if (featOn('tallnut')) {
-                addSpecial('tallnut', '免疫位移', 'Immune to being moved.');
-                const TN_N = Math.max(1, Math.round(1 / CFG.tallnut.smashHpFraction) - 1);
-                addSpecial('tallnut', '可承受砸击 ' + TN_N + ' 次', 'Can withstand ' + TN_N + ' smashes.');
-            }
-            // ---- 香水菇（改现有的「特点」行）----
-            if (featOn('perfumeshroom')) {
-                // 原有的「特点」行保持原话不动，新增能力单独开一条。
-                // !!「啃食伤害降低」其实是 bloomingheart 那个补丁的效果 ——
-                //    所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
-                let PM_ZH = '使僵尸防御降低';
-                let PM_EN = 'Zombies hit have their defence lowered';
-                if (featOn('bloomingheart')) {
-                    PM_ZH += '，且防御降低的僵尸对心蕊、热辣海枣、甜薯造成的啃食伤害降低';
-                    PM_EN += ', and those zombies deal less chewing damage to Blooming Heart, Hot Date and Sweet Potato';
-                }
-                addSpecial('perfumeshroom', PM_ZH, PM_EN + '.');
-            }
-            // ---- 星星果系（追加穿透 / 溅射 / 追击）----
-            if (featOn('starfruit')) {
-                // Intro 保持原版不动（下面这些说明都改成新增 Special）
-                // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
-                //   （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
-                const STAR_K = gpnPierceText(CFG.starfruit.pierceTargets);
-                const PINK_K = gpnPierceText(CFG.starfruit.pinkPierceTargets);
-                const SHOOT_K = gpnPierceText(CFG.starfruit.shootingPierceTargets);
-                const pierceZh = (k, splash) => (k >= 1
-                    ? '子弹可以穿透' + gpnPierceZh(k) + '个目标，并在击中时造成单格' + splash + '溅射伤害'
-                    : '子弹在击中时造成单格' + splash + '溅射伤害');
-                const pierceEn = (k, splash) => (k >= 1
-                    ? 'Its bullets pierce ' + k + ' target(s) and deal a ' + splash + ' splash on hit.'
-                    : 'Its bullets deal a ' + splash + ' splash on hit.');
-                addSpecial('starfruit', pierceZh(STAR_K, '少量'), pierceEn(STAR_K, 'small'));
-                // 追击相关的说明只在"追击开关也开着"时才写
-                const ST_FOLLOW = !!CFG.starfruit.followEnabled;
-                if (ST_FOLLOW) {
-                    // 追击弹比【星星果普攻】多打中几个 = followPierceBonus（默认 1）；= 0 ⇒ 不写"额外穿透"
-                    const FB = gpnFollowPierce() - gpnPierceN(CFG.starfruit.pierceTargets);
-                    addSpecial('starfruit',
-                        FB >= 1
-                            ? '追击子弹可额外穿透' + gpnPierceZh(FB)
-                                + '个目标,溅射伤害继承比略微提高，且极短时间眩晕目标'
-                            : '追击子弹的溅射伤害继承比略微提高，且极短时间眩晕目标',
-                        FB >= 1
-                            ? 'Follow-up bullets pierce ' + FB
-                                + ' extra target(s), inherit a slightly higher splash ratio, and briefly stun the target.'
-                            : 'Follow-up bullets inherit a slightly higher splash ratio and briefly stun the target.');
-                }
-                if (ST_FOLLOW) {
-                    addSpecial('starfruit', '当索敌范围内的目标被流星果、天使星星果攻击时，进行一次追击',
-                        'When a target in its range is attacked by a Shooting Starfruit or Pink Starfruit, it performs a follow-up attack.');
-                }
-                if (ST_FOLLOW) {
-                    // 第 3 条：追击子弹的伤害口径（合并开/关两种说法；数值从 CFG 现算）。
-                    //   这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
-                    const ST_R = Math.round(CFG.starfruit.followDamageRatio * 100);
-                    {
-                        const alST = findAl('starfruit');
-                        if (alST && alST.objdata && Array.isArray(alST.objdata.Special)) {
-                            const keep = alST.objdata.Special.filter((row) => {
-                                const z = row && row.DESCRIPTION && row.DESCRIPTION.zh;
-                                return !(typeof z === 'string'
-                                    && (z.indexOf('追击子弹伤害×') === 0 || z.indexOf('追击在') === 0));
-                            });
-                            if (keep.length !== alST.objdata.Special.length) {
-                                track(alST.objdata, 'Special');
-                                alST.objdata.Special = keep;
-                            }
-                        }
-                    }
-                    if (gpnFollowMergeOn()) {
-                        addSpecial('starfruit',
-                            '追击在' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
-                            + ST_R + '% × Σ(各次触发时的攻击力)',
-                            'If triggered multiple times within ' + CFG.starfruit.followMergeWindow
-                            + ' s, it follows up only once; each bullet deals ' + ST_R
-                            + '% × Σ(the attack power at each trigger).');
-                    } else {
-                        addSpecial('starfruit', '追击子弹伤害×' + ST_R + '%',
-                            'Follow-up bullets deal ×' + ST_R + '% damage.');
-                    }
-                }
-                addSpecial('pinkstarfruit', pierceZh(PINK_K, '少量'), pierceEn(PINK_K, 'small'));
-                addSpecial('shootingstarfruit', pierceZh(SHOOT_K, '中等'), pierceEn(SHOOT_K, 'medium'));
-            }
-            // ---- 暗影油桃（追加削弱说明）----
-            if (featOn('noctarine')) {
-                const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
-                // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
-                const NO_DUR = Math.round(CFG.noctarine.normalLifespan / 20 * 100);
-                addSpecial('noctarine', '造成伤害仅为攻击力的' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
-                    'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
-            }
-            // ---- 蒲公英（原话"一行"→"两颗"）----
-            if (featOn('dandelion')) {
-                const DN_N = 1 + CFG.dandelion.extraShots;
-                writeIntro('dandelion',
-                    '蒲公英向身前的三行中发射' + (DN_N === 2 ? '两' : gpnZhNum(DN_N)) + '颗爆炸性蒲公英子弹。',
-                    'Dandelions fire ' + DN_N + ' explosive dandelion bullets into the three lanes in front of them.');
-                addSpecial('dandelion', '可击晕飞行僵尸，且对其造成更高伤害',
-                    'Stuns flying zombies and deals extra damage to them.');
-            }
-            // ---- 甜椒投手（追加落点灼烧）----
-            if (featOn('pepperpult')) {
-                // 拆成两条：原文整条太长，图鉴那一行会在「清」字处自动折行、排版错位
-                const PP_C = CFG.pepperpult.burnCells;
-                addSpecial('pepperpult',
-                    // 口径：火铺在【子弹的落点】；总伤害按【这一发子弹的伤害】的 burnTotalRatio 算
-                    '命中后，在落点产生 ' + PP_C + '×' + PP_C + ' 的火，持续 '
-                    + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的'
-                    + Math.round(CFG.pepperpult.burnTotalRatio * 100) + '%',
-                    'On hit, it creates a ' + PP_C + '×' + PP_C + ' fire at the landing spot for '
-                    + CFG.pepperpult.burnSeconds + ' second(s). The total damage of a single fire equals '
-                    + Math.round(CFG.pepperpult.burnTotalRatio * 100) + "% of the bullet's damage.");
-                addSpecial('pepperpult', '火焰可清零其中植物的冻结进度',
-                    'The fire also clears the freeze progress of the plants inside it.');
-            }
-            // ---- 飓风甘蓝（原话"本行"→"全屏"）----
-            if (featOn('hurrikale')) {
-                writeIntro('hurrikale', '飓风甘蓝利用强风将全屏的僵尸向后推。',
-                    'Hurrikales push back all zombies on the screen with a chilling wind.');
-                writeBrief('hurrikale', '吹出强寒风，推动所有行的僵尸',
-                    'Blows a strong chilling wind that pushes zombies in every lane.');
-                editSpecial('hurrikale', '飞行僵尸', '吹飞全屏所有的飞行僵尸',
-                    'Blows away every flying zombie on the screen.');
-                const HK_SCALE = CFG.hurrikale.otherLanePushScale;
-                addSpecial('hurrikale',
-                    '非本行的推动力度只有本行的' + (HK_SCALE === 0.5 ? '一半' : Math.round(HK_SCALE * 100) + '%'),
-                    HK_SCALE === 0.5
-                        ? 'Pushes zombies outside its own lane with only half the force.'
-                        : 'Pushes zombies outside its own lane with only ' + Math.round(HK_SCALE * 100) + '% of the force.');
-            }
-            // ---- 魔音甜菜（Phat Beet）----
-            if (featOn('phatbeet')) {
-                const PB_N = CFG.phatbeet.normalStun;
-                const PB_F = CFG.phatbeet.plantfoodStun;
-                const PB_J = CFG.phatbeet.jamClearSeconds;
-                addSpecial('phatbeet', '普通攻击使命中的僵尸眩晕 ' + PB_N + ' 秒',
-                    'Its normal attack stuns the zombies it hits for ' + PB_N + ' second(s).');
-                addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
-                    'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
-                addSpecial('phatbeet', '大招使命中的僵尸眩晕 ' + PB_F + ' 秒并向上击起，并令命中僵尸不受魔音舞台效果影响，持续 ' + PB_J + ' 秒',
-                    'Its Plant Food stuns the zombies it hits for ' + PB_F + ' second(s) and knocks them'
-                    + ' upward, and frees the hit zombies from the current Jam Stage Effect for ' + PB_J + ' second(s).');
-            }
-            // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
-            if (featOn('snowpea')) {
-                writeIntro('snowpea',
-                    '寒冰射手发射寒冰子弹或冰锥，能使僵尸前进变得缓慢或冻结僵尸。',
-                    'Snow Peas fire frozen peas or icicles that slow or freeze zombies.');
-                editSpecial('snowpea', '子弹会对僵尸造成伤害并冰冻',
-                    '子弹会对僵尸造成伤害并冰冻，并有概率发射冻结僵尸的冰锥',
-                    'Its peas damage and chill zombies, and it may fire an icicle that freezes them.');
-            }
-            // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下）----
-            if (featOn('redstinger')) {
-                addSpecial('redstinger', '可以通过鼠标左键点击主动切换形态',
-                    'You can click it with the left mouse button to switch its form at will.');
-                addSpecial('redstinger', '攻击形态火力最强，中间形态攻击可造成微弱击退，并提升一定防御力，防御形态大幅提高防御力',
-                    'Its attack form has the strongest firepower; its middle form attacks knock enemies back slightly and grant extra defence; its defence form greatly boosts its defence.');
-            }
-            // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用）----
-            if (featOn('splitpea')) {
-                // 先找正文那句（更可靠），再退一步找标题「射速」
-                appendLoc('splitpea', ['向后方两倍', '射速'], CFG.splitpea.extraZh, CFG.splitpea.extraEn);
-                // 再加一条能主动操作的特点
-                addSpecial('splitpea', '可以通过鼠标左键点击进行前后互换',
-                    'You can click it with the left mouse button to swap its front and back sides.');
-            }
-            // ---- 暗影夏威夷果：补一条特点（中英）----
-            if (featOn('murkadamia')) {
-                addSpecial('murkadamia', '被暗影强化时本体获得隐身',
-                    'While shadow-boosted, its body becomes invisible.');
-            }
-        }
 
         return true;
     };
 
-    const apply = () => {
-        // 钢地刺：降价 + 打击次数 3 -> 9
+    /**
+     * ★★ 图鉴文案（**独立函数**：从 setField() 里搬出来的，见开发记录 §3.58）★★
+     *   【为什么要搬】原来这 480 多行**被包在 `setField()` 里面**，于是有两个毛病：
+     *     ① `setField()` 有两条**提前返回**（列表为空 / 找不到条目）⇒ 一旦命中，
+     *        图鉴块**整块不执行** ⇒ 图鉴文案悄悄没写（引擎数据晚到时就会这样）；
+     *     ② `apply()` 会调用 `setField()` **二十多次** ⇒ 图鉴块被重复执行二十多遍。
+     *   现在它是独立一步：**与 setField 的成败无关**，且每次 apply **只跑一次**。
+     *   ⚠️ 调用点在 apply() 里，用 try/catch 包住 —— 图鉴写失败不应连累数据补丁的返回值。
+     */
+    const applyAlmanacText = () => {
+    if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
+        const AL = PvZ2ObjectContainer.PlantAlmanac;
+        // 我们名单里的 alias 集合（只对它们做"写不到就 warn"，避免误报）
+        const gpnAlmAliasSet = Object.create(null);
+        for (const _p of GPN_ALM_CHANGED) gpnAlmAliasSet[_p[0]] = true;
+        // ★ findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
+        //   ⚠️ 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
+        //      心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
+        //      万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
+        //      现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
+        const gpnAlmWarned = Object.create(null);
+        const gpnAlmWarnMiss = (what, alias) => {
+            if (!gpnAlmAliasSet[alias]) return;          // 只提醒"我们名单里的"，避免误报
+            if (gpnAlmWarned[alias]) return;             // 每个 alias 只提醒一次（apply 会跑很多遍）
+            gpnAlmWarned[alias] = true;
+            warn('图鉴：' + what + ' 里找不到 alias「' + alias + '」—— 没写进去（请核对拼写）');
+        };
+        const findAl = (alias) => {
+            for (const e of AL) {
+                if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1) return e;
+            }
+            const alt = (alias.slice(-1) === 's') ? alias.slice(0, -1) : (alias + 's');
+            for (const e of AL) {
+                if (e && Array.isArray(e.aliases) && e.aliases.indexOf(alt) !== -1) return e;
+            }
+            return null;
+        };
+        const setLoc = (holder, field, zh, en) => {
+            if (!holder) return false;
+            let o = holder[field];
+            if (!o || typeof o !== 'object') { track(holder, field); holder[field] = {}; o = holder[field]; }
+            if (typeof zh === 'string') { track(o, 'zh'); o.zh = zh; }
+            if (typeof en === 'string') { track(o, 'en'); o.en = en; }
+            return true;
+        };
+        const writeIntro = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e) { gpnAlmWarnMiss('介绍(Introduction)', alias); return false; }
+            return setLoc(e.objdata, 'Introduction', zh, en);
+        };
+        const writeBrief = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e) { gpnAlmWarnMiss('简介(BriefIntroduction)', alias); return false; }
+            return setLoc(e.objdata, 'BriefIntroduction', zh, en);
+        };
+        const addSpecial = (alias, zh, en) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata) { gpnAlmWarnMiss('特点(Special)', alias); return false; }
+            const od = e.objdata;
+            const list = Array.isArray(od.Special) ? od.Special : null;
+            if (list) {
+                for (const row of list) {
+                    const d = row && row.DESCRIPTION;
+                    if (d && d.zh === zh) return true;      // 已经加过（apply 会跑多次）
+                }
+            }
+            track(od, 'Special');
+            od.Special = (list || []).concat([{
+                NAME: { zh: '特点', en: 'Special' },
+                DESCRIPTION: { zh, en },
+            }]);
+            return true;
+        };
+        const editSpecial = (alias, needle, zh, en) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata || !Array.isArray(e.objdata.Special)) return false;
+            for (const row of e.objdata.Special) {
+                const d = row && row.DESCRIPTION;
+                if (!d) continue;
+                const hit = (typeof d.zh === 'string'
+                        && (d.zh.indexOf(needle) !== -1 || (typeof zh === 'string' && d.zh === zh)))
+                    || (typeof d.en === 'string' && d.en.indexOf(needle) !== -1);
+                if (!hit) continue;
+                if (typeof zh === 'string') { track(d, 'zh'); d.zh = zh; }
+                if (typeof en === 'string') { track(d, 'en'); d.en = en; }
+                return true;
+            }
+            warn('图鉴：找不到要改的 Special 行（' + alias + ' / ' + needle + '）');
+            return false;
+        };
+        // 在「含某关键词的那个本地化对象」上【追加】一句。
+        //  图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
+        //  所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
+        const appendLoc = (alias, needles, zhSuffix, enSuffix) => {
+            const e = findAl(alias);
+            if (!e || !e.objdata) { warn('图鉴：找不到这个植物的条目（' + alias + '）'); return false; }
+            const list = Array.isArray(needles) ? needles : [needles];
+            const found = [];       // [{o, path}]
+            const walk = (o, path) => {
+                if (!o || typeof o !== 'object') return;
+                if (typeof o.zh === 'string') found.push({ o: o, path: path || '(root)' });
+                if (Array.isArray(o)) {
+                    o.forEach((x, i) => walk(x, path + '[' + i + ']'));
+                } else {
+                    for (const k of Object.keys(o)) walk(o[k], path ? (path + '.' + k) : k);
+                }
+            };
+            walk(e.objdata, '');
+            let hit = null, hitNeedle = null;
+            for (const nd of list) {                      // 按 given 顺序优先（先找"更像正文"的那句）
+                for (const f of found) {
+                    if (f.o.zh.indexOf(nd) !== -1) { hit = f; hitNeedle = nd; break; }
+                }
+                if (hit) break;
+            }
+            if (!hit) {
+                warn('图鉴：' + alias + ' 里找不到含「' + list.join(' / ') + '」的文案，没改');
+                if (dbgOn(CFG.splitpea.debugLog)) {
+                    // ① 把这个植物自己的所有文案连"路径"打出来
+                    log('  图鉴[' + alias + '] 共有 ' + found.length + ' 条中文文案：');
+                    for (const f of found) log('    ' + f.path + ' = ' + String(f.o.zh).slice(0, 70));
+                    // ② 全表扫一遍：万一这句挂在别的条目/别的表上（只报告，不改）
+                    try {
+                        const needle0 = list[0];
+                        for (const e2 of (AL || [])) {
+                            if (!e2 || !e2.objdata) continue;
+                            const hits2 = [];
+                            const w2 = (o2, p2) => {
+                                if (!o2 || typeof o2 !== 'object') return;
+                                if (typeof o2.zh === 'string' && o2.zh.indexOf(needle0) !== -1) hits2.push(p2);
+                                if (Array.isArray(o2)) o2.forEach((x, i) => w2(x, p2 + '[' + i + ']'));
+                                else for (const k of Object.keys(o2)) w2(o2[k], p2 ? (p2 + '.' + k) : k);
+                            };
+                            w2(e2.objdata, '');
+                            for (const p2 of hits2) {
+                                log('  别处也有一份：aliases=' + JSON.stringify(e2.aliases) + ' 路径=' + p2);
+                            }
+                        }
+                        const fl = PvZ2ObjectContainer && PvZ2ObjectContainer.PlantFeatures;
+                        if (Array.isArray(fl)) {
+                            for (const fe of fl) {
+                                if (!fe || String(fe.CODENAME || '').toLowerCase() !== String(alias).toLowerCase()) continue;
+                                for (const k of Object.keys(fe)) {
+                                    const v = fe[k];
+                                    if (v && typeof v === 'object' && typeof v.zh === 'string') {
+                                        log('  PlantFeatures[' + alias + '].' + k + ' = ' + String(v.zh).slice(0, 70));
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) { /* 没有就算了 */ }
+                }
+                return false;
+            }
+            const d = hit.o;
+            // 【诊断】图鉴追加的"零输出记账"（只在 dump 时输出一次）：
+            //   记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
+            //   用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
+            gpnAlmAppendCalls++;
+            const _zhBefore = (typeof d.zh === 'string') ? d.zh : '';
+            const _zhHitBefore = (typeof zhSuffix === 'string') ? (_zhBefore.indexOf(zhSuffix) !== -1) : null;
+            gpnAlmAppendLog.push({
+                n: gpnAlmAppendCalls,
+                path: hit.path,
+                needle: hitNeedle,
+                hitBefore: _zhHitBefore,
+                lenBefore: _zhBefore.length,
+                tail: _zhBefore.slice(-24),
+            });
+            if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
+                track(d, 'zh'); d.zh = d.zh + zhSuffix;
+                gpnAlmAppendWrites++;
+                // ★ 只在【真的写入】时打日志，且最多打 5 条（2026/10/10 实机定论：这段代码
+                //   每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
+                //   但判据是可靠的 —— 文本【不会】被重复追加，用户实机确认图鉴文案正常）。
+                if (dbgOn(CFG.splitpea.debugLog) && gpnAlmAppendWrites <= 5) {
+                    log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加（第 '
+                        + gpnAlmAppendWrites + ' 次写入；本次是第 ' + gpnAlmAppendCalls + ' 次进入）');
+                }
+            }
+            if (typeof enSuffix === 'string' && typeof d.en === 'string'
+                && d.en.indexOf(enSuffix) === -1) {
+                track(d, 'en'); d.en = d.en + enSuffix;
+            }
+            return true;
+        };
+
+        // 【诊断】把图鉴追加的记账打出来（唯一输出点；只打前 5 条明细 + 汇总）
+        const gpnAlmDump = (why) => {
+            try {
+                log('图鉴【记账 dump】原因：' + why
+                    + '；apply() 累计调用 ' + gpnAlmApplyCalls + ' 次'
+                    + '；appendLoc 进入 ' + gpnAlmAppendCalls + ' 次'
+                    + '；实际写入 zh ' + gpnAlmAppendWrites + ' 次');
+                gpnAlmAppendLog.slice(0, 5).forEach((x) => {
+                    log('   #' + x.n + ' path=' + x.path + ' needle=' + x.needle
+                        + ' 进入时"已含后缀"=' + x.hitBefore + ' 长度=' + x.lenBefore
+                        + ' 尾部="…' + x.tail + '"');
+                });
+                // ★ 关键验证：现在再读一次那份文案，看"我们写的还在不在"
+                //   （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
+                const arr = (typeof findAl === 'function') ? findAl('splitpea') : null;
+                const obj = arr && arr.objdata;
+                let readBack = '(取不到)';
+                if (obj) {
+                    const walk2 = (o) => {
+                        if (!o || typeof o !== 'object') return null;
+                        if (typeof o.zh === 'string' && o.zh.indexOf('向后方两倍') !== -1) return o;
+                        if (Array.isArray(o)) { for (const x of o) { const r2 = walk2(x); if (r2) return r2; } return null; }
+                        for (const k of Object.keys(o)) { const r2 = walk2(o[k]); if (r2) return r2; }
+                        return null;
+                    };
+                    const t2 = walk2(obj);
+                    if (t2) {
+                        const hasIt = (typeof CFG.splitpea.extraZh === 'string') && t2.zh.indexOf(CFG.splitpea.extraZh) !== -1;
+                        readBack = '长度 ' + t2.zh.length + '，是否仍含我们追加的后缀=' + hasIt
+                            + '，出现次数=' + (t2.zh.split(CFG.splitpea.extraZh).length - 1);
+                    } else { readBack = '(找不到含该关键词的文案)'; }
+                }
+                log('   回读验证（splitpea）：' + readBack);
+            } catch (e) { /* 只影响诊断 */ }
+        };
+
+        // ★★★ 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）★★★
+        //   【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
+        //   【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
+        //          ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
+        //          ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
+        //   【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
+        //          之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
+        //          ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
+        //   ⚠ 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
+        if (!GPN_ALM_SNAPSHOT_DONE) {
+            for (const _p of GPN_ALM_CHANGED) {
+                let _e = null;
+                for (const _x of AL) {
+                    if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_p[0]) !== -1) { _e = _x; break; }
+                }
+                if (_e && _e.objdata) GPN_ALM_ORIG.push({ alias: _p[0], od: gpnAlmDeepClone(_e.objdata) });
+            }
+            GPN_ALM_SNAPSHOT_DONE = true;
+            log_alm_snapshot(GPN_ALM_ORIG.length);
+        }
+        for (const _rec of GPN_ALM_ORIG) {
+            let _e = null;
+            for (const _x of AL) {
+                if (_x && Array.isArray(_x.aliases) && _x.aliases.indexOf(_rec.alias) !== -1) { _e = _x; break; }
+            }
+            if (!_e) continue;
+            if (!_e.objdata) _e.objdata = {};
+            const _t = _e.objdata, _o = _rec.od;
+            for (const _k of Object.keys(_t)) {
+                if (!Object.prototype.hasOwnProperty.call(_o, _k)) delete _t[_k];
+            }
+            for (const _k of Object.keys(_o)) _t[_k] = gpnAlmDeepClone(_o[_k]);
+        }
+
+        // ---- 巴豆（追加"所有啃食者一起倒下"）----
+        if (featOn('chilibean')) {
+            // Intro 的中文保持原版不动；英文用带补充的那句
+            writeIntro('chilibean', null,
+                'Chili Beans deliver a crippling bout of gastrointestinal distress. Every zombie that is eating it drops at once.');
+            writeBrief('chilibean', '所有正在啃食它的僵尸一起死亡，并释放眩晕气体',
+                'Every zombie eating it dies together, and releases stunning gas.');
+            editSpecial('chilibean', '吃掉他的僵尸直接死亡',
+                '被僵尸吃下后，杀死所有正在啃食它的僵尸，并释放眩晕气体',
+                'After being eaten, it kills every zombie that is eating it and releases stunning gas.');
+        }
+        // ---- 钢地刺（原话写错：三次 / 3 个）----
         if (featOn('spikerock')) {
-            setField('PlantProps', 'spikerock', 'SunCost', CFG.spikerock.sunCost);
-            setField('PlantProps', 'spikerock', 'MaxSpike', CFG.spikerock.maxSpike);
-            setField('PlantProps', 'spikerock', 'Cooldown', CFG.spikerock.cooldown);
+            const SPK = CFG.spikerock.maxSpike;
+            writeBrief('spikerock', '对走过的僵尸造成伤害，并破坏 ' + SPK + ' 个滚动的物体',
+                'Damages zombies that walk over it, and destroys ' + SPK + ' rolling objects.');
+            editSpecial('spikerock', '能承受滚动前行',
+                '能承受滚动前行的僵尸' + gpnZhNum(SPK) + '次打击',
+                'Can withstand ' + SPK + ' hits from rolling zombies.');
         }
-        // 暗影龙葵：涨价
+        // ---- 心蕊（追加 1×3 + 啃食减伤）----
+        if (featOn('bloomingheart')) {
+            writeIntro('bloominghearts',
+                '心蕊向僵尸投掷子弹，使之本格及其同排左右各一格中的所有僵尸防御力下降。',
+                'Blooming Hearts throw bullets that lower the defence of zombies in its own tile and the tiles one to either side in the same lane.');
+            writeBrief('bloominghearts', '向僵尸投掷子弹，使以命中点为中心 1×3 范围内的僵尸防御力下降',
+                'Throws bullets that lower the defence of zombies in a 1×3 area centred on the hit.');
+            const VDS = CFG.bloomingheart.victimDamageScale || {};
+            const P50 = Math.round((VDS.bloominghearts != null ? VDS.bloominghearts : 0.5) * 100);
+            const P75 = Math.round((VDS.sweetpotato != null ? VDS.sweetpotato : 0.75) * 100);
+            addSpecial('bloominghearts',
+                '被减防的僵尸对这些植物的啃食伤害降低：心蕊 ×' + P50 + '%、甜薯 / 热辣海枣 ×' + P75 + '%',
+                'Zombies with this defence reduction deal less chewing damage to these plants: '
+                + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%.');
+        }
+        // ---- 暗影龙葵（追加穿透 + 击退）----
         if (featOn('nightshade')) {
-            setField('PlantProps', 'nightshade', 'SunCost', CFG.nightshade.sunCost);
+            // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
+            const NS_K = gpnPierceText(CFG.nightshade.pierceTargets);
+            addSpecial('nightshade',
+                NS_K >= 1
+                    ? '身上有暗影能量时，抛出的叶片可穿透' + gpnPierceZh(NS_K) + '个目标，且会把僵尸轻微击退'
+                    : '身上有暗影能量时，抛出的叶片会把僵尸轻微击退',
+                NS_K >= 1
+                    ? 'When powered by shadow energy, its thrown leaves pierce ' + NS_K
+                        + ' targets and slightly knock zombies back.'
+                    : 'When powered by shadow energy, its thrown leaves slightly knock zombies back.');
         }
+        // ---- 白萝卜（追加受伤间隔）----
+        if (featOn('turnip')) {
+            addSpecial('turnip', CFG.turnip.damageGateSeconds + ' 秒内只能受到一次伤害',
+                'Can only take damage once every ' + CFG.turnip.damageGateSeconds + ' seconds.');
+        }
+        // ---- 甜薯（追加回血 + 治疗加成）----
+        if (featOn('sweetpotato')) {
+            const SP_HP = CFG.sweetpotato.selfHealPerSecond;
+            const SP_MULT = Math.round(CFG.sweetpotato.healReceivedMultiplier * 100);
+            addSpecial('sweetpotato', '每秒回复 ' + SP_HP + ' 点生命，且受到的任何治疗 ×' + SP_MULT + '%',
+                'Recovers ' + SP_HP + ' HP per second, and all healing it receives is ×' + SP_MULT + '%.');
+        }
+        // ---- 高坚果（追加免疫位移 + 抗砸）----
+        if (featOn('tallnut')) {
+            addSpecial('tallnut', '免疫位移', 'Immune to being moved.');
+            const TN_N = Math.max(1, Math.round(1 / CFG.tallnut.smashHpFraction) - 1);
+            addSpecial('tallnut', '可承受砸击 ' + TN_N + ' 次', 'Can withstand ' + TN_N + ' smashes.');
+        }
+        // ---- 香水菇（改现有的「特点」行）----
+        if (featOn('perfumeshroom')) {
+            // 原有的「特点」行保持原话不动，新增能力单独开一条。
+            // !!「啃食伤害降低」其实是 bloomingheart 那个补丁的效果 ——
+            //    所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
+            let PM_ZH = '使僵尸防御降低';
+            let PM_EN = 'Zombies hit have their defence lowered';
+            if (featOn('bloomingheart')) {
+                PM_ZH += '，且防御降低的僵尸对心蕊、热辣海枣、甜薯造成的啃食伤害降低';
+                PM_EN += ', and those zombies deal less chewing damage to Blooming Heart, Hot Date and Sweet Potato';
+            }
+            addSpecial('perfumeshroom', PM_ZH, PM_EN + '.');
+        }
+        // ---- 星星果系（追加穿透 / 溅射 / 追击）----
+        if (featOn('starfruit')) {
+            // Intro 保持原版不动（下面这些说明都改成新增 Special）
+            // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
+            //   （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
+            const STAR_K = gpnPierceText(CFG.starfruit.pierceTargets);
+            const PINK_K = gpnPierceText(CFG.starfruit.pinkPierceTargets);
+            const SHOOT_K = gpnPierceText(CFG.starfruit.shootingPierceTargets);
+            const pierceZh = (k, splash) => (k >= 1
+                ? '子弹可以穿透' + gpnPierceZh(k) + '个目标，并在击中时造成单格' + splash + '溅射伤害'
+                : '子弹在击中时造成单格' + splash + '溅射伤害');
+            const pierceEn = (k, splash) => (k >= 1
+                ? 'Its bullets pierce ' + k + ' target(s) and deal a ' + splash + ' splash on hit.'
+                : 'Its bullets deal a ' + splash + ' splash on hit.');
+            addSpecial('starfruit', pierceZh(STAR_K, '少量'), pierceEn(STAR_K, 'small'));
+            // 追击相关的说明只在"追击开关也开着"时才写
+            const ST_FOLLOW = !!CFG.starfruit.followEnabled;
+            if (ST_FOLLOW) {
+                // 追击弹比【星星果普攻】多打中几个 = followPierceBonus（默认 1）；= 0 ⇒ 不写"额外穿透"
+                const FB = gpnFollowPierce() - gpnPierceN(CFG.starfruit.pierceTargets);
+                addSpecial('starfruit',
+                    FB >= 1
+                        ? '追击子弹可额外穿透' + gpnPierceZh(FB)
+                            + '个目标，溅射伤害继承比略微提高，且极短时间眩晕目标'
+                        : '追击子弹的溅射伤害继承比略微提高，且极短时间眩晕目标',
+                    FB >= 1
+                        ? 'Follow-up bullets pierce ' + FB
+                            + ' extra target(s), inherit a slightly higher splash ratio, and briefly stun the target.'
+                        : 'Follow-up bullets inherit a slightly higher splash ratio and briefly stun the target.');
+            }
+            if (ST_FOLLOW) {
+                addSpecial('starfruit', '当索敌范围内的目标被流星果、天使星星果攻击时，进行一次追击',
+                    'When a target in its range is attacked by a Shooting Starfruit or Pink Starfruit, it performs a follow-up attack.');
+            }
+            if (ST_FOLLOW) {
+                // 第 3 条：追击子弹的伤害口径（合并开/关两种说法；数值从 CFG 现算）。
+                //   这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
+                const ST_R = Math.round(CFG.starfruit.followDamageRatio * 100);
+                {
+                    const alST = findAl('starfruit');
+                    if (alST && alST.objdata && Array.isArray(alST.objdata.Special)) {
+                        const keep = alST.objdata.Special.filter((row) => {
+                            const z = row && row.DESCRIPTION && row.DESCRIPTION.zh;
+                            return !(typeof z === 'string'
+                                && (z.indexOf('追击子弹伤害×') === 0 || z.indexOf('追击在') === 0));
+                        });
+                        if (keep.length !== alST.objdata.Special.length) {
+                            track(alST.objdata, 'Special');
+                            alST.objdata.Special = keep;
+                        }
+                    }
+                }
+                if (gpnFollowMergeOn()) {
+                    addSpecial('starfruit',
+                        '追击在 ' + CFG.starfruit.followMergeWindow + ' 秒内被多次触发时只追一次，每颗弹伤害 = '
+                        + ST_R + '% × Σ（各次触发时的攻击力）',
+                        'If triggered multiple times within ' + CFG.starfruit.followMergeWindow
+                        + ' s, it follows up only once; each bullet deals ' + ST_R
+                        + '% × Σ(the attack power at each trigger).');
+                } else {
+                    addSpecial('starfruit', '追击子弹伤害×' + ST_R + '%',
+                        'Follow-up bullets deal ×' + ST_R + '% damage.');
+                }
+            }
+            addSpecial('pinkstarfruit', pierceZh(PINK_K, '少量'), pierceEn(PINK_K, 'small'));
+            addSpecial('shootingstarfruit', pierceZh(SHOOT_K, '中等'), pierceEn(SHOOT_K, 'medium'));
+        }
+        // ---- 暗影油桃（追加削弱说明）----
+        if (featOn('noctarine')) {
+            const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
+            // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
+            const NO_DUR = Math.round(CFG.noctarine.normalLifespan / 20 * 100);
+            addSpecial('noctarine', '造成伤害仅为攻击力的 ' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
+                'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
+        }
+        // ---- 蒲公英（原话"一行"→"两颗"）----
+        if (featOn('dandelion')) {
+            const DN_N = 1 + CFG.dandelion.extraShots;
+            writeIntro('dandelion',
+                '蒲公英向身前的三行中发射' + (DN_N === 2 ? '两' : gpnZhNum(DN_N)) + '颗爆炸性蒲公英子弹。',
+                'Dandelions fire ' + DN_N + ' explosive dandelion bullets into the three lanes in front of them.');
+            addSpecial('dandelion', '可击晕飞行僵尸，且对其造成更高伤害',
+                'Stuns flying zombies and deals extra damage to them.');
+        }
+        // ---- 甜椒投手（追加落点灼烧）----
+        if (featOn('pepperpult')) {
+            // 拆成两条：原文整条太长，图鉴那一行会在「清」字处自动折行、排版错位
+            const PP_C = CFG.pepperpult.burnCells;
+            addSpecial('pepperpult',
+                // 口径：火铺在【子弹的落点】；总伤害按【这一发子弹的伤害】的 burnTotalRatio 算
+                '命中后，在落点产生 ' + PP_C + '×' + PP_C + ' 的火，持续 '
+                + CFG.pepperpult.burnSeconds + ' 秒。单次火焰总伤害为子弹的 '
+                + Math.round(CFG.pepperpult.burnTotalRatio * 100) + '%',
+                'On hit, it creates a ' + PP_C + '×' + PP_C + ' fire at the landing spot for '
+                + CFG.pepperpult.burnSeconds + ' second(s). The total damage of a single fire equals '
+                + Math.round(CFG.pepperpult.burnTotalRatio * 100) + "% of the bullet's damage.");
+            addSpecial('pepperpult', '火焰可清零其中植物的冻结进度',
+                'The fire also clears the freeze progress of the plants inside it.');
+        }
+        // ---- 飓风甘蓝（原话"本行"→"全屏"）----
+        if (featOn('hurrikale')) {
+            writeIntro('hurrikale', '飓风甘蓝利用强风将全屏的僵尸向后推。',
+                'Hurrikales push back all zombies on the screen with a chilling wind.');
+            writeBrief('hurrikale', '吹出强寒风，推动所有行的僵尸',
+                'Blows a strong chilling wind that pushes zombies in every lane.');
+            editSpecial('hurrikale', '飞行僵尸', '吹飞全屏所有的飞行僵尸',
+                'Blows away every flying zombie on the screen.');
+            const HK_SCALE = CFG.hurrikale.otherLanePushScale;
+            addSpecial('hurrikale',
+                '非本行的推动力度只有本行的' + (HK_SCALE === 0.5 ? '一半' : Math.round(HK_SCALE * 100) + '%'),
+                HK_SCALE === 0.5
+                    ? 'Pushes zombies outside its own lane with only half the force.'
+                    : 'Pushes zombies outside its own lane with only ' + Math.round(HK_SCALE * 100) + '% of the force.');
+        }
+        // ---- 魔音甜菜（Phat Beet）----
+        if (featOn('phatbeet')) {
+            const PB_N = CFG.phatbeet.normalStun;
+            const PB_F = CFG.phatbeet.plantfoodStun;
+            const PB_J = CFG.phatbeet.jamClearSeconds;
+            addSpecial('phatbeet', '普通攻击使命中的僵尸眩晕 ' + PB_N + ' 秒',
+                'Its normal attack stuns the zombies it hits for ' + PB_N + ' second(s).');
+            addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
+                'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
+            addSpecial('phatbeet', '大招使命中的僵尸眩晕 ' + PB_F + ' 秒并向上击起，并令命中僵尸不受魔音舞台效果影响，持续 ' + PB_J + ' 秒',
+                'Its Plant Food stuns the zombies it hits for ' + PB_F + ' second(s) and knocks them'
+                + ' upward, and frees the hit zombies from the current Jam Stage Effect for ' + PB_J + ' second(s).');
+        }
+        // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
+        if (featOn('snowpea')) {
+            writeIntro('snowpea',
+                '寒冰射手发射寒冰子弹或冰锥，能使僵尸前进变得缓慢或冻结僵尸。',
+                'Snow Peas fire frozen peas or icicles that slow or freeze zombies.');
+            editSpecial('snowpea', '子弹会对僵尸造成伤害并冰冻',
+                '子弹会对僵尸造成伤害并冰冻，并有概率发射冻结僵尸的冰锥',
+                'Its peas damage and chill zombies, and it may fire an icicle that freezes them.');
+        }
+        // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下）----
+        if (featOn('redstinger')) {
+            addSpecial('redstinger', '可以通过鼠标左键点击主动切换形态',
+                'You can click it with the left mouse button to switch its form at will.');
+            addSpecial('redstinger', '攻击形态火力最强，中间形态攻击可造成微弱击退，并提升一定防御力，防御形态大幅提高防御力',
+                'Its attack form has the strongest firepower; its middle form attacks knock enemies back slightly and grant extra defence; its defence form greatly boosts its defence.');
+        }
+        // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用）----
+        if (featOn('splitpea')) {
+            // 先找正文那句（更可靠），再退一步找标题「射速」
+            appendLoc('splitpea', ['向后方两倍', '射速'], CFG.splitpea.extraZh, CFG.splitpea.extraEn);
+            // 再加一条能主动操作的特点
+            addSpecial('splitpea', '可以通过鼠标左键点击进行前后互换',
+                'You can click it with the left mouse button to swap its front and back sides.');
+        }
+        // ---- 暗影夏威夷果：补一条特点（中英）----
+        if (featOn('murkadamia')) {
+            addSpecial('murkadamia', '被暗影强化时本体获得隐身',
+                'While shadow-boosted, its body becomes invisible.');
+        }
+    }
+    };
+
+
+    const apply = () => {
+        // ★ 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
+        const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
+        if (!Box) { warn('数据补丁：容器不可用，这次没落下去'); return false; }
+        // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
+        gpnAlmApplyCalls++;
+        const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
+        // 钢地刺：降价 + 打击次数 3 -> 9
+        //  ⚠️【即时生效改造·数据类样板】这里**不再**用 `featOn` 包住赋值，而是"开/关都写"：
+        //   开 ⇒ 写我们的值；关 ⇒ 写回原版值（ORIG）。这样开关一改、再调一次 `apply()`
+        //   就能立刻改回去（`setField` 就是直接赋值 ⇒ 重复 apply 幂等）。
+        //   注意：**已经翻开的卡片 / 已经种下的植物**可能仍用旧值 ⇒ 界面上这类开关要标注
+        //   "下次进关卡生效"（官方文档也是这个口径）。
+        setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost);
+        setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : VANILLA.spikerock.maxSpike);
+        setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
+        // 暗影龙葵：涨价 —— ★不再用 featOn 包住整段（否则关掉时这段根本不执行 ⇒ 永远不会写回 75）。
+        //   写成"每次都跑、开/关都写"的两态形式：apply() 一跑就自动还原。
+        setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
         // 高坚果：免疫位移。这是原版字段，vanilla 里只有 turnip(白萝卜) 和 gravebuster 开了它。
         // 注意【不要】动 canBeChied()：那个开关是「整体打断气功 + 保护身后」，不是我们要的。
         // 只开这个字段的效果 = 橄榄车/抛掷/舞王推/渔夫钩 全部无效，但气功照常对其它植物生效、
         //                        高坚果自己原地不动（pushPlantLeft 对它的格子返回 false）。
         // 时空黑洞(ChiHole) 走的是 canBeChied()，不看这个字段 ⇒ 高坚果照样被吸走，符合预期。
-        if (featOn('tallnut')) {
-            setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
-            // v2.8.2：种植冷却 20 -> 30 秒
-            if (CFG.tallnut.cooldown > 0) {
-                setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', CFG.tallnut.cooldown);
-            }
-        }
+        // ★ 两态（不再用 featOn 包整段，否则关掉时不会还原）
+        // boolean field: write only when ON; when OFF restore the original shape (delete if absent)
+        if (featOn('tallnut')) setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
+        else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
+        setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
 
-        // 星星果系：阳光 + 12 条弹道的穿透/溅射
-        if (featOn('starfruit')) {
-            // !! v2.8.2 补：CFG 里一直有 sunCost:125，但【从来没有写进数据】——
-            //    v2.8.1 之前游戏里星星果一直是 150 阳光。这里补上。
-            setField('PlantProps', 'starfruit', 'SunCost', CFG.starfruit.sunCost);
-            // 本次：天使星星果 175 阳光、流星果 550 阳光（原版 500）+ 种植冷却 10 秒
-            setField('PlantProps', 'pinkstarfruit', 'SunCost', CFG.starfruit.pinkSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'SunCost', CFG.starfruit.shootingSunCost);
-            setField('PlantProps', 'shootingstarfruit', 'Cooldown', CFG.starfruit.shootingCooldown);
+        // 星星果系：阳光/冷却（★两态，挪到包裹外）+ 12 条弹道的穿透/溅射（开=写、关=删）
+        setField('PlantProps', 'starfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.sunCost : VANILLA.starfruit.sunCost);
+        setField('PlantProps', 'pinkstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.pinkSunCost : VANILLA.starfruit.pinkSunCost);
+        setField('PlantProps', 'shootingstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.shootingSunCost : VANILLA.starfruit.shootingSunCost);
+        setField('PlantProps', 'shootingstarfruit', 'Cooldown', featOn('starfruit') ? CFG.starfruit.shootingCooldown : VANILLA.starfruit.shootingCooldown);
+        {
             const STAR_PRJ = ['star', 'star1', 'star2', 'star_pf',
                 'pinkstar', 'pinkstar1', 'pinkstar2', 'pinkstar_pf',
                 'shootingstar', 'shootingstar1', 'shootingstar2', 'shootingstar_pf'];
             const list = PvZ2ObjectContainer.ProjectileProps;
+            const onStar = featOn('starfruit');
             if (Array.isArray(list)) {
                 for (const e of list) {
                     if (!e || !Array.isArray(e.aliases)) continue;
                     if (!e.aliases.some((a) => STAR_PRJ.indexOf(a) !== -1)) continue;
                     if (!e.objdata) e.objdata = {};
                     const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (!onStar) {
+                        // ★ 关掉 ⇒ 清掉我们打过的全部标记与溅射条目（原版星果弹道没有这些字段）
+                        putAbsent(PIERCE_KEY);
+                        putAbsent(PIERCE_ALWAYS_KEY);
+                        putAbsent(SPLASH_RATIO_KEY);
+                        putAbsent(STAR_KIND_KEY);
+                        putAbsent('SplashDamage');
+                        continue;
+                    }
                     // v2.8.0：标出这条弹道属于哪一株（A2 追击的触发判定要用）
                     const kind = gpnStarKindOf(e.aliases[0]);
                     // v1.0.0：三种星果的穿透各自一份；钳制后 = 1 ⇒ 干脆不打穿透标记
@@ -1018,10 +1716,13 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
         }
         // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用）----
-        if (featOn('dandelion')) {
-            setField('PlantProps', 'dandelion', 'SunCost', CFG.dandelion.sunCost);
+        // ★ 阳光两态放到包裹外面（否则关掉时整段不执行 ⇒ 不还原）
+        setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
+        // ★ 弹道标记也两态：关掉时清掉标记（原来是"只在开着时写" ⇒ 关掉后标记残留）
+        {
             const DANDELION_KIND = { dandelion: 'normal', dandelion_blew: 'blew', dandelion_pf: 'pf' };
             const dlist = PvZ2ObjectContainer.ProjectileProps;
+            const onD = featOn('dandelion');
             if (Array.isArray(dlist)) {
                 for (const e of dlist) {
                     if (!e || !Array.isArray(e.aliases)) continue;
@@ -1030,83 +1731,135 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                         if (!kind) continue;
                         if (!e.objdata) e.objdata = {};
                         track(e.objdata, DANDELION_KIND_KEY);
-                        e.objdata[DANDELION_KIND_KEY] = kind;
+                        if (onD) e.objdata[DANDELION_KIND_KEY] = kind;
+                        else { try { delete e.objdata[DANDELION_KIND_KEY]; } catch (e2) { /* ignore */ } }
                     }
                 }
             }
         }
         // ---- 魔音甜菜：阳光（改回原版 150）----
-        if (featOn('phatbeet')) {
-            setField('PlantProps', CFG.phatbeet.plantType, 'SunCost', CFG.phatbeet.sunCost);   // 魔音甜菜 阳光：改回原版 150
+        // ★ 两态：魔音甜菜的阳光值恰好 = 原版 150（历史上曾改高再改回），写成两态更安全
+        {
+            const _v = gpnVanilla('PlantProps', CFG.phatbeet.plantType, 'SunCost');
+            setField('PlantProps', CFG.phatbeet.plantType, 'SunCost', featOn('phatbeet') ? CFG.phatbeet.sunCost : _v.value);
         }
         // ---- 大蒜：每口固定伤害 / 阳光 / 冷却（引擎字段就是 ReceivesDamageWhenEaten、Cooldown）----
-        if (featOn('garlic')) {
-            setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', CFG.garlic.eatDamage);
-            setField('PlantProps', CFG.garlic.plantType, 'SunCost', CFG.garlic.sunCost);
-            setField('PlantProps', CFG.garlic.plantType, 'Cooldown', CFG.garlic.cooldown);
-        }
+        // ★ 两态（大蒜：被啃伤害 / 阳光 / 冷却）
+        setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', featOn('garlic') ? CFG.garlic.eatDamage : VANILLA.garlic.eatDamage);
+        setField('PlantProps', CFG.garlic.plantType, 'SunCost', featOn('garlic') ? CFG.garlic.sunCost : VANILLA.garlic.sunCost);
+        setField('PlantProps', CFG.garlic.plantType, 'Cooldown', featOn('garlic') ? CFG.garlic.cooldown : VANILLA.garlic.cooldown);
         // ---- 红针花：承伤倍率（越小越肉）+ 半防御半攻击形态的子弹击退 ----
-        if (featOn('redstinger')) {
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', CFG.redstinger.tier1);
-            setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', CFG.redstinger.tier2);
-            setField('PlantProps', CFG.redstinger.plantType, 'SunCost', CFG.redstinger.sunCost);
-            // 击退：inArea1（半防御半攻击）专用弹道是 redstinger_weak ——
-            //   引擎 RedStinger.animationListener 里 inArea==1 时走 PeaTypeWeak，别名就是它，别的形态/植物都不用这条 ⇒
-            //   直接写数据即可（引擎在 specialOnObjdataSet 里把这三个字段搬到子弹上，命中时自己调 knockBack）。
-            //   两个附加字段与「飞天豌豆 / 暗影龙葵」同一口径：地面推不挑飞 + 不打断已有击退。
-            {
-                const plist = PvZ2ObjectContainer.ProjectileProps;
-                if (Array.isArray(plist)) {
-                    for (const e of plist) {
-                        if (!e || !Array.isArray(e.aliases)) continue;
-                        if (e.aliases.indexOf('redstinger_weak') === -1) continue;
-                        if (!e.objdata) e.objdata = {};
-                        const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+        // ★ 三项两态（承伤倍率 / 阳光）
+        setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', featOn('redstinger') ? CFG.redstinger.tier1 : VANILLA.redstinger.tier1);
+        setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', featOn('redstinger') ? CFG.redstinger.tier2 : VANILLA.redstinger.tier2);
+        setField('PlantProps', CFG.redstinger.plantType, 'SunCost', featOn('redstinger') ? CFG.redstinger.sunCost : VANILLA.redstinger.sunCost);
+        // ---- 红针花 inArea1 的「子弹击退」：★两态 ----
+        //   原版 redstinger_weak 只有 Damage/Size（已核对 Objects/ProjectileProps.json）
+        //   ⇒ 开：写三个击退字段；关：**删掉**它们（恢复原版弹道）。
+        {
+            const plist = PvZ2ObjectContainer.ProjectileProps;
+            const onRs = featOn('redstinger');
+            if (Array.isArray(plist)) {
+                for (const e of plist) {
+                    if (!e || !Array.isArray(e.aliases)) continue;
+                    if (e.aliases.indexOf('redstinger_weak') === -1) continue;
+                    if (!e.objdata) e.objdata = {};
+                    const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (onRs) {
                         put('KnockbackDistance', CFG.redstinger.knockbackDistance);
                         put('CancelsKnockbackFlying', true);
                         put('CannotInterruptOtherKnockback', true);
+                    } else {
+                        putAbsent('KnockbackDistance');
+                        putAbsent('CancelsKnockbackFlying');
+                        putAbsent('CannotInterruptOtherKnockback');
                     }
                 }
             }
         }
         // ---- 裂荚射手：阳光【显式写回原版 200】（原注释错写成「200 -> 225」；写一遍防被别的 mod 改掉）----
-        if (featOn('splitpea')) {
-            setField('PlantProps', CFG.splitpea.plantType, 'SunCost', CFG.splitpea.sunCost);
-        }
+        setField('PlantProps', CFG.splitpea.plantType, 'SunCost', featOn('splitpea') ? CFG.splitpea.sunCost : VANILLA.splitpea.sunCost);   // ★两态：关掉写回原版 125
         // ---- 寒冰射手：单格范围冰减速 + 概率冰锥（伤害跟随寒冰射手）----
-        if (featOn('snowpea')) {
+        //  ★ 两态化：开=写数据+建冰锥；关=**删掉**弹道溅射、**移除**克隆冰锥、写回原版两字段。
+        //     （原来整块被 featOn 包住 ⇒ 关掉时不执行 ⇒ 冰锥与单格减速都还在。）
+        {
             const SP = CFG.snowpea, PC = PvZ2ObjectContainer;   // 容器是 makeDataPatcher 的入参
+            const onSP = featOn('snowpea');
             const pea = (PC.ProjectileProps || []).find((x) => x && (x.aliases || []).indexOf(SP.peaType) !== -1);
             const peaDmg = pea && pea.objdata ? pea.objdata.Damage : null;
-            setField('ProjectileProps', SP.peaType, 'SplashDamage',
-                [{ ChillDuration: SP.chillDuration, Range: { w: 1, h: 1 } }]);
-            const spike = gpnCloneProjectile(PC, SP.cloneFrom, SP.spikeAlias, (od) => {
-                od.ChillDuration = SP.chillDuration;
-                od.FreezeDuration = SP.freezeDuration;
-                od.SplashDamage = [{ ChillDuration: SP.chillDuration,
-                    FreezeDuration: SP.splashFreezeDuration, Range: { w: 1, h: 1 } }];
-                if (peaDmg != null) od.Damage = peaDmg;
-            });
-            if (spike) {
-                // ★ 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
+            const findIdx = (arr, alias) => Array.isArray(arr) ? arr.findIndex((x) => x && (x.aliases || []).indexOf(alias) !== -1) : -1;
+            if (onSP) {
+                setField('ProjectileProps', SP.peaType, 'SplashDamage',
+                    [{ ChillDuration: SP.chillDuration, Range: { w: 1, h: 1 } }]);
+                const spike = gpnCloneProjectile(PC, SP.cloneFrom, SP.spikeAlias, (od) => {
+                    od.ChillDuration = SP.chillDuration;
+                    od.FreezeDuration = SP.freezeDuration;
+                    od.SplashDamage = [{ ChillDuration: SP.chillDuration,
+                        FreezeDuration: SP.splashFreezeDuration, Range: { w: 1, h: 1 } }];
+                    if (peaDmg != null) od.Damage = peaDmg;
+                });
+                if (spike) {
+                    // ★ 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
+                    try {
+                        const tl = PC.ProjectileTypes;
+                        if (Array.isArray(tl) && !tl.some((x) => (x.aliases || []).indexOf(SP.spikeAlias) !== -1)) {
+                            const ts = tl.find((x) => (x.aliases || []).indexOf(SP.cloneFrom) !== -1);
+                            if (ts) tl.push({ objclass: ts.objclass, aliases: [SP.spikeAlias],
+                                objdata: Object.assign({}, ts.objdata) });
+                        }
+                    } catch (e) { warn('寒冰射手：ProjectileTypes 注册失败', e); }
+                    setField('PlantProps', SP.plantType, 'ChanceToFreeze', SP.freezeChance);
+                    setField('PlantProps', SP.plantType, 'PeaFreezeType', SP.spikeAlias);
+                } else { warn('寒冰射手：冰锥没建起来，ChanceToFreeze 保持原样'); }
+            } else {
+                // ---- 关掉：把寒冰射手还原成原版 ----
                 try {
-                    const tl = PC.ProjectileTypes;
-                    if (Array.isArray(tl) && !tl.some((x) => (x.aliases || []).indexOf(SP.spikeAlias) !== -1)) {
-                        const ts = tl.find((x) => (x.aliases || []).indexOf(SP.cloneFrom) !== -1);
-                        if (ts) tl.push({ objclass: ts.objclass, aliases: [SP.spikeAlias],
-                            objdata: Object.assign({}, ts.objdata) });
+                    // ★ 原版 pea_snow 没有 SplashDamage（已核对 Objects/ProjectileProps.json：
+                    //    只有 Damage:20 / ChillDuration:10 / IceBlockSize / Size）⇒ 直接删除。
+                    //    ⚠️ 不能用 gpnVanilla 取「原值」：首次 apply 时我们已经先写了 SplashDamage，
+                    //       那时记录到的就是「我们自己的值」，还原时等于又写回去（实机诊断抓到的 BUG）。
+                    const pi = findIdx(PC.ProjectileProps, SP.peaType);
+                    if (pi >= 0 && PC.ProjectileProps[pi].objdata) {
+                        track(PC.ProjectileProps[pi].objdata, 'SplashDamage');
+                        try { delete PC.ProjectileProps[pi].objdata.SplashDamage; } catch (e2) { /* ignore */ }
                     }
-                } catch (e) { warn('寒冰射手：ProjectileTypes 注册失败', e); }
-                setField('PlantProps', SP.plantType, 'ChanceToFreeze', SP.freezeChance);
-                setField('PlantProps', SP.plantType, 'PeaFreezeType', SP.spikeAlias);
-            } else { warn('寒冰射手：冰锥没建起来，ChanceToFreeze 保持原样'); }
+                    const si = findIdx(PC.ProjectileProps, SP.spikeAlias);
+                    if (si >= 0) PC.ProjectileProps.splice(si, 1);          // 原版没有这个弹道 ⇒ 删掉
+                    const ti = findIdx(PC.ProjectileTypes, SP.spikeAlias);
+                    if (ti >= 0) PC.ProjectileTypes.splice(ti, 1);
+                    // 【诊断】寒冰射手还原后的运行时状态（只在 verboseLog 打开时打印）
+                    if (verboseOn()) try {
+                        const _dump = (alias) => {
+                            const hit = (PC.ProjectileProps || []).filter((x) => x && (x.aliases || []).indexOf(alias) !== -1);
+                            if (!hit.length) return alias + '=(无此条目)';
+                            return hit.map((x) => {
+                                const o = x.objdata || {};
+                                const sd = o.SplashDamage;
+                                return alias + '[chill=' + (o.ChillDuration === undefined ? '-' : o.ChillDuration)
+                                    + ',freeze=' + (o.FreezeDuration === undefined ? '-' : o.FreezeDuration)
+                                    + ',splash=' + (sd === undefined ? '无' : (Array.isArray(sd) ? ('有(' + sd.length + ')') : '有(非数组)')) + ']';
+                            }).join(' + ');
+                        };
+                        const _types = (PC.ProjectileTypes || []).filter((x) => x && (x.aliases || []).indexOf(SP.spikeAlias) !== -1).length;
+                        const _p = (PC.PlantProps || []).filter((x) => x && (x.aliases || []).indexOf(SP.plantType) !== -1)[0];
+                        const _po = (_p && _p.objdata) || {};
+                        log('【Q5诊断】' + _dump(SP.peaType) + ' ｜ ' + _dump(SP.spikeAlias) + ' ｜ ' + _dump('pea_snow1') + ' ｜ ' + _dump('pea_snow2')
+                            + ' ｜ ProjectileTypes 含' + SP.spikeAlias + '=' + _types + ' 个'
+                            + ' ｜ 寒冰射手 ChanceToFreeze=' + _po.ChanceToFreeze + ' PeaFreezeType=' + _po.PeaFreezeType);
+                    } catch (eD) { clog('【Q5诊断】出错：' + eD); }
+                } catch (eC) { warn('寒冰射手：还原时出错', eC); }
+            }
+            setField('PlantProps', SP.plantType, 'ChanceToFreeze', onSP ? SP.freezeChance : 0);
+            setField('PlantProps', SP.plantType, 'PeaFreezeType', onSP ? SP.spikeAlias : SP.peaType);
         }
         // 甜椒投手：阳光 + 种植冷却 + 灼烧标记
+        // ★ 两态：阳光/冷却挪到包裹外（关掉时必须写回原版 200/20）
+        setField('PlantProps', 'pepperpult', 'SunCost', featOn('pepperpult') ? CFG.pepperpult.sunCost : VANILLA.pepperpult.sunCost);
+        setField('PlantProps', 'pepperpult', 'Cooldown', featOn('pepperpult') ? CFG.pepperpult.packetCooldown : VANILLA.pepperpult.cooldown);
         if (featOn('pepperpult')) {
-            setField('PlantProps', 'pepperpult', 'SunCost', CFG.pepperpult.sunCost);
             // !! v2.8.2 修：真实字段叫 Cooldown，不叫 PacketCooldown ——
             //    之前写错了名字，等于凭空加了个没人读的字段，游戏里冷却一直是 20 秒。
-            setField('PlantProps', 'pepperpult', 'Cooldown', CFG.pepperpult.packetCooldown);
             // 给甜椒弹道打上「落地要灼烧」的私有标记。
             // v2.7.1 修正：运行时 ProjectileProps 用的是【小写对象别名】
             //   pepper / pepper1 / pepper2 / pepper_pf，
@@ -1135,7 +1888,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (!e.aliases.some((a) => want.indexOf(a) !== -1)) continue;
                     if (!e.objdata) e.objdata = {};
                     track(e.objdata, BURN_RATIO_KEY);
-                    e.objdata[BURN_RATIO_KEY] = CFG.pepperpult.burnTotalRatio;
+                    // ★ 两态：开=打标记；关=删掉标记（否则关掉后落地/护盾/障碍仍会铺火）
+                    if (featOn('pepperpult')) e.objdata[BURN_RATIO_KEY] = CFG.pepperpult.burnTotalRatio;
+                    else { try { delete e.objdata[BURN_RATIO_KEY]; } catch (e2) { /* ignore */ } }
                     pepHit++;
                 }
                 if (!pepHit) {
@@ -1145,11 +1900,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
-        if (featOn('noctarine')) {
-            setField('PlantProps', 'noctarine', 'SunCost', CFG.noctarine.sunCost);
-            // 注意：油桃有【两个】伤害来源 —— 数据里的 Actions 爆炸（一次性）和毒气云每跳伤害。
-            // v2.5.0 只改了后者，所以实测还是掉 20。这里把爆炸也一起减半。
+        // ★ 阳光两态放到包裹外面
+        setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
+        // ★ 油桃的 Actions 爆炸伤害：**两态**，且原值一律取自 track 的第一次记录。
+        //   为什么放在 featOn 外面：关掉开关时也必须还原（原来放在里面 ⇒ 关掉后不还原）。
+        //   为什么不用局部变量记原值：第一次 apply 时 track 还没数据，会把"已乘过的值"当原值 ⇒ 连乘。
+        {
             const plist = PvZ2ObjectContainer.PlantProps;
+            const on = featOn('noctarine');
             if (Array.isArray(plist)) {
                 for (const e of plist) {
                     if (!e || !Array.isArray(e.aliases) || e.aliases.indexOf('noctarine') === -1) continue;
@@ -1157,8 +1915,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (!Array.isArray(acts)) continue;
                     for (const act of acts) {
                         if (!act || typeof act.Damage !== 'number' || act.Damage <= 0) continue;
-                        track(act, 'Damage');            // track 对任意对象都适用
-                        act.Damage = act.Damage * CFG.noctarine.damageScale;
+                        track(act, 'Damage');                      // 只在第一次记录原值
+                        const rec = undo.find((r) => r.objdata === act && r.key === 'Damage');
+                        const baseDmg = (rec && typeof rec.old === 'number') ? rec.old : act.Damage;
+                        act.Damage = on ? baseDmg * CFG.noctarine.damageScale : baseDmg;
                     }
                 }
             }
@@ -1168,20 +1928,79 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 注意：击退【不在这里】—— 它是逐发按暗影态在 _shoot 里设的（见 makeNightShadePatch），
         //       否则非暗影态的子弹也会带击退（v2.4.2 的 BUG）。
         const prjs = PvZ2ObjectContainer.ProjectileProps;
-        if (featOn('nightshade') && Array.isArray(prjs) && prjs.length) {
-            for (const e of prjs) {
-                if (!e || !Array.isArray(e.aliases)) continue;
-                if (!e.aliases.some((a) => typeof a === 'string' && a.indexOf('nightshade') === 0)) continue;
-                if (!e.objdata) e.objdata = {};
-                const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
-                put('CancelsKnockbackFlying', true);          // 与飞天豌豆一致：地面推，不挑飞
-                put('CannotInterruptOtherKnockback', true);   // 与飞天豌豆一致：不打断已有击退
-                // 穿透数同样走统一钳制（小数向下取整 / < 1 ⇒ 1）；1 = 不穿透 ⇒ 干脆不写标记
-                const nsPierce = gpnPierceN(CFG.nightshade.pierceTargets);
-                if (nsPierce >= 2) put(PIERCE_KEY, nsPierce);
-                else { track(e.objdata, PIERCE_KEY); delete e.objdata[PIERCE_KEY]; }
+        {
+            const onNs = featOn('nightshade');
+            if (Array.isArray(prjs) && prjs.length) {
+                for (const e of prjs) {
+                    if (!e || !Array.isArray(e.aliases)) continue;
+                    if (!e.aliases.some((a) => typeof a === 'string' && a.indexOf('nightshade') === 0)) continue;
+                    if (!e.objdata) e.objdata = {};
+                    const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
+                    const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
+                    if (onNs) {
+                        put('CancelsKnockbackFlying', true);          // 与飞天豌豆一致：地面推，不挑飞
+                        put('CannotInterruptOtherKnockback', true);   // 与飞天豌豆一致：不打断已有击退
+                        // 穿透数同样走统一钳制（小数向下取整 / < 1 ⇒ 1）；1 = 不穿透 ⇒ 干脆不写标记
+                        const nsPierce = gpnPierceN(CFG.nightshade.pierceTargets);
+                        if (nsPierce >= 2) put(PIERCE_KEY, nsPierce);
+                        else putAbsent(PIERCE_KEY);
+                    } else {
+                        // ★ 关掉 ⇒ 清掉我们打过的字段（原版 nightshade 弹道没有它们）
+                        putAbsent('CancelsKnockbackFlying');
+                        putAbsent('CannotInterruptOtherKnockback');
+                        putAbsent(PIERCE_KEY);
+                    }
+                }
             }
         }
+        // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
+        //   排查完把 gpnAlmTempVerbose 改回 false 即静默）
+        _almDumpTail('apply() 结束');
+        // 【诊断】打印"apply 自己看到的开关"与"它算出来的值"（只在 verboseLog 打开时打印）
+        if (verboseOn()) try {
+            gpnApplyCount = (gpnApplyCount || 0) + 1;
+            const _findSun = (alias) => {
+                try {
+                    const bx = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+                    const list = bx && bx.PlantProps;
+                    if (!Array.isArray(list)) return '?';
+                    const hit = list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf(alias) !== -1)[0];
+                    return (hit && hit.objdata) ? hit.objdata.SunCost : '?';
+                } catch (e) { return 'err'; }
+            };
+            let _engineSun = '?', _sameRef = '?', _typeId = '?';
+            try {
+                const _PM = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
+                if (_PM && typeof _PM.getPlantProps === 'function' && typeof CFG !== 'undefined') {
+                    _typeId = 'nightshade';   // ★ 修 BUG：CFG.nightshade 没有 plantType 字段（之前传 undefined ⇒ 引擎回退成豌豆射手）
+                    const _gp = _PM.getPlantProps(_typeId);
+                    if (_gp) {
+                        _engineSun = _gp.SunCost;
+                        const _bx = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+                        const _list = _bx && _bx.PlantProps;
+                        const _ours = Array.isArray(_list) ? _list.filter((e) => e && Array.isArray(e.aliases) && e.aliases.indexOf('nightshade') !== -1)[0] : null;
+                        _sameRef = (_ours && _ours.objdata === _gp) ? '同一个' : '★不是同一个';
+                    } else { _engineSun = 'getPlantProps返回空'; }
+                } else { _engineSun = '拿不到 getPlantProps'; }
+            } catch (eE) { _engineSun = 'err:' + eE; }
+            log('[数据补丁·apply] 第' + gpnApplyCount + '次 ｜ 开关: nightshade=' + featOn('nightshade')
+                + ' ｜ 我方读到=' + _findSun('nightshade') + ' ｜ 引擎读到=' + _engineSun
+                + (function () {
+                    try {
+                        const _PM2 = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
+                        if (_PM2 && typeof _PM2.getPlantProps === 'function') {
+                            const _gp2 = _PM2.getPlantProps(CFG.nightshade.plantType);
+                            return ' ｜ 引擎视角龙葵=' + (_gp2 ? _gp2.SunCost : '空');
+                        }
+                        return ' ｜ 引擎视角=拿不到 plants';
+                    } catch (e) { return ' ｜ 引擎视角=err'; }
+                })()
+                + ' ｜ 同一对象? ' + _sameRef + ' ｜ 实例=' + GPN_INSTANCE_ID);
+        } catch (e) { /* 只影响诊断 */ }
+        // ★ 图鉴文案：**独立一步**（原来是寄生在 setField 里 ⇒ setField 提前返回时整块不跑）。
+        //   放在数据补丁之后：它只用 PvZ2ObjectContainer + CFG + 开关，不依赖前面算了什么；
+        //   而"关掉后还原成原版"靠的是块内的「原件快照 + 每次重建」（见开发记录 §3.54/§3.58）。
+        try { applyAlmanacText(); } catch (eAlm) { warn("图鉴文本：这次没落下去", eAlm); }
         return undo.length > 0;
     };
 
@@ -1194,7 +2013,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         undo.length = 0;
     };
 
-    return { apply, revert };
+    // _undoCount：自检用（只读）—— 看"已记录的原值条数"有没有增长。
+    //   ⚠ 必须挂在这里：`undo` 是 makeDataPatcher 的**内部变量**，模块级导出闭包看不到它。
+    return { apply, revert, _undoCount: () => undo.length };
 }
 
 /* =========================================================================
@@ -1228,10 +2049,14 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
     };
 
     const patchedFart = function (stunDuration, poison) {
+        if (!featOn('chilibean')) return originals.fart.call(this, stunDuration, poison);   // 【运行期开关】
         if (this.__gpnQuiet) { quietKill(this); return; }
         return originals.fart.call(this, stunDuration, poison);
     };
-    Zombie.prototype.chilibeanFart = patchedFart;
+    // 包装后的函数存成变量：下面 isImmune 用「是否重写过 chilibeanFart」判天然免疫，
+    // 必须与挂在原型上的那个函数是同一个引用（否则所有僵尸都会被判成免疫）。
+    const gatedFart = gpnGatedBody(originals.fart, 'chilibean', patchedFart);
+    Zombie.prototype.chilibeanFart = gatedFart;
     recs.push({ Cls: Zombie, name: 'chilibeanFart', original: originals.fart });
 
     /** 对巴豆免疫吗？判据一：重写过 chilibeanFart（引擎的原生免疫机制）；判据二：补漏名单 */
@@ -1239,7 +2064,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
     const arbiterRe = /arbiter/i;
     const isImmune = (z) => {
         if (!z || typeof z.chilibeanFart !== 'function') return true;
-        if (z.chilibeanFart !== patchedFart) return true;
+        if (z.chilibeanFart !== gatedFart) return true;
         const code = z.Zombie_Type || '';
         return extraMechRe.test(code) || arbiterRe.test(code);
     };
@@ -1267,7 +2092,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         return true;
     };
 
-    ChiliBean.prototype.specialPlantOnEaten = function (dmg, zombie, hpBefore, hpAfter) {
+    ChiliBean.prototype.specialPlantOnEaten = gpnGatedBody(originals.onEaten, 'chilibean', function (dmg, zombie, hpBefore, hpAfter) {
         if (!(hpAfter <= 0) || !zombie) return;              // 和原版一致：只有被啃死才触发
 
         const factor = (this.MintBoosted && this.objdataOwn.MintStunDurationFactor > 0)
@@ -1304,7 +2129,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
                 eaters[i].__gpnQuiet = false;
             }
         }
-    };
+    });
     recs.push({ Cls: ChiliBean, name: 'specialPlantOnEaten', original: originals.onEaten });
 
     return { recs };
@@ -1321,7 +2146,7 @@ function makeSpikerockPatch(SpikerockPlant) {
     }
     const original = SpikerockPlant.prototype.setSpikeSlot;
 
-    SpikerockPlant.prototype.setSpikeSlot = function (remain) {
+    SpikerockPlant.prototype.setSpikeSlot = gpnGatedBody(original, 'spikerock', function (remain) {
         const max = (this._objdataOwn && this._objdataOwn.MaxSpike) || CFG.spikerock.maxSpike;
         if (remain === undefined || remain === null) remain = max;
         remain = Math.ceil(remain);
@@ -1334,7 +2159,7 @@ function makeSpikerockPatch(SpikerockPlant) {
         const r = original.call(this, stage >= teeth ? max : stage);
         if (remain > 0) this.spikeLeft = remain;                    // 修正回真实剩余次数
         return r;
-    };
+    });
     return { Cls: SpikerockPlant, name: 'setSpikeSlot', original };
 }
 
@@ -1350,6 +2175,8 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square) {
     const original = Shot.prototype.beforeZombieHit;
 
     Shot.prototype.beforeZombieHit = function (zombie) {
+        // 【运行期开关】关掉 ⇒ 只走原版单体命中，不再把 debuff 扩散成 1×3
+        if (!featOn('bloomingheart')) return original.call(this, zombie);
         if (!zombie || !zombie.inLnC || !zombie.inLane) return original.call(this, zombie);
 
         // 以命中目标所在格为中心、同排 3 格宽的判定框
@@ -1393,7 +2220,7 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
     }
     const original = NightShadePlant.prototype._shoot;
 
-    NightShadePlant.prototype._shoot = function (isFood) {
+    NightShadePlant.prototype._shoot = gpnGatedBody(original, 'nightshade', function (isFood) {
         const self = this;
         // 原版 _shoot 是 async 且没有返回值，这里保持行为一致，只多打一个标记
         return (async () => {
@@ -1435,7 +2262,7 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
             }
             return shot;
         })();
-    };
+    });
     return { Cls: NightShadePlant, name: '_shoot', original };
 }
 
@@ -1523,6 +2350,25 @@ let gpnZoyTableLogged = false;               // 腐尸豆荚召唤表是【静�
 let gpnNullWriteTotal = 0;                     // 「有人写 null」被拦下的累计次数（护栏统计）
 let gpnNullWriteDetail = 0;                    // 已经打过【详细】日志（含写入者堆栈）的条数
 let gpnNullWriteQuiet = false;                 // 是否已经打过「后续不再逐条打印」那句
+let gpnSpSelfHealTotal = 0;                    // 裂荚「每帧自愈」把渲染缩放重新翻回来的累计次数（诊断用）
+let gpnSpSelfHealSpots = 0;                    // 自愈"待上报"的计数（每 5 秒清零并汇总一行）
+let gpnSpSelfHealFirstStack = '';              // 首次复位时的调用栈（只抓一次；用于"是谁把翻转清掉的"）
+let gpnSpSelfHealQuiet = false;                // 一次汇总后短暂静音（避免同一帧内连打多行）
+let gpnSpSelfHealLastReport = 0;               // 上次汇总的时间戳
+// body 缩放纠正（MGP 开大丢翻转的真因修复）的统计
+let gpnSpBodyFixTotal = 0;
+let gpnSpBodyFixSpots = 0;
+let gpnSpBodyFixFirstStack = '';
+let gpnSpBodyFixLastReport = 0;
+// 【诊断】图鉴追加的零输出记账（默认不输出，只在 dump 时打一次）
+let gpnAlmApplyCalls = 0;      // dataPatch.apply() 被调用次数
+let gpnAlmAppendCalls = 0;     // appendLoc() 进入次数（= 命中并走到写入分支）
+let gpnAlmAppendWrites = 0;    // 其中"判据通过、真的写了 zh"的次数
+const gpnAlmAppendLog = [];    // 前若干条明细
+// ⚠️【临时诊断开关】排查"图鉴文案重复 50 次"期间置 true ⇒ 每次 apply() 后打一次记账+dump。
+//   **2026/10/10 已查清**：那段代码每次 apply 都会执行 ⇒ 日志刷 ~50 行，但判据可靠、文本不重复
+//   （用户实机确认图鉴文案正常）⇒ 现改回 false（静默）。要再排查时置回 true 即可。
+let gpnAlmTempVerbose = false;
 const GPN_NULL_WRITE_DETAIL_MAX = 2;           // 前几条打详细；之后只累计（要全量时把这个数字调大）
 /** 现场诊断用：把一个字段"长什么样"压缩成短字符串 */
 function gpnShape(v) {
@@ -1882,6 +2728,7 @@ function makePiercePatch(CommonShot, CharacterType, ZombieDamageDetails, ZombieE
                 this.__gpnBurnRatio = (raw && raw[BURN_RATIO_KEY] != null) ? raw[BURN_RATIO_KEY] : 0;
                 this.__gpnBurned = false;   // 池化复用：每发子弹只烧一次
                 this.__gpnUmbrellaBlocked = false;  // 池化复用：这一发被伞叶挡下的标记必须复位
+                this.__gpnReflectBy = null;         // 池化复用：「是谁反弹的」标记必须复位（弄臣/三节棍）
                 this.__gpnStarKind = (raw && raw[STAR_KIND_KEY]) ? String(raw[STAR_KIND_KEY]) : '';
                 this.__gpnDandelionKind = (raw && raw[DANDELION_KIND_KEY]) ? String(raw[DANDELION_KIND_KEY]) : '';
                 this.__gpnPierce = null;    // 弹道有对象池，穿透状态必须复位
@@ -1949,6 +2796,7 @@ function makeSweetPotatoPatch(Plant) {
     // Plant.heal 是所有治疗的唯一入口（芦荟的 aloeHealingParticle、仙桃的 heal3x3 都走它）。
     // 挂在基类上 + 用 Plant_Type 判定，所以不管甜薯的预制体实际挂哪个类都会命中。
     Plant.prototype.heal = function (amount) {
+        if (!featOn('sweetpotato')) return recHeal.original.apply(this, arguments);   // 【运行期开关】
         if (this.Plant_Type === KEY) {
             const mult = CFG.sweetpotato.healReceivedMultiplier;
             if (mult > 0 && mult !== 1 && typeof amount === 'number') amount *= mult;
@@ -1959,6 +2807,7 @@ function makeSweetPotatoPatch(Plant) {
 
     // ---- B. 每秒自回血（挂在基类 characterUpdate 上，甜薯没有重写它）----
     Plant.prototype.characterUpdate = function (dt) {
+        if (!featOn('sweetpotato')) return recUpdate.original.apply(this, arguments);   // 【运行期开关】
         const r = recUpdate.original.call(this, dt);
         if (this.Plant_Type === KEY && !this.dead) {
             const rate = CFG.sweetpotato.selfHealPerSecond;
@@ -2006,6 +2855,7 @@ function makeTurnipPatch(Plant) {
     if (typeof rec.original !== 'function') { warn('跳过白萝卜：Plant 上没有 defaultDealNormalDamage'); return null; }
 
     Plant.prototype.defaultDealNormalDamage = function (dmg, type) {
+        if (!featOn('turnip')) return rec.original.apply(this, arguments);   // 【运行期开关】
         if (this.Plant_Type === KEY) {
             if (this.__gpnHitLocked) return this.health;      // 锁没解开：这次伤害整体作废
             this.__gpnHitLocked = true;
@@ -2037,6 +2887,10 @@ function makeBloomingHeartVictimPatch(Plant) {
 
     // 引擎：Plant.eat(dmg, zombie) -> this.dealDamage(dmg, 0)
     Plant.prototype.eat = function (dmg, zombie) {
+        // 【运行期开关】关掉 ⇒ 原版啃食
+        //   ⚠️ 必须是 `rec.original`（作用域里没有 `original` 这个名字）。
+        //   曾写成 `original.call(...)` ⇒ 每次啃食都抛 ReferenceError ⇒ **所有植物无敌**（实机 203 次报错）。
+        if (!featOn('bloomingheart')) return rec.original.call(this, dmg, zombie);
         const mult = SCALE[normalizeType(this.Plant_Type)];
         if (mult !== undefined && typeof dmg === 'number' && dmg > 0
             && zombie && zombie.BloomingHeartDefenceRateList
@@ -2077,6 +2931,7 @@ function makePerfumeDurationPatch(PerfumeShroomPlant) {
     }
     const rec = methodRecord(PerfumeShroomPlant, 'explode');
     PerfumeShroomPlant.prototype.explode = function () {
+        if (!featOn('perfumeshroom')) return rec.original.apply(this, arguments);   // 【运行期开关】
         try {
             if (this._objdataOwn && this._objdataOwn.Duration !== want) this._objdataOwn.Duration = want;
         } catch (e) { /* 拿不到就按原版跑，不影响功能 */ }
@@ -2136,6 +2991,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     // 兜底取特效：真实心蕊命中时它会把 prefab 传进来，顺手缓存
     if (recPush) {
         Zombie.prototype.pushBloomingHeartDefenceRateList = function (list, par) {
+            if (!featOn('perfumeshroom')) return recPush.original.call(this, list, par);   // 【运行期开关】
             if (par && !buff.par) { buff.par = par; log('减防特效 prefab 已缓存（来自真实心蕊命中）'); }
             return recPush.original.call(this, list, par);
         };
@@ -2154,6 +3010,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     for (let i = 0; i < CFG.perfumeshroom.layers; i++) layerList.push(CFG.bloomingheart.debuffLayer);
 
     Fire.prototype.updateAsJalapenoFire = function (dt, rect) {
+        if (!featOn('perfumeshroom')) return recFire.original.call(this, dt, rect);   // 【运行期开关】
         const r = recFire.original.call(this, dt, rect);
         try {
             if (!this.dead && this.inLnC) {
@@ -2267,6 +3124,7 @@ function makeTallnutPatch(WallNut, PrimalWallNut) {
 
     WallNut.prototype.normalSmash = function (attacker) {
         if (normalizeType(this.Plant_Type) !== KEY) return rec.original.call(this, attacker);
+        if (!featOn('tallnut')) return rec.original.call(this, attacker);   // 【运行期开关】关掉 ⇒ 原版砸击
         if (primal) return primal.call(this, attacker);
         // 兜底内联（PrimalWallNut 没导入成功时）
         if (this.fooding || this.invincible) return;
@@ -2295,6 +3153,7 @@ function makeNoctarineGasPatch(Particle) {
     const rec = methodRecord(Particle, '_attack');
     Particle.prototype._attack = function () {
         // SlowsZombies 是暗影态标记（explode() 里赋的）
+        if (!featOn('noctarine')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版毒气伤害
         const v = this.SlowsZombies ? CFG.noctarine.shadowAttackDamage : CFG.noctarine.normalAttackDamage;
         const keep = this.AttackDamage;
         if (v > 0) this.AttackDamage = v;
@@ -2312,7 +3171,7 @@ function makeNoctarinePatch(NoctarinePlant) {
     if (typeof NoctarinePlant.prototype.explode !== 'function') { warn('跳过暗影油桃：没有 explode'); return null; }
 
     const rec = methodRecord(NoctarinePlant, 'explode');
-    NoctarinePlant.prototype.explode = function () {
+    NoctarinePlant.prototype.explode = gpnGatedBody(rec.original, 'noctarine', function () {
         const od = this.objdataOwn;
         if (od) {
             if (CFG.noctarine.normalLifespan > 0) od.NormalLifespan = CFG.noctarine.normalLifespan;
@@ -2325,7 +3184,7 @@ function makeNoctarinePatch(NoctarinePlant) {
             }
         }
         return rec.original.apply(this, arguments);
-    };
+    });
     return rec;
 }
 
@@ -2342,7 +3201,7 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
     if (typeof ZoybeanPodPlant.prototype.summon !== 'function') { warn('跳过腐尸豆荚：没有 summon'); return null; }
 
     const rec = methodRecord(ZoybeanPodPlant, 'summon');
-    ZoybeanPodPlant.prototype.summon = function () {
+    ZoybeanPodPlant.prototype.summon = gpnGatedBody(rec.original, 'zoybeanpod', function () {
         const od = this.objdataOwn;
         if (od) {
             // 每次都重写（不依赖上次的状态，池化复用也安全）
@@ -2356,7 +3215,7 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
             }
         }
         return rec.original.apply(this, arguments);
-    };
+    });
     return rec;
 }
 
@@ -2515,6 +3374,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
         const recLane = methodRecord(DandelionPlant, 'getEnemyLane');
         DandelionPlant.prototype.getEnemyLane = function () {
             try {
+                if (!featOn('dandelion')) return recLane.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版索敌
                 if (this.blew) return -2;                              // 吹风恢复期：保留引擎语义
                 if (this.isAirRaidPlant) return recLane.original.apply(this, arguments);
                 const off = gpnDandelionPickLaneFirst(this);
@@ -2531,6 +3391,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     if (typeof DandelionPlant.prototype.detectEnemy === 'function') {
         const recDet = methodRecord(DandelionPlant, 'detectEnemy');
         DandelionPlant.prototype.detectEnemy = function () {
+            if (!featOn('dandelion')) return recDet.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版索敌（不再额外一颗子弹）
             try {
                 return gpnDandelionCandidates(this).some((c) => c.zombies.length || c.tombs.length);
             } catch (e) { warn('蒲公英索敌出错', e); }
@@ -2543,6 +3404,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     const rec = methodRecord(DandelionPlant, 'animationListener');
     DandelionPlant.prototype.animationListener = function (e) {
         const r = rec.original.apply(this, arguments);
+        if (!featOn('dandelion')) return r;   // 【运行期开关】关掉 ⇒ 不再多发一颗子弹（这就是它真正的实现处）
         try {
             const n = CFG.dandelion.extraShots;
             if (n > 0 && e && e.name === 'Shoot' && !this.fooding && !this.isAirRaidPlant
@@ -2573,6 +3435,8 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
     if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const recD = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect, details, o) {
+            // 【运行期开关】关掉 ⇒ 不做"对飞行/BOSS 伤害×2 + 眩晕"（原样走引擎）
+            if (!featOn('dandelion')) return recD.original.apply(this, arguments);
             let info = null;
             try {
                 if (z && this.__gpnDandelionKind) info = gpnDandelionHitInfo(z, this.__gpnDandelionKind);
@@ -2650,15 +3514,19 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {
     //   伤害口径（总伤害 = 攻击力 x 40%、1 秒）和外观（3x3 地面火）两边完全一样。
     const plantSide = !!(deps.CharacterType && shot.enemyType === deps.CharacterType.plant);
 
-    // ★★ 伞叶 / 回旋镖射手：被弹反的甜椒弹是【投掷物】，本来就该被它们挡住。
-    //    引擎为什么挡不住：`Plant.dealDamage` 里那条"伞叶吸收"只在【伤害类型 1】时才走，
-    //    而类型是这么定的 —— `this.bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
-    //    可弹反（三节棍 / 小丑）偏偏会 `bodyLinearVelocity *= -1` ⇒ 下落的弹变成"上升" ⇒ 类型 2 ⇒ 伞叶判定整条被跳过。
-    //    这里把两条判定都补回来（只有 plantSide = 被弹反的投掷物才查，直线弹一律不查）：
-    //      ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开（只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）
-    //      ② 按植物：由调用方（dealDamageToPlant 钩子）先查"目标植物 3×3 内有没有 umbrella()" ⇒ 见 gpnUmbrellaAbsorbs
-    //    一旦被挡：打上标记 ⇒ 后面所有入口（再撞植物 / 落地 / 打障碍物）都不再产生任何火。
-    if (plantSide) {
+    // ★★ 伞叶 / 回旋镖射手 对"被反弹的甜椒弹"的判定（**按弹反来源区分**，2026/10/10 用户口径）：
+    //    · **弄臣僵尸**（dark_juggler / birthday_juggler）反弹的 ⇒ **不再算投掷物** ⇒
+    //      **不该**被伞叶 / 回旋镖挡下（也就不该被"按位置"弹开）；
+    //    · **三节棍僵尸**（abbot_3section_staff）反弹的 ⇒ **仍算投掷物** ⇒ 照旧可被挡（保持原行为）。
+    //   两条判定的由来（当初为"补引擎漏判"而加，逐字核对过引擎）：
+    //     ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开
+    //        （只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）；
+    //     ② 按植物：由调用方（dealDamageToPlant 钩子）查"目标植物 3×3 内有没有 umbrella()"。
+    //   为什么需要 ② 之外的引擎兜底：`Plant.dealDamage` 那条"伞叶吸收"只在【伤害类型 1】时才走
+    //   —— 而类型是 `bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
+    //   ⚠️ 所以"弄臣反弹的弹不被挡"必须【主动】做到：见 gpnPepperEnforceReflect（把它的
+    //      bodyLinearVelocity 钉成 0 ⇒ 引擎判不出"下落" ⇒ 不吸收；同时也跳过我们的 ①②）。
+    if (plantSide && !(shot.__gpnReflectBy === 'juggler')) {
         const byPos = gpnUmbrellaBlocksByPos(shot, deps.Umbrellas);
         if (byPos || shot.__gpnUmbrellaBlocked) {
             shot.__gpnUmbrellaBlocked = true;
@@ -2865,6 +3733,44 @@ function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
     return blocked;
 }
 
+
+
+
+/* 寒冰射手金卡：把"数据层"改金卡的动作抽成可重复调用的函数（开=金卡，关=还原）
+ *  · 数据层 = PlantFeatures[].OBTAINWORLD（引擎卡面 getPlantBGSpriteByObtainWorld 读它）
+ *  · 显示层 = Plants.getBGAnm 钩子（运行期现查 featOn('snowpea')）
+ *  用户在配置界面切换 snowpea ⇒ 立刻调用本函数（数据立即生效）；卡面在"进入关卡/重开图鉴"重建卡面时随之变化。 */
+let gpnSnowPeaGoldApply = null;
+
+/* 【临时诊断】阶段⓪ 可行性验证用的按键处理与"数据补丁引用"（调查结束整段删除） */
+let gpnTestToggles = null;
+let gpnTestToggles2 = null;
+let gpnApplyDataPatch = null;
+
+/* ============================================================================
+ * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
+ *
+ * 引擎的伞叶吸收只认"投掷物"，而"是不是投掷物"是这么算的（`CommonShot.detectPlant`）：
+ *     var n = o.bodyLinearVelocity < 0 && e.haveUmbrellaNearby();
+ *     o.dealDamageToPlant(e) && ( n || o.dealSplashDamage(...), o.pop() )
+ * 其中 `bodyLinearVelocity` 会被"反弹"改掉（弄臣抛接 / 三节棍翻速度）⇒ 判定飘忽。
+ *
+ * 用户口径：**弄臣僵尸反弹的弹不再算投掷物** ⇒ 我们把它钉成 `0`：
+ *     bodyLinearVelocity = 0  ⇒  `0 < 0` 为假 ⇒ 引擎判定"不是投掷物" ⇒ 伞叶不吸收。
+ * 这样：
+ *   · 伞叶 / 回旋镖**挡不住**弄臣反弹的甜椒弹（要的效果）；
+ *   · **普通**甜椒弹（仍是 zombie 阵营、正常下落）完全不受影响；
+ *   · **三节棍**反弹的弹（`__gpnReflectBy === 'staff'`）**照样**是投掷物 ⇒ 可被挡（保持原行为）。
+ * ⚠️ 只动这一发的 `bodyLinearVelocity`（它只用于"抛接/下落"的观感与上面那条判定），
+ *    不改速度、伤害、火焰、阵营 —— 反弹弹该有的伤害与铺火一律保留。
+ * ========================================================================== */
+function gpnPepperEnforceReflect(shot) {
+    try {
+        if (!shot || shot.__gpnReflectBy !== 'juggler') return;
+        if (shot.bodyLinearVelocity !== 0) shot.bodyLinearVelocity = 0;
+    } catch (e) { /* 绝不影响游戏 */ }
+}
+
 /* ---------------- 植物阵营的火（被弹反的甜椒弹专用） ----------------
  *  引擎里的"僵尸方火焰"是怎么写的（逐行核对过 0.14.0 的引擎）：
  *    · 住持火把僵尸 AbbotTorchZombie.detectPlant（喷火）：
@@ -2971,10 +3877,13 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const rec = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
+            // 【运行期开关】关掉「甜椒投手」⇒ 不再补灼烧（下面那句"反射速度归零"的 BUG 修复保留）
+            const _pepOn = featOn('pepperpult');
+            gpnPepperEnforceReflect(this);   // 【修 BUG】同上（兜底：任何命中入口都保证已归零）
             const r = rec.original.apply(this, arguments);
             try {
                 // isDirect === false 的是溅射伤害，不重复烧
-                if (isDirect !== false && this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
+                if (_pepOn && isDirect !== false && this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(命中)出错', e); }
             return r;
         };
@@ -2983,11 +3892,84 @@ function makePepperBurnPatch(CommonShot, deps) {
         warn('跳过甜椒灼烧：commonShot 上没有 dealDamageToZombie');
     }
 
+    // ---- 【修 BUG】记录"是谁反弹的"：弄臣 vs 三节棍，两者行为要求【不同】 ----
+    //   用户口径（2026/10/10 补充）：
+    //     · **弄臣僵尸**（`dark_juggler` 及其节日变种 `birthday_juggler`）反弹的子弹
+    //       ⇒ **不再算投掷物** ⇒ 不该被伞叶 / 回旋镖射手挡下；
+    //     · **三节棍僵尸**（`abbot_3section_staff`）反弹的子弹 ⇒ **仍算投掷物** ⇒ 该被挡（保持现状，不动它）。
+    //   为什么必须打标记：**两者在引擎里都只是把 `enemyType` 翻成 `plant`**
+    //   （`DarkJesterZombie` / `Abbot3SectionStaffZombie.reverseCSs`），光看阵营分不出来。
+    //   两条路径完全不同（逐字核对 1.5.5 bundle）：
+    //     · 弄臣：`DarkJesterZombie.commonShotPopOnTouch(shot)` 先把子弹"接住抛接"（返回 false 阻止 pop）；
+    //     · 三节棍：`Abbot3SectionStaffZombie.reverseCSs()`（该类独有，无 commonShotPopOnTouch）直接翻速度+阵营。
+    //   ⚠️ 两处都是"调用原函数【之后】补一个我们自己的标记"，**不改变引擎任何行为**。
+    //   ⚠️ 这两个类是【独立模块】（`chunks:///_virtual/DarkJesterZombie.ts` 等），所以从 setup 的
+    //      IMPORTS 里导入后传进来（见 `deps.DarkJesterZombieCls` / `Abbot3SectionStaffCls`）。
+    const _gpnSpShort = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    /** 拿一个对象的类名（Cocos 的 cc.js.getClassName；拿不到就返回空串） */
+    const _gpnSpClassName = (o) => {
+        try {
+            const ccg = (typeof cc !== 'undefined' && cc) ? cc : null;
+            if (ccg && ccg.js && typeof ccg.js.getClassName === 'function') return String(ccg.js.getClassName(o) || '');
+        } catch (e) { /* 忽略 */ }
+        try { return (o && o.constructor && o.constructor.name) ? String(o.constructor.name) : ''; } catch (e) { return ''; }
+    };
+    /**
+     * 判定"这一发是被谁反弹的"。
+     * ⚠️ 必须**双条件**（2026/10/10 用户指出：弄臣还有**复活节变体**，而它的代号里【没有】juggler）：
+     *    · 主判据 = **类名**：`DarkJesterZombie`（弄臣系，含节日/复活节等换装变体）/ `Abbot3SectionStaffZombie`（三节棍）；
+     *    · 兜底 = **Zombie_Type 名字**：含 juggler ⇒ 弄臣；含 3section ⇒ 三节棍。
+     *   两个都拿不到就返回 null（不打标记 ⇒ 维持引擎原样，宁可漏也不误判）。
+     */
+    const gpnReflectOwner = (z) => {
+        try {
+            if (!z) return null;
+            const cn = _gpnSpShort(_gpnSpClassName(z));      // 例：'darkjesterzombie' / 'abbot3sectionstaffzombie'
+            const tn = _gpnSpShort(z.Zombie_Type);           // 例：'darkjuggler' / 'birthdayjuggler' / 'easter…'
+            if (cn.indexOf('darkjester') !== -1 || cn.indexOf('jester') !== -1) return 'juggler';
+            if (cn.indexOf('3section') !== -1 || cn.indexOf('abbot3') !== -1) return 'staff';
+            if (tn.indexOf('juggler') !== -1) return 'juggler';
+            if (tn.indexOf('3section') !== -1) return 'staff';
+            return null;
+        } catch (e) { return null; }
+    };
+    const gpnMarkReflect = (shot, owner) => {
+        try {
+            if (!shot || !owner) return;
+            shot.__gpnReflectBy = owner;
+        } catch (e) { /* 只影响诊断 */ }
+    };
+    /** 给一个僵尸类挂"反弹标记钩子"：调用原函数之后，把它碰过的子弹按类名/Zombie_Type 打上 owner */
+    const gpnHookReflector = (Cls, methName) => {
+        try {
+            const P2 = Cls && Cls.prototype;
+            if (!P2 || typeof P2[methName] !== 'function') return false;
+            const recR = methodRecord(Cls, methName);
+            P2[methName] = function () {
+                const r = recR.original.apply(this, arguments);
+                try {
+                    const owner = gpnReflectOwner(this);
+                    if (owner) for (let i = 0; i < arguments.length; i++) gpnMarkReflect(arguments[i], owner);
+                } catch (e) { /* 只影响诊断 */ }
+                return r;
+            };
+            recs.push(recR);
+            return true;
+        } catch (e) { return false; }
+    };
+    (() => {
+        const okJ = gpnHookReflector(deps && deps.DarkJesterZombieCls, 'commonShotPopOnTouch');
+        gpnHookReflector(deps && deps.Abbot3SectionStaffCls, 'reverseCSs');   // 三节棍：只打标记，行为不变
+        // 只在"真的挂不上"时留一条警告（正常游戏不输出）：挂不上 ⇒ 弄臣反弹的弹仍可能被伞叶挡
+        if (!okJ) warn('甜椒反弹标记：没能挂上弄臣僵尸的 commonShotPopOnTouch（反弹弹可能仍被伞叶挡）');
+    })();
+
     // 触地 -> 烧（引擎在 hitFloor 里调 specialOnGroundHit）
     if (typeof CommonShot.prototype.specialOnGroundHit === 'function') {
         const rec2 = methodRecord(CommonShot, 'specialOnGroundHit');
         CommonShot.prototype.specialOnGroundHit = function () {
             const r = rec2.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 触地不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(触地)出错', e); }
@@ -3006,6 +3988,7 @@ function makePepperBurnPatch(CommonShot, deps) {
         const rec3 = methodRecord(CommonShot, 'hitFloor');
         CommonShot.prototype.hitFloor = function () {
             const r = rec3.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 落地不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(落地)出错', e); }
@@ -3029,6 +4012,7 @@ function makePepperBurnPatch(CommonShot, deps) {
             // 先把格子取出来：原版在这之前已经 dealDamage 过，障碍物可能已经被打碎
             const cell = tomb && tomb.inLnC;
             const r = rec4.original.apply(this, arguments);
+            if (!featOn('pepperpult')) return r;   // 【运行期开关】关掉 ⇒ 打障碍物不铺火
             try {
                 if (this.__gpnBurnRatio > 0) gpnPepperBurnAt(this, deps, cell);
             } catch (e) { warn('甜椒灼烧(障碍物)出错', e); }
@@ -3052,8 +4036,12 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.dealDamageToPlant === 'function') {
         const rec5 = methodRecord(CommonShot, 'dealDamageToPlant');
         CommonShot.prototype.dealDamageToPlant = function (plant) {
+            gpnPepperEnforceReflect(this);   // 【修 BUG】弄臣反弹的弹先"去投掷物化"，再让引擎判伞叶（这条始终保留）
+            if (!featOn('pepperpult')) return rec5.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 不做伞叶/铺火判定
             // 只对【被弹反的投掷物】生效：enemyType 翻成 plant 且带灼烧标记（= 我们的甜椒弹）
-            const isLobbedHostile = this.__gpnBurnRatio > 0 && deps.CharacterType
+            // ⚠️ 但**弄臣僵尸反弹的**不算投掷物 ⇒ 完全不走我们这两条伞叶判定（也不播格挡动画）
+            const jugglerReflected = (this.__gpnReflectBy === 'juggler');
+            const isLobbedHostile = !jugglerReflected && this.__gpnBurnRatio > 0 && deps.CharacterType
                 && this.enemyType === deps.CharacterType.plant;
             if (isLobbedHostile && !this.__gpnUmbrellaBlocked && gpnUmbrellaAbsorbs(plant)) {
                 this.__gpnUmbrellaBlocked = true;     // 这一发已被挡下 ⇒ 落地 / 打障碍物也都不会再铺火
@@ -3084,6 +4072,7 @@ function makePepperBurnPatch(CommonShot, deps) {
     if (typeof CommonShot.prototype.splat === 'function') {
         const rec6 = methodRecord(CommonShot, 'splat');
         CommonShot.prototype.splat = function () {
+            if (!featOn('pepperpult')) return rec6.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 被护盾吸收时也不铺火
             try {
                 if (this.__gpnBurnRatio > 0 && !this.__gpnBurned) gpnPepperBurnAt(this, deps);
             } catch (e) { warn('甜椒灼烧(被吸收)出错', e); }
@@ -3125,11 +4114,19 @@ function makePushSkipPatch(FootballMech) {
     if (!FootballMech) { warn('跳过推植物修正：拿不到 footballmech'); return null; }
 
     const recs = [];
-    const build = (prop, toward, dirSign, awayArgs) => {
+    // ★ 先把两个原方法存到类上（必须在包裹之前）—— 供"运行期门禁"原样回退用
+    //   注意别写成 __gpn* 之外的名字：引擎/别的 mod 不会用到这种带前缀的键。
+    try {
+        FootballMech.__gpnOrigLeft = FootballMech.pushPlantLeft;
+        FootballMech.__gpnOrigRight = FootballMech.pushPlantRight;
+    } catch (e) { /* 忽略 */ }
+    const build = (prop, toward, dirSign, awayArgs, orig) => {
         const name = prop === 'lefter' ? 'pushPlantLeft' : 'pushPlantRight';
         if (typeof FootballMech[name] !== 'function') { warn('跳过 ' + name + '：不是函数'); return; }
 
         FootballMech[name] = function (plant, dmg, dur, cbA, cbB, needSpace) {
+            // 【运行期开关】关掉 ⇒ 完全走原版（补丁常驻，行为现查）
+            if (!featOn('pushPlantFix') && typeof orig === 'function') return orig.apply(this, arguments);
             if (dmg === undefined) dmg = 0;
             if (dur === undefined) dur = 0.5;
             if (cbA === undefined) cbA = function () { };
@@ -3179,8 +4176,8 @@ function makePushSkipPatch(FootballMech) {
     // 先把原方法存下来（必须在包裹之前）
     const origLeft = FootballMech.pushPlantLeft;
     const origRight = FootballMech.pushPlantRight;
-    build('lefter', 'lefter', 1, []);
-    build('righter', 'righter', -1, [false]);
+    build('lefter', 'lefter', 1, [], origLeft);
+    build('righter', 'righter', -1, [false], origRight);
     // 回填 original（build 里为了能在包裹后递归调用，拿的是包裹后的函数；这里补上真正的原版以便还原）
     for (const r of recs) r.original = r.name === 'pushPlantLeft' ? origLeft : origRight;
     return recs;
@@ -3484,6 +4481,7 @@ function makeStarFollowPatch(CommonShot, deps) {
         const recFood = methodRecord(PlantBase, 'food');
         PlantBase.prototype.food = function () {
             const r = recFood.original.apply(this, arguments);
+            if (!featOn('starfruit')) return r;   // 【运行期开关】关掉 ⇒ 原版大招（追击不介入）
             try {
                 const od = this && this._objdataOwn;
                 if (od && gpnStarKindOf(od.PeaType) === 'base'
@@ -3707,6 +4705,7 @@ function makeHurrikalePatch(HurrikalePlant, Zombie, deps) {
         && typeof HurrikalePlant.prototype.animationListener === 'function') {
         const rec = methodRecord(HurrikalePlant, 'animationListener');
         HurrikalePlant.prototype.animationListener = function (evt) {
+            if (!featOn('hurrikale')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 原版飓风
             const r = rec.original.apply(this, arguments);      // ① 原版照跑
             try {
                 if (evt && evt.name === 'push') {
@@ -4196,6 +5195,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'playHitOnCharacter');
         P.playHitOnCharacter = function (target) {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 不做眩晕/击起/解除音乐
             try {
                 // ★ 命中特效资源：在这一刻把本株的 hitPar 存进缓存 —— 此刻它**必然活着**，
                 //   之后就算它死了/被铲了、被标记僵尸的持续特效也照样放得出来 ✓
@@ -4236,6 +5236,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'attack');
         P.attack = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 不解除安抚
             try {
                 const n = gpnScanPlants(this, deps, false, (p) => gpnClearSoothe(p, deps, fx, this));
                 if (n && C.debugLog) log('魔音甜菜：普攻解除安抚 ' + n + ' 株');
@@ -4253,6 +5254,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             let r;
             try { r = rec.original.apply(this, arguments); }
             finally { this.__gpnFooding = false; }
+            if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 大招不解除安抚
             try {
                 if (C.clearPlantDebuff) {
                     const n = gpnScanPlants(this, deps, true, (p) => gpnClearSoothe(p, deps, fx, this));
@@ -4271,6 +5273,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         const rec = methodRecord(PhatBeetPlant, 'detectEnemies');
         P.detectEnemies = function () {
             if (rec.original.apply(this, arguments)) return true;
+            if (!featOn('phatbeet')) return false;   // 【运行期开关】关掉 ⇒ 不因"范围内有被安抚植物"而开火
             try {
                 return gpnScanPlants(this, deps, false,
                     (p) => !(p.objdataOwn && p.objdataOwn.ImmuneToBoomBox) && p.boomboxCD > 0) > 0;
@@ -4283,6 +5286,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
     if (Zombie && Zombie.prototype && typeof Zombie.prototype.defaultShouldSpeedScale === 'function') {
         const rec = methodRecord(Zombie, 'defaultShouldSpeedScale');
         Zombie.prototype.defaultShouldSpeedScale = function () {
+            if (!featOn('phatbeet')) return rec.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 无音乐免疫
             if (!(this.__gpnJamClearCD > 0) || !FrontYard
                 || typeof FrontYard.getCurrentJam !== 'function') {
                 return rec.original.apply(this, arguments);
@@ -4365,6 +5369,8 @@ function makeSnowPeaFreezePatch(SnowPeaPlant) {
     const C = CFG.snowpea;
     const rec = methodRecord(SnowPeaPlant, '_shoot');
     P._shoot = function (a0, a1, a2) {
+        // ★ 运行期开关：关掉 snowpea ⇒ 冰锥/减速完全不插手（直接走原逻辑）
+        if (!featOn('snowpea')) return rec.original.apply(this, arguments);
         try {
             const od = this._objdataOwn;
             if (od && od.PeaType && od.PeaFreezeType) {
@@ -4409,6 +5415,8 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
         const rec = methodRecord(RedStingerPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function () {
             const r = rec.original.apply(this, arguments);
+            // ★ 运行期开关：关掉后不再"锁"手动形态（否则看起来像没关闭）
+            if (!featOn('redstinger')) return r;
             try {
                 if (this.__gpnFormManual && typeof this.__gpnForm === 'number') this.inArea = this.__gpnForm;
             } catch (e) { warn('红针花：恢复手动形态出错', e); }
@@ -4423,6 +5431,11 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
     //  （这版引擎没有 Input.EventType / systemEvent，鼠标只走节点事件，所以不能用 cc.input ✗）
     const baseOnMouseDown = P.onMouseDown;                 // 可能继承自 Plant 基类
     P.onMouseDown = function (ev) {
+        // ★ 运行期开关：关掉后完全不干涉形态（补丁常驻、行为现查）
+        if (!featOn('redstinger')) {
+            try { return (typeof baseOnMouseDown === 'function') ? baseOnMouseDown.apply(this, arguments) : undefined; }
+            catch (e) { warn('红针花：原版 onMouseDown 出错', e); return undefined; }
+        }
         let r;
         try { if (typeof baseOnMouseDown === 'function') r = baseOnMouseDown.apply(this, arguments); }
         catch (e) { warn('红针花：原版 onMouseDown 出错', e); }
@@ -4430,6 +5443,8 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
             if (!CFG.redstinger.clickSwitch) return r;
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;             // 只认左键
+            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则形态连切两下）
+            if (!gpnClickOnce(this, '__gpnRsClickAt')) return r;
             const now = (typeof this.inArea === 'number') ? this.inArea : 0;
             const next = (now + 1) % 3;
             this.__gpnFormManual = true;
@@ -4507,7 +5522,7 @@ function gpnMkKeepJellyOpaque(plant, deps) {
  * 暗影物质的三个数值（**永久生效，不随暗影状态来回切**；幂等）：
  *   · 耐久上限 = 原版基础值 + jellyBonusHp（2500 + 2500 = 5000）
  *   · 冷却秒数 = jellyCooldown（= 原版 5 秒；这个键保留着，方便以后再调）
- *   · 初始比例 = jellyInitialPct（0.6 → 0.5 ⇒ 出现/冷却结束时是 2500）
+ *   · 初始比例 = jellyInitialPct（0.6 → 0.3 ⇒ 出现/冷却结束时是 1500）
  * 基础值只在第一次看到时记一次，避免反复加算；`_objdataOwn` 是**每株独立**的 ⇒ 只影响这一株。
  * （回满速度沿用原版 JellyRecoveryHPS 100/秒 ⇒ 打光到回满 = 5 秒冷却 + 25 秒回复 = 30 秒，和改前一样）
  */
@@ -4518,10 +5533,15 @@ function gpnMkJellyTune(plant) {
     if (!(plant.__gpnMkBaseJelly > 0)) {
         plant.__gpnMkBaseJelly = (od.JellyToughness > 0) ? od.JellyToughness : (C.jellyBaseHp > 0 ? C.jellyBaseHp : 2500);
     }
-    const wantHp = plant.__gpnMkBaseJelly + (C.jellyBonusHp > 0 ? C.jellyBonusHp : 0);
+    // ★ 两态：开 = 基础 + 加成（2500+2500=5000）/ 0.3；关 = 原版 2500 / 0.6 / 5
+    //   （原版值来自 Objects/PlantProps.json，已逐字段核对）
+    const onMk = featOn('murkadamia');
+    const wantHp = onMk ? (plant.__gpnMkBaseJelly + (C.jellyBonusHp > 0 ? C.jellyBonusHp : 0)) : plant.__gpnMkBaseJelly;
     if (od.JellyToughness !== wantHp) od.JellyToughness = wantHp;
-    if (C.jellyCooldown > 0 && od.JellyCooldown !== C.jellyCooldown) od.JellyCooldown = C.jellyCooldown;
-    if (C.jellyInitialPct > 0 && od.JellyInitialPct !== C.jellyInitialPct) od.JellyInitialPct = C.jellyInitialPct;
+    const wantCd = onMk ? C.jellyCooldown : 5;
+    if (wantCd > 0 && od.JellyCooldown !== wantCd) od.JellyCooldown = wantCd;
+    const wantPct = onMk ? C.jellyInitialPct : 0.6;
+    if (wantPct > 0 && od.JellyInitialPct !== wantPct) od.JellyInitialPct = wantPct;
 }
 
 /** 每帧：真隐身窗口 + 半透明保活 */
@@ -4534,13 +5554,13 @@ function gpnMkTick(plant, deps) {
         plant.setPlanternHidden(1);                           // 续期（引擎内部取 max）
         if (!plant.__gpnMkHidden) {
             plant.__gpnMkHidden = true;
-            if (C.debugLog) log('夏威夷果：暗影物质被打光 → 上真隐身（僵尸看不见）');
+            if (dbgOn(C.debugLog)) log('夏威夷果：暗影物质被打光 → 上真隐身（僵尸看不见）');
         }
     } else if (plant.__gpnMkHidden) {
         // 只清我们自己那 1 秒的续期值；路灯花大招给的 3 秒不碰
         if (!(plant.PlanternHidden > 1)) plant.PlanternHidden = 0;
         plant.__gpnMkHidden = false;
-        if (C.debugLog) log('夏威夷果：暗影物质回血 → 解除隐身');
+        if (dbgOn(C.debugLog)) log('夏威夷果：暗影物质回血 → 解除隐身');
     }
     // ---- ① 本体半透明（盾牌在的时候不做）----
     const wantFade = !!(plant.ShadowPowered && !plant.dead
@@ -4559,6 +5579,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
     if (typeof P.onShadowPoweredChanged === 'function') {
         const rec = methodRecord(MurkadamiaNutPlant, 'onShadowPoweredChanged');
         P.onShadowPoweredChanged = function () {
+            if (!featOn('murkadamia')) { try { return rec.original.apply(this, arguments); } catch (e) { return undefined; } }   // 【运行期开关】
             try { gpnMkJellyTune(this); } catch (e) { warn('夏威夷果：算暗影物质数值出错', e); }
             let r;
             try { r = rec.original.apply(this, arguments); }
@@ -4575,6 +5596,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'specialPlantUpdate');
         P.specialPlantUpdate = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】关掉 ⇒ 不每帧维持数值/隐身/半透明
             try { gpnMkTick(this, deps); }
             catch (e) { warn('夏威夷果：每帧处理出错', e); }
             return r;
@@ -4589,6 +5611,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'specialPlantUpdateForce');
         P.specialPlantUpdateForce = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】
             try { gpnMkKeepJellyOpaque(this, deps); }
             catch (e) { warn('夏威夷果：护住暗影物质透明度出错', e); }
             return r;
@@ -4603,6 +5626,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         const rec = methodRecord(MurkadamiaNutPlant, 'shouldMaterial');
         P.shouldMaterial = function () {
             const r = rec.original.apply(this, arguments);
+            if (!featOn('murkadamia')) return r;   // 【运行期开关】
             try {
                 if (this.__gpnMkHidden && this.material && this.material.passes) {
                     const pass = this.material.passes[0];
@@ -4666,33 +5690,64 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
  *        影子在 followShade 里按 this.scale 算 ⇒ 自动跟着翻 ✓
  * ========================================================================== */
 
-/**
- * 翻转后的【发射口】：跟着贴图走。
- *  引擎 _shoot() 用的是 this.peaSpawnpoint（植物根节点下的子节点 ⇒ 会随 scale 一起镜像）。
- *  ⇒ 朝【机械前方】那发要用【镜像后的位置】：2×植物x − spawn.x（也就是翻过来的那个嘴）
- *  ⇒ 朝【机械后方】那发直接用镜像后的 spawn.x（那个嘴本身就是翻过来的）
- *  并且【不再】用引擎 _shootBack 的 -50 偏移 —— 因为偏移的前提是"发射口还在原来的前面"。
+/* ==========================================================================
+ * 翻转适配（**1.5.5 口径**，2026/10/10 据实机 bundle 逐字核对）
+ *
+ * 引擎事实（1.5.5 的 SplitPea，已从 `game-main-bundle.js` 抠出原文）：
+ *   · `_shoot(o, n, e, i, a, s)`：弹种 e / 速度 i / **方向向量 a** / **发射口节点 s** 都是【参数】
+ *     （默认 a = new Vec2(1,0)、s = this.peaSpawnpoint），最终速度 = `a.normalize().multiplyScalar(i)`
+ *   · `_shootBack(o,e,a)` = `this._shoot(o, e, a, 8, new d(-1,0), this.peaBackPoint)` ⇒ 后方只是"翻参数"
+ *   · `detectEnemySplit()` 返回 **`{Left, Right}` 对象**（不再是 0/1/2/3 数字），
+ *     `specialPlantUpdate` 里读 `a.Left || a.Right`，并**动态拼动画名** `"Shoot" + "R"/"L"`
+ *   ⇒ 所以本模组的翻转**只要两件事**：
+ *     ① 索敌【交给引擎】（它同时给 Left/Right，本来就是对的）
+ *     ② 发射时把**方向向量取反**；发射口**不动**（peaSpawnpoint / peaBackPoint 是植物根节点的子节点，
+ *        会随 `scale = -1` 一起镜像，世界坐标自动落到翻过来的那一侧）
+ * ========================================================================== */
+
+/** 翻转时把方向参数取反（不改发射口）
+ *  ⚠️ 关键：`_shoot()` 经常**不带参数**调用（动画帧事件就是 `this._shoot()`），
+ *     引擎内部对方向的默认值是 `new Vec2(1, 0)`（朝前）。
+ *     ⇒ 传进来的 `a` 是 `undefined/0/null` 时，我们要**补一个朝后**的方向，
+ *       而且**必须用引擎自己的 Vec2**（副本类型不匹配可能被下游拒绝）—— 由 `cx` 传进来。
  */
-function gpnSpSpawnFor(plant, dir) {
-    const sp = plant && plant.peaSpawnpoint;
-    const wp = sp && sp.worldPosition;
-    if (!wp || typeof wp.x !== 'number' || typeof plant.worldPositionX !== 'number') return null;
-    const x = (dir > 0) ? (2 * plant.worldPositionX - wp.x) : wp.x;
-    return { worldPosition: { x: x, y: wp.y } };
+function gpnSpFlipVec(vec, cx) {
+    const New = (x) => {
+        try { if (cx && typeof cx === 'function') return new cx(x, 0); } catch (e) { /* 忽略 */ }
+        return null;
+    };
+    const make = (x) => {
+        try { if (vec && typeof vec.clone === 'function') { const c = vec.clone(); c.x = x; return c; } } catch (e) { /* 忽略 */ }
+        return New(x);
+    };
+    let out = make(-(vec && typeof vec.x === 'number' ? vec.x : 1));
+    if (!out) out = { x: -1, y: 0 };          // 极端兜底（引擎的 normalize() 可能不吃普通对象，但不至于崩）
+    if (typeof out.y !== 'number') { try { out.y = 0; } catch (e) { /* 忽略 */ } }
+    return out;
 }
 
-/** 翻转时朝指定方向发一颗（dir：+1 朝前 / -1 朝后） */
-function gpnSpFireDir(baseShoot, plant, dir, o, n, type, i, a, sp) {
-    const spawn = gpnSpSpawnFor(plant, dir) || sp;
-    const pr = baseShoot.call(plant, o, n, type, i, a, spawn);
-    if (dir < 0 && pr && typeof pr.then === 'function') {
-        return pr.then((pea) => {
-            try { if (pea && pea.linearVelocity) pea.linearVelocity.x *= -1; }
-            catch (e) { /* 不是子弹对象就算了 */ }
-            return pea;
-        });
-    }
-    return pr;
+
+/** 【诊断用】取渲染层实际值（只在 debugLog 打开时调用）
+ *  为什么要它：`Character.scale` 是**逻辑值**（我们的翻转写的就是它），而"贴图朝哪边"最终
+ *  由 `node.scale` 决定 —— 引擎完全可以只改 `node.scale` 而不经过 setter（那样逻辑值仍是 -1，
+ *  但画面已经不翻了）。所以排查"翻转丢失"必须看渲染节点本身。
+ */
+function gpnSpDiag(plant) {
+    const g = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+    const num = (v) => (typeof v === 'number' ? Math.round(v * 1000) / 1000 : v);
+    const node = plant && plant.node;
+    const body = plant && plant.body;
+    const par = g(() => (body && body.parent && body.parent.name) || null, null);
+    const nodeName = g(() => (node && node.name) || null, null);
+    return 'scale=' + num(g(() => plant.scale, '?'))
+        + '，node.scale.x=' + num(g(() => node.scale.x, '?'))
+        + '，body.scale.x=' + num(g(() => body.scale.x, '?'))
+        + '，body.parent=' + (par === null ? '?' : par) + (par === nodeName ? '(=node)' : '')
+        + '，body.世界x=' + num(g(() => body.worldPosition.x, '?'))
+        + '，本株x=' + num(g(() => plant.worldPositionX, '?'))
+        + '，枪口2.世界x=' + num(g(() => (plant.peaSpawnpoint2 && plant.peaSpawnpoint2.worldPosition.x), '无'))
+        + '，前口.世界x=' + num(g(() => (plant.peaSpawnpoint && plant.peaSpawnpoint.worldPosition.x), '无'))
+        + '，gatlingSlots=' + g(() => (plant.gatlingSlots ? plant.gatlingSlots.length : '无'), '无');
 }
 
 function makeSplitPeaPatch(SplitPeaPlant, deps) {
@@ -4702,12 +5757,22 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     const C = CFG.splitpea;
     const baseShoot = P._shoot;                 // 继承自 PeashooterPlant；先抓住原版再包
     if (typeof baseShoot !== 'function') { warn('跳过裂荚射手：拿不到 _shoot（对调会失效）'); return null; }
+    // 引擎的 Vec2（用来造"取反后的方向"；deps.cc.Vec2 就是引擎那个）
+    const Vec2Ctor = (deps && deps.cc && typeof deps.cc.Vec2 === 'function') ? deps.cc.Vec2 : null;
+    if (!Vec2Ctor) warn('裂荚射手：拿不到 cc.Vec2（翻转后的方向向量会退化为普通对象）');
 
     /** 翻转 = 引擎自己的 scale 符号（x 带符号 ⇒ 整株镜像；装扮 / 动画 / 影子都跟着走） */
     const applyFlip = (plant, on) => {
+        const before = (typeof plant.scale === 'number') ? plant.scale : '?';
         plant.__gpnSpFlip = !!on;
         try { plant.scale = on ? -1 : 1; }
         catch (e) { warn('裂荚射手：翻转出错', e); }
+        if (dbgOn(C.debugLog)) {
+            try {
+                log('裂荚【翻转】→ ' + (on ? '翻' : '回正') + '：scale ' + before + ' → ' + plant.scale
+                    + '，是否 MGP=' + !!plant.isMGP + ' ｜ ' + gpnSpDiag(plant));
+            } catch (e) { /* 只影响日志 */ }
+        }
     };
 
     // ---- ① 左键：左右翻转（引擎只在"手上没拿卡"时才调 onMouseDown ⇒ 不抢种植左键）----
@@ -4718,11 +5783,14 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         catch (e) { warn('裂荚射手：原版 onMouseDown 出错', e); }
         try {
             if (!C.clickFlip) return r;
+            if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 完全不插手（原版行为）
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;                 // 只认左键
+            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则左右连翻两下）
+            if (!gpnClickOnce(this, '__gpnSpClickAt')) return r;
             const next = !this.__gpnSpFlip;
             applyFlip(this, next);
-            if (C.debugLog) {
+            if (dbgOn(C.debugLog)) {
                 log('裂荚射手：' + (next ? '已翻转（前方 2 颗 / 后方 1 颗）' : '已翻回（前方 1 颗 / 后方 2 颗）'));
             }
             return true;                                        // 告诉引擎"这次点击我处理了"
@@ -4731,32 +5799,55 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push({ Cls: SplitPeaPlant, name: 'onMouseDown', original: baseOnMouseDown });
 
-    // ---- ② 方向整体对调（前 ⇄ 后）----
+    // ---- ② 翻转时把【方向参数】取反（1.5.5 口径：方向 = `_shoot` 的第 5 个参数）----
+    //   说明：_shootBack 现在只是 `this._shoot(o,e,a,8,vec(-1,0),this.peaBackPoint)` 的薄封装，
+    //   所以【只包 _shoot 一处】即可覆盖前/后两个口（包 _shootBack 会双重调用）。
+    //   发射口参数【不动】：peaSpawnpoint / peaBackPoint 是植物根节点子节点，随 scale=-1 一起镜像。
     const recShoot = methodRecord(SplitPeaPlant, '_shoot');
     P._shoot = function (o, n, e, i, a, sp) {
-        if (this.__gpnSpFlip) return gpnSpFireDir(baseShoot, this, -1, o, n, e, i, a, sp);   // 朝后
+        if (featOn('splitpea') && this.__gpnSpFlip) {   // 【运行期开关】关掉 ⇒ 直接走原版
+            const hadDir = !!(a && typeof a.x === 'number');
+            const flipped = gpnSpFlipVec(a, Vec2Ctor);       // 参数缺省时也补成"朝后"
+            if (dbgOn(C.debugLog)) {
+                try {
+                    log('裂荚：翻转发射 → 方向 ' + (hadDir ? a.x : '缺省(1)') + ' → '
+                        + (flipped && typeof flipped.x === 'number' ? flipped.x : '?')
+                        + (hadDir ? '' : '（补方向）') + '，速度=' + i);
+                } catch (e2) { /* 只影响日志 */ }
+            }
+            return recShoot.original.call(this, o, n, e, i, flipped, sp);
+        }
         return recShoot.original.apply(this, arguments);
     };
     recs.push(recShoot);
 
-    const recBack = methodRecord(SplitPeaPlant, '_shootBack');
-    P._shootBack = function (o, n, e, i, a, sp) {
-        if (this.__gpnSpFlip) return gpnSpFireDir(baseShoot, this, 1, o, n, e, i, a, sp);    // 朝前
-        return recBack.original.apply(this, arguments);
-    };
-    recs.push(recBack);
-
-    // ---- ③ 播哪支动画也要对调（否则"只有前方"时仍会播只发 1 颗那支）----
-    if (typeof P.detectEnemySplit === 'function') {
-        const rec = methodRecord(SplitPeaPlant, 'detectEnemySplit');
+    // ---- ③ 索敌结果也要跟着翻转（**1.5.5：把 {Left,Right} 交换**）----
+    //   引擎事实（1.5.5，逐字）：`detectEnemySplit()` 返回的 Left/Right 是【屏幕左右】，
+    //   调用处 `specialPlantUpdate` 用它决定播哪支动画：
+    //       a.Right ⇒ r = "Shoot"+"R"（原版"前"，1 帧事件 = 1 颗）
+    //       a.Left  ⇒ r = "Shoot"+"L"（原版"后"，2 帧事件 = 2 颗）
+    //   ⇒ 贴图一翻，屏幕左右与"植物的前后"就对调了。若只翻发射方向（② 那段）而不翻这里，
+    //     就会"往对的方向发射，但用的还是原来那支动画/那套前后数量" ⇒ 表现为【索敌没翻】。
+    //   ⇒ 因此翻转时把 {Left, Right} 交换；**必须返回对象**（返回数字会让 a.Left/a.Right 变 undefined ⇒ 永不开火）。
+    const baseDetect = P.detectEnemySplit;      // 引擎原版；可能不存在（别的植物类型）
+    if (typeof baseDetect === 'function') {
         P.detectEnemySplit = function () {
-            const n = rec.original.apply(this, arguments);
-            if (!this.__gpnSpFlip) return n;
-            return (n === 1) ? 2 : ((n === 2) ? 1 : n);          // 3 = 两边都有，不用变
+            const r = baseDetect.apply(this, arguments);
+            if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 原样返回
+            if (!this.__gpnSpFlip) return r;
+            if (!r || typeof r !== 'object') return r;          // 形状不对就原样返回，绝不破坏引擎判读
+            const out = { Left: !!r.Right, Right: !!r.Left };    // 屏幕左右 ⇄ 植物前后
+            if (dbgOn(C.debugLog)) {
+                try {
+                    log('裂荚：索敌翻转 → 引擎{Left=' + !!r.Left + ',Right=' + !!r.Right + '} ⇒ 用于动画'
+                        + '{Left=' + out.Left + ',Right=' + out.Right + '}');
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return out;
         };
-        recs.push(rec);
+        recs.push({ Cls: SplitPeaPlant, name: 'detectEnemySplit', original: baseDetect });
     } else {
-        warn('跳过裂荚射手：没有 detectEnemySplit（前后动画不会对调）');
+        warn('裂荚射手：引擎没有 detectEnemySplit（翻转后动画前后不会对调）');
     }
 
     // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化）----
@@ -4764,7 +5855,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function (t, o) {
             const r = rec.original.apply(this, arguments);
-            try { if (this.__gpnSpFlip) this.scale = -1; }
+            try { if (featOn('splitpea') && this.__gpnSpFlip) this.scale = -1; }   // 【运行期开关】
             catch (e) { warn('裂荚射手：移动后保持翻转出错', e); }
             return r;
         };
@@ -4772,15 +5863,211 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     }
 
     // ---- ⑤ 池化复用：新种一株默认不翻转 ----
+    //   ⚠️ 待查（0.15.0 融合植物 splitpea_mgp 的开大丢翻转）：引擎每次 OnEnable 都会调
+    //   `specialPlantOnEnable`，而 `Character.onEnable` 会把 node.scale 重置 ⇒ 这个"复位"钩子
+    //   有可能在**植物存活期间**被触发，从而把我们的翻转清掉。下面加了诊断日志，先用实机日志确认
+    //   （日志只在 CFG.splitpea.debugLog 打开时打，不改任何行为）。
     if (typeof P.specialPlantOnEnable === 'function') {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnEnable');
         P.specialPlantOnEnable = function () {
-            try { this.__gpnSpFlip = false; this.scale = 1; }
+            const wasFlip = !!this.__gpnSpFlip;
+            const scaleBefore = (typeof this.scale === 'number') ? this.scale : '?';
+            try {
+                // 这里始终复位（新种的默认不翻转）；"关掉开关后场上已翻转的株"由
+                // characterUpdate / characterLateUpdate 的运行期判断负责摆正（见下）。
+                this.__gpnSpFlip = false; this.scale = 1;
+            }
             catch (e) { warn('裂荚射手：复位出错', e); }
+            if (dbgOn(C.debugLog)) {
+                try {
+                    log('裂荚【OnEnable 复位】← 引擎调用了 specialPlantOnEnable：'
+                        + '原 flip=' + wasFlip + '，scale ' + scaleBefore + ' → ' + this.scale
+                        + '，是否 MGP=' + !!this.isMGP + ' ｜ ' + gpnSpDiag(this));
+                } catch (e) { /* 只影响日志 */ }
+            }
             return rec.original.apply(this, arguments);
         };
         recs.push(rec);
     }
+
+    // ---- ⑥ 诊断（只打日志、不改行为）：开大流程的进出场与缩放 ----
+    //   目的：定位"普攻概率开大"后翻转丢在哪一步（引擎的 Plant.food() 会重置 body 缩放，
+    //   MGP 的 specialPlantFood 还会 upgrade()/gunup()）。①/②/⑤ 三处日志连起来看顺序即可定论。
+    if (typeof P.specialPlantFood === 'function') {
+        const recFood = methodRecord(SplitPeaPlant, 'specialPlantFood');
+        P.specialPlantFood = function () {
+            if (dbgOn(C.debugLog)) {
+                try {
+                    log('裂荚【开大开始】specialPlantFood：flip=' + !!this.__gpnSpFlip
+                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
+                        + '，upgraded=' + !!this.upgraded + '，gunned=' + !!this.gunned
+                        + ' ｜ ' + gpnSpDiag(this));
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return recFood.original.apply(this, arguments);
+        };
+        recs.push(recFood);
+    }
+    if (typeof P.specialPlantFoodEnd === 'function') {
+        const recFoodEnd = methodRecord(SplitPeaPlant, 'specialPlantFoodEnd');
+        P.specialPlantFoodEnd = function () {
+            const r = recFoodEnd.original.apply(this, arguments);
+            // ★ 修复（2026/10/10 实机 + 日志定位，属"纯视觉层"）：
+            //   MGP 开大（`Plant.food()`）会把 `body`（真正画贴图/装扮的骨架子节点）从植物节点上
+            //   摘走挂到开大专用层、并在结束时写回 `body.scale = (1,1,1)`；`node.scale` 虽仍是负值，
+            //   但骨架的镜像观感被这次"摘走→挂回+改缩放"打乱，表现为【贴图回到未翻转】。
+            //   `Character.scale` 的 setter 本身就是"写 node.scale"，所以在这里把翻转【重新写一次】，
+            //   强制引擎重算镜像即可（子弹方向/前后数量在 A 型里本来就是对的，不动）。
+            if (this.__gpnSpFlip) {
+                try { this.scale = -1; } catch (e) { warn('裂荚射手：开大结束重写翻转出错', e); }
+            }
+            if (dbgOn(C.debugLog)) {
+                try {
+                    log('裂荚【开大结束】specialPlantFoodEnd：flip=' + !!this.__gpnSpFlip
+                        + '，scale=' + this.scale + '，是否 MGP=' + !!this.isMGP
+                        + (this.__gpnSpFlip ? '（已重写翻转）' : '') + ' ｜ ' + gpnSpDiag(this));
+                } catch (e) { /* 只影响日志 */ }
+            }
+            return r;
+        };
+        recs.push(recFoodEnd);
+    }
+
+    // ---- ⑦b 【body 缩放自洽纠正】可被"帧内"与"帧末"两处调用 ----
+    //   为什么需要两处：`node.scale = x` 这类**直接赋值不会通知引擎重算世界变换**（脏标记/传播时机问题），
+    //   所以"值对了、画面没变"是可能发生的。这里统一做三件事：
+    //     ① 用 `setScale()`（走 setter、会标脏）而不是直改分量；
+    //     ② 主动 `invalidateChildren(...)` 失效子树（把可用的失效入口都试一遍）；
+    //     ③ 由 `characterUpdate`（帧内）与 `characterLateUpdate`（帧末）各调一次，
+    //        保证"最后一次写"发生在引擎渲染取变换之前。
+    const gpnSpFixBodyScale = (plant) => {
+        if (!plant || !plant.__gpnSpFlip) return 0;
+        const bd = plant.body;
+        const bsc = bd && bd.scale;
+        if (!bsc || typeof bsc.x !== 'number' || bsc.x === 0) return 0;
+        const par = bd.parent || plant.node;
+        const parWS = (par && par.worldScale && typeof par.worldScale.x === 'number')
+            ? par.worldScale.x
+            : ((plant.node && plant.node.worldScale && typeof plant.node.worldScale.x === 'number')
+                ? plant.node.worldScale.x : -1);
+        // 目标世界符号 = -1（翻转）⇒ 本地期望符号 = sign(父世界) × (-1)
+        const wanted = (parWS < 0) ? 1 : -1;
+        if (Math.sign(bsc.x) === wanted) return 0;
+        const abs = Math.abs(bsc.x);
+        const y = (typeof bsc.y === 'number') ? bsc.y : abs;
+        const z = (typeof bsc.z === 'number') ? bsc.z : 1;
+        try {
+            if (typeof bd.setScale === 'function') bd.setScale(abs * wanted, y, z);   // ① setter：会标脏
+            else { bsc.x = abs * wanted; }
+        } catch (e) { try { bsc.x = abs * wanted; } catch (e2) { return 0; } }
+        // ② 主动失效子树（不同版本 API 名不同，挨个试，全部失败就交给 ③ 的帧末写入）
+        try {
+            if (typeof bd.invalidateChildren === 'function') bd.invalidateChildren(deps && deps.TransformBit ? deps.TransformBit.SCALE : 3);
+            else if (typeof bd.markForUpdate === 'function') bd.markForUpdate(deps && deps.TransformBit ? deps.TransformBit.SCALE : 3);
+        } catch (e) { /* 只影响诊断 */ }
+        // ③ 顺带把父节点的变换也刷一次（保证子节点会跟着重算）
+        try { if (par && typeof par.invalidateChildren === 'function') par.invalidateChildren(); } catch (e) { /* 忽略 */ }
+        gpnSpBodyFixTotal++;
+        gpnSpBodyFixSpots++;
+        if (!gpnSpBodyFixFirstStack) {
+            try { gpnSpBodyFixFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+            catch (e) { gpnSpBodyFixFirstStack = '(拿不到调用栈)'; }
+        }
+        return 1;
+    };
+
+
+    //   为什么需要（2026/10/10 实机日志定位，属于帧时序竞态）：
+    //     · 引擎 `Character.onEnable` 里有一句 `this.node.scale = new Vec3(d,d,d)`（把渲染缩放复位）；
+    //     · 我们的翻转走 `Character.scale` setter（写 `node.scale = _scale × U × originalScale`）；
+    //     · 一旦引擎在"我们翻完之后"把 `node.scale` 复位，`_scale` 仍是 -1（逻辑没丢）、
+    //       但【画面已经不翻了】；只有下次 setter 被调用才会重新写负值。
+    //     · 实测证据：开大流程里 `body.parent` 会被摘走再挂回（`New Node` ⇄ 植物节点），
+    //       `body.scale.x` 在结束时被写成 1 ⇒ 这就是竞态发生的窗口。
+    //     · 之所以"verboseLog 开=正常、关=复现"：日志开销改变了帧内时序（巧合掩盖了竞态）。
+    //   ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
+    // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
+    const baseCharUpdate = P.characterUpdate;          // 继承自 Plant；可能不存在
+    /** 【运行期开关】关掉 splitpea 时，把"场上已经翻转的株"当场摆正。
+     *  只做一次（靠 __gpnSpFlip 标记判断）：复位渲染缩放 + 清掉翻转标记 ⇒ 下一帧不再插手。 */
+    const gpnSpUnflip = (plant) => {
+        try {
+            if (!plant || !plant.__gpnSpFlip) return;
+            plant.__gpnSpFlip = false;
+            try { plant.scale = 1; } catch (e) { /* 忽略 */ }
+        } catch (e) { /* 忽略 */ }
+    };
+    P.characterUpdate = function (dt) {
+        let r;
+        if (typeof baseCharUpdate === 'function') r = baseCharUpdate.apply(this, arguments);
+        // 【运行期开关】关掉 ⇒ 不插手（只负责把"已翻转的"摆正一次），完全回到原版行为
+        if (!featOn('splitpea')) { gpnSpUnflip(this); return r; }
+        try {
+            if (this.__gpnSpFlip) {
+                const cur = this.node && this.node.scale && this.node.scale.x;
+                if (typeof cur === 'number' && cur > 0) {
+                    // ★ 零开销路径：只计数 + 首帧抓一次调用栈；【不打任何日志】
+                    //   （这样一来时序与 verboseLog:false 时完全一致，能复现、又能拿到证据）
+                    this.scale = -1;                    // 重新写渲染缩放（自愈）
+                    gpnSpSelfHealTotal++;               // 累计（永不归零；自检/诊断用）
+                    gpnSpSelfHealSpots++;               // 本次汇总窗口内计数（每 5 秒清零）
+                    if (!gpnSpSelfHealFirstStack) {
+                        try { gpnSpSelfHealFirstStack = String((new Error()).stack || '').split('\n').slice(1, 7).join(' | '); }
+                        catch (e) { gpnSpSelfHealFirstStack = '(拿不到调用栈)'; }
+                    }
+                    // 汇总：静默攒着，最多每 5 秒打一行（先清再用 ⇒ 只有真的有新增才打一条）
+                    if (dt !== -1 && !gpnSpSelfHealQuiet && dbgOn(C.debugLog)) {
+                        const now = Date.now();
+                        if (now - gpnSpSelfHealLastReport > 5000) {
+                            gpnSpSelfHealLastReport = now;
+                            const n = gpnSpSelfHealSpots; gpnSpSelfHealSpots = 0;
+                            gpnSpSelfHealQuiet = true;
+                            log('裂荚【自愈汇总】最近一次统计内自愈 ' + n + ' 次；首次复位的调用栈：' + gpnSpSelfHealFirstStack);
+                            setTimeout(() => { gpnSpSelfHealQuiet = false; }, 50);
+                        }
+                    }
+                }
+                // ★★ MGP 开大丢翻转的【正确修复】（2026/10/10 由"环形时间线 + 用户肉眼判定 B"定死）
+                //   事实链：
+                //     · 贴图与发射口的镜像，最终由 **body 的本地缩放符号**决定（骨架自己用的就是它）；
+                //     · 开大（`Plant.food()`）会把 body 摘到"开大层"（外层缩放 +1），为了保持世界观感，
+                //       引擎把 body 的本地缩放算成 `-0.42`（= 世界 -0.42 ÷ 父 +1）；这时的本地负号是**正确**的；
+                //     · 但 body 挂回 node（世界 -0.42）之后，本地缩放**没有重新计算**，仍是 `-0.42`
+                //       ⇒ 世界 = (-0.42) × (-0.42) = 正 ⇒ **贴图与发射口双双回到未翻转态**；
+                //     · （`body.worldScale` 恒正 —— Cocos 官方论坛已确认"负值会被自动纠正成正数" ⇒ 那条通路是死的。）
+                //     · 更深一层：**直接给 `scale.x` 赋值不会通知引擎重算世界变换**（脏标记/传播时机），
+                //       所以"值算对了、画面却不更新"完全可能发生 —— 这也是 `verboseLog:true` 时反而正常的原因
+                //       （日志开销把帧拉长，引擎的变换传播恰好落在我们写入之后）。
+                //   ⇒ 修法：维持自洽式符号，并**主动通知引擎**（setScale + invalidateChildren），
+                //     且在 **characterUpdate（帧内）与 characterLateUpdate（帧末）各写一次**。
+                gpnSpFixBodyScale(this);
+                if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
+                    gpnSpBodyFixLastReport = Date.now();
+                    const n2 = gpnSpBodyFixSpots; gpnSpBodyFixSpots = 0;
+                    log('裂荚【body 缩放纠正】最近一次统计内修正 ' + n2 + ' 次'
+                        + '；累计 ' + gpnSpBodyFixTotal + ' 次；首次调用栈：' + gpnSpBodyFixFirstStack);
+                }
+            }
+        } catch (e) { warn('裂荚射手：每帧自愈出错', e); }
+        return r;
+    };
+    recs.push({ Cls: SplitPeaPlant, name: 'characterUpdate', original: baseCharUpdate });
+    // 帧末兜底：`Character.lateUpdate` → `characterLateUpdate`。这次写入发生在引擎渲染取变换之前，
+    //   保证"最后一次写"是我们写的（哪怕引擎在帧内又把它改回去了）。
+    const baseCharLate = P.characterLateUpdate;
+    P.characterLateUpdate = function (dt) {
+        let r;
+        if (typeof baseCharLate === 'function') r = baseCharLate.apply(this, arguments);
+        // 【运行期开关】关掉 ⇒ 帧末也不插手（同样只把"已翻转的"摆正一次）
+        if (!featOn('splitpea')) { gpnSpUnflip(this); return r; }
+        try { gpnSpFixBodyScale(this); }
+        catch (e) { warn('裂荚射手：帧末自愈出错', e); }
+        return r;
+    };
+    recs.push({ Cls: SplitPeaPlant, name: 'characterLateUpdate', original: baseCharLate });
+    // 自检探针（仅供 mock 单测调用；dt 传 -1 ⇒ 不刷日志。游戏里不会被调用）
+    P.__gpnSpSelfHealTick = function () { return P.characterUpdate.call(this, -1); };
+    P.__gpnSpSelfHealLateTick = function () { return P.characterLateUpdate.call(this, -1); };
 
     return recs;
 }
@@ -4788,20 +6075,66 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
 export default {
     // 给自检脚本用（GP-Next 会忽略多余字段）
     _config: CFG,
+    _vanilla: VANILLA,                 // 同上：原版值表（"关掉开关时写回什么"的唯一出处）
     _features: FEATURES,               // 同上：自检用来核对开关表
+    _featDefaults: gpnFeatDefaults,     // 同上：出厂默认
+    _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
+    _featReset: gpnFeatStorageReset,    // 同上：恢复默认
+    _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
+    // ⚠ 必须用**函数**形式：`gpnApplyDataPatch` 要到 setup 里（L6140 附近）才被赋值，
+    //    这里直接写变量名会把此刻的 `null` 快照走 ⇒ 导出的永远是 null（自检拿不到，白测）。
+    _applyDataPatch: () => gpnApplyDataPatch,   // 同上：数据补丁（自检用来验证两态）
+    _gatedBody: gpnGatedBody,            // 同上：门禁包装器本体（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
     _pierceN: gpnPierceN,              // 同上：穿透数钳制（小数/负数 → 1）
     _followPierce: gpnFollowPierce,    // 同上：追击弹的打中数（= 星果打中数 + bonus）
+    _almOverview: gpnAlmOverview,      // 同上：图鉴文案总览（只读；自检核对 alias 配对）
+    _almTextOf: gpnAlmTextOf,          // 同上：取一株的图鉴文本（只读）
+    _ALM_CHANGED: GPN_ALM_CHANGED,     // 同上：[图鉴 alias, 功能开关名] 名单（自检守卫用）
+    _zhNum: gpnZhNum,                  // 同上：中文数字（0~20 汉字，超出回落阿拉伯）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
+    _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
+    _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
+    _gpnSpBodyFixState: () => ({ total: gpnSpBodyFixTotal, spots: gpnSpBodyFixSpots, stack: gpnSpBodyFixFirstStack }),  // 诊断用：body 缩放纠正统计
+    _gpnSpBodyFixReset: () => { gpnSpBodyFixTotal = 0; gpnSpBodyFixSpots = 0; gpnSpBodyFixFirstStack = ''; },          // 自检用来清零
+    _gpnSpSelfHealReset: () => { gpnSpSelfHealTotal = 0; gpnSpSelfHealSpots = 0; gpnSpSelfHealFirstStack = ''; },          // 自检用来清零
     _gpnNullWriteReset: () => { gpnNullWriteTotal = 0; gpnNullWriteDetail = 0; gpnNullWriteQuiet = false; },  // 同上：自检用来把统计清零
     _starCanReach: gpnStarCanReach,   // 追击的"能不能打到"判定（纯函数，便于单测）
     id: MOD_ID,
     name: "Cutemaodie's Tweak Mod",
     version: MOD_VERSION,
     author: 'CuteMaodie',
-    description: '21 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。',
+    description: '23 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧。',
 
-    setup() {
+    setup(ctx) {
+        try { gpnCtx = ctx; } catch (e) { /* 忽略 */ }   // 供配置界面/生命周期使用
+        // ★★ 第一件事：抢占"活动实例令牌"（旧实例若还在，就地让它退役）
+        //    为什么必须在最前面：GP-NEXT 重载会重跑 setup，而旧实例的 onDispose 不会来
+        //    ⇒ 必须由新实例主动把旧的按住，否则两套逻辑并行（实机表现：面板点不开、开关错乱）。
+        // 让位时的自己人清理：关掉本实例的窗体（否则新旧两个面板会叠在同一位置）
+        try {
+            gpnOnRetire = function () {
+                try {
+                    const reg = gpnPanelReg();
+                    const ent = reg && reg[GPN_INSTANCE_ID];
+                    if (ent && ent.panel && ent.panel.isValid) ent.panel.active = false;
+                    if (reg) delete reg[GPN_INSTANCE_ID];
+                } catch (e0) { /* 忽略 */ }
+            };
+        } catch (eOn) { /* 忽略 */ }
+        try { gpnClaimInstance(); } catch (eC) { /* 忽略 */ }
+        // ★ 抢占令牌后立刻关掉上一个实例残留的窗体（实机：重载后两个面板会叠着）
+        try { gpnCloseStalePanels(); } catch (eSp) { /* 忽略 */ }
+        // ★ onDispose 也提到最前面注册（原来在面板块内，面板安装一旦抛错就永远注册不上）
+        try {
+            const RT0 = ctx && ctx.runtime;
+            if (RT0 && typeof RT0.onDispose === 'function') {
+                RT0.onDispose(() => { try { gpnRetireSelf(); } catch (e0) { /* 忽略 */ } }, '实例退役');
+            }
+        } catch (eR0) { /* 忽略 */ }
+        try {
+            const all = (typeof window !== 'undefined' && window && window.__gpnInstances) ? window.__gpnInstances : [];
+        } catch (e) { /* 忽略 */ }
         const IMPORTS = [
             'chunks:///_virtual/JSONs.ts',            // 0
             'chunks:///_virtual/Zombie.ts',           // 1
@@ -4838,10 +6171,14 @@ export default {
             'chunks:///_virtual/SplitPea.ts',         // 32
             'chunks:///_virtual/Zombies.ts',          // 33（ZombieEnum：三种护盾实体按 ID 认）
             'chunks:///_virtual/PerfumeShroom.ts',     // 34（香水菇本体：把香水火时长 9 → 13.5 秒）
+            'chunks:///_virtual/DarkJesterZombie.ts',  // 35（弄臣僵尸：反弹甜椒弹时打"来源=弄臣"标记）
+            'chunks:///_virtual/Abbot3SectionStaffZombie.ts', // 36（三节棍僵尸：只打"来源=三节棍"标记，行为不变）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
-        return featLoad().then(() => Promise.all(IMPORTS.map((m) => System.import(m).catch((e) => {
+        return featLoad()
+            .then(() => gpnFeatStorageLoad(ctx))
+            .then(() => Promise.all(IMPORTS.map((m) => System.import(m).catch((e) => {
             warn('模块载入失败 ' + m, e);
             return {};
         })))).then((mods) => {
@@ -4856,7 +6193,8 @@ export default {
                 nodePoolsMod = mods[23], frontYardMod = mods[24], hurrikaleMod = mods[25],
                 phatbeetMod = mods[26], cardsMod = mods[27], plantsMod = mods[28], snowPeaMod = mods[29],
                 redStingerMod = mods[30], murkadamiaMod = mods[31], splitPeaMod = mods[32],
-                zombiesMod = mods[33], perfumeShroomMod = mods[34];
+                zombiesMod = mods[33], perfumeShroomMod = mods[34],
+            darkJesterMod = mods[35], abbot3Mod = mods[36];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -4864,8 +6202,12 @@ export default {
 
             // ---- 1. 数值 ----
             if (jsonMod.PvZ2ObjectContainer) {
+                try { PvZ2ObjectContainerRef = () => jsonMod.PvZ2ObjectContainer; } catch (e) { /* 忽略 */ }
+                try { gpnPlantsRef = () => (plantsMod && plantsMod.plants) || null; } catch (e) { /* 忽略 */ }
                 const dataPatch = makeDataPatcher(jsonMod.PvZ2ObjectContainer);
-                dataPatch.apply();
+                const firstOk = dataPatch.apply();
+                if (firstOk !== true) gpnStartDataPatchRetry(() => gpnApplyDataPatch);
+                gpnApplyDataPatch = dataPatch;   // 【临时诊断】交给"即时生效"验证按键（按 2 重新 apply）
 
                 // 保证在游戏数据加载完成后再落一次，避免被 readJsons 覆盖
                 const JSONsCls = jsonMod.JSONs;
@@ -4893,27 +6235,597 @@ export default {
                 warn('拿不到 PvZ2ObjectContainer，数值改动未生效');
             }
 
+
+
+
+
+            // ---- 1d. 配置界面（入口行挂在原版设置窗底部；点它打开我们自己的窗体）----
+            //   ⚠️ 本块是【整体重写版】：早期用"字符串打补丁"往旧代码里反复插入小补丁，导致层级/顺序反复出错
+            //      （曾出现：建行途中触发刷新、refresh 块被插到错层级、let 缩进 0 等）。现改为：
+            //        · 所有行对象存进一个数组 entries[{key,label,master,row,sprite,labelNode}]；
+            //        · **任何点击 ⇒ 改开关值 ⇒ renderAll() 全量重画**（颜色 / 文字 / 置灰一次算清）；
+            //        · 结构扁平、无嵌套陷阱，便于后续维护与排错。
+            //   实测事实（全部已在本项目验证过，勿再改）
+            //     · 原版设置窗用 node.active 开关 ⇒ 必须挂它的 onEnable 才能在"打开时"插入口行；
+            //     · 原版实测行尺寸 968x140；内容区 1916.4x1440（两列）；滚动视口 1916.4x840；
+            //     · 组件识别不能比类名字符串 ⇒ 按属性特征（clickEvents / string / spriteFrame）；
+            //     · Graphics 不可用（Error 3804）；新建节点必须"先入树再加 UITransform/Label"；
+            //     · Sprite.color 染色、Label.string 改字、node.on(touch-end) 点击 —— 均可用。
+            //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
+            //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
+            try {
+                const gpnCfgV = 'v28';
+                let origWin = null;          // 原版设置窗节点
+                let panel = null;            // 我们的窗体（克隆原版外壳）
+                let panelRowsBox = null;     // 我们窗体的 elements
+                let entryTemplate = null;    // 原版 KeyBinds 行（模板）
+                let rowW = 968, rowH = 140;  // 实测行尺寸
+                let contentW = 1916.4;
+                const entries = [];          // 行对象数组（唯一数据源）
+                let hooked = false, lastWinActive = false, missLog = 0, hookedScene = '';
+                const GREEN = ccColor(20, 255, 0, 255);
+                const RED = ccColor(255, 0, 0, 255);
+                const GREY = ccColor(110, 104, 98, 255);
+                const GREY_TXT = ccColor(255, 255, 255, 255);
+                const INFO = [
+                    { key: 'chilibean', label: '巴豆' },
+                    { key: 'spikerock', label: '钢地刺' },
+                    { key: 'bloomingheart', label: '心蕊' },
+                    { key: 'nightshade', label: '暗影龙葵' },
+                    { key: 'turnip', label: '白萝卜' },
+                    { key: 'sweetpotato', label: '甜薯' },
+                    { key: 'tallnut', label: '高坚果' },
+                    { key: 'perfumeshroom', label: '香水菇' },
+                    { key: 'starfruit', label: '星星果系' },
+                    { key: 'starfruitFollowMerge', label: '　└ 追击合并', master: 'starfruit' },
+                    { key: 'noctarine', label: '暗影油桃' },
+                    { key: 'zoybeanpod', label: '腐尸豆荚' },
+                    { key: 'dandelion', label: '蒲公英' },
+                    { key: 'pepperpult', label: '甜椒投手' },
+                    { key: 'hurrikale', label: '飓风甘蓝' },
+                    { key: 'phatbeet', label: '魔音甜菜' },
+                    { key: 'garlic', label: '大蒜' },
+                    { key: 'snowpea', label: '寒冰射手' },
+                    { key: 'redstinger', label: '红针花' },
+                    { key: 'murkadamia', label: '暗影夏威夷果' },
+                    { key: 'splitpea', label: '裂荚射手' },
+                    { key: 'pushPlantFix', label: '推植物修复' },
+                    { key: 'verboseLog', label: '诊断日志' },
+                ];
+
+                /* ---------- 小工具（全部只用实测可用的 API） ---------- */
+                function ccColor(r, g, b, a) {
+                    try { const ccg = (typeof cc !== 'undefined' && cc) ? cc : null; return ccg.color(r, g, b, a); }
+                    catch (e) { return { r: r, g: g, b: b, a: a }; }
+                }
+                function ccNode() { const ccg = (typeof cc !== 'undefined' && cc) ? cc : null; return ccg; }
+                function clog(s) { try { log('【配置界面·' + gpnCfgV + '】' + s); } catch (e) { /* 忽略 */ } }
+                function findDeep(n, want, depth) {
+                    try {
+                        if (!n || depth > 8) return null;
+                        if (String(n.name || '') === want) return n;
+                        const ks = n.children || [];
+                        for (let i = 0; i < ks.length; i++) { const r = findDeep(ks[i], want, depth + 1); if (r) return r; }
+                    } catch (e) { /* 忽略 */ }
+                    return null;
+                }
+                function clearClicks(n) {
+                    let c = 0;
+                    try { for (const x of (n.components || [])) { if (x && Array.isArray(x.clickEvents)) { c += x.clickEvents.length; x.clickEvents.length = 0; } } } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { c += clearClicks(k); });
+                    return c;
+                }
+                function setText(n, str) {
+                    let c = 0;
+                    try { for (const x of (n.components || [])) { if (x && typeof x.string === 'string' && x.string !== '') { x.string = str; c++; } } } catch (e) { /* 忽略 */ }
+                    (n.children || []).forEach((k) => { c += setText(k, str); });
+                    return c;
+                }
+                function sizeOf(n) { try { const x = (n.components || []).find((y) => y && y.contentSize); return x ? x.contentSize : null; } catch (e) { return null; } }
+                function setSize(n, w, h) { try { const x = (n.components || []).find((y) => y && y.setContentSize); if (x) { x.setContentSize(w, h); return true; } } catch (e) { /* 忽略 */ } return false; }
+                function setRightAlign(n, right) {
+    try {
+        const u = (n.components || []).find((y) => y && typeof y.anchorX === 'number');
+        if (u) u.anchorX = right ? 1 : 0;
+    } catch (e) { /* 忽略 */ }
+}
+function findSprite(n) {
+                    try { for (const x of (n.components || [])) { if (x && x.spriteFrame !== undefined && x.color !== undefined) return x; } } catch (e) { /* 忽略 */ }
+                    try { for (const x of (n.components || [])) { if (x && x.color !== undefined) return x; } } catch (e2) { /* 兜底 */ }
+                    return null;
+                }
+                function killChildren(n, keepTip) {
+                    (n.children || []).slice().forEach((c2) => {
+                        const nm = String(c2.name || '');
+                        if (keepTip && nm.indexOf('ToolTip') === 0) return;
+                        try { c2.active = false; } catch (e1) { /* 忽略 */ }
+                        try { c2.removeFromParent(); } catch (e2) { /* 忽略 */ }
+                        try { c2.destroy(); } catch (e3) { /* 忽略 */ }
+                    });
+                }
+                function noWidget(n) { try { for (const c of (n.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (e) { /* 忽略 */ } }
+
+                /* ---------- 入口行：克隆原版 KeyBinds 行（只留文字 + 蓝色齿轮） ---------- */
+                function buildEntryRow(ccg) {
+                    const row = ccg.instantiate(entryTemplate);
+                    row.name = 'gpnConfigRow';
+                    killChildren(row, true);                  // 只留 ToolTip（行名）
+                    // 【v22】按用户要求：入口行**不放蓝色齿轮**（只留「配置界面」文字，整行可点）。
+                    //   说明：原版那颗齿轮在 website 节点里，点击是"打开键位说明网页"，容易让玩家误解，
+                    //   所以干脆不放。若将来想加回来：从 entryTemplate 里 clone 名为 website 的子节点挂到这里即可。
+                    clearClicks(row);
+                    setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
+                    // ★ 蓝色齿轮 = 「恢复默认」（用户要求：单击即执行，不二次确认）
+                    try {
+                        const webTpl = (entryTemplate.children || []).find((k) => String((k && k.name) || '').indexOf('website') === 0);
+                        if (webTpl) {
+                            const gear = ccg.instantiate(webTpl);
+                            gear.name = 'gpnResetGear';
+                            clearClicks(gear);                       // 去掉原版"打开网页"的事件
+                            let gearLock = 0;
+                            gear.on('touch-end', (ev) => {
+                                try {
+                                    if (gpnDisposed) return;                       // 旧运行时不响应
+                                    const now = Date.now();
+                                    if (now - gearLock < 500) return;
+                                    gearLock = now;
+                                    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();   // 别连带打开面板
+                                    gpnFeatStorageReset();                   // 恢复默认 + 写回存储
+                                    renderAll();                             // 界面立刻刷新
+                                    clog('已点击齿轮：恢复默认（开关已重置并写回存储）');
+                                } catch (e) { warn('【配置界面】恢复默认出错', e); }
+                            });
+                            row.addChild(gear);
+                            if (verboseOn()) clog('入口行：已加入恢复默认齿轮');
+                        } else { clog('入口行：模板里找不到 website 节点，齿轮未加入'); }
+                    } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
+                    let locked = 0;
+                    // ★★ 把"打开面板"抽成具名函数并登记到全局注册表，行点击改为**派发**。
+                    //    为什么：入口行可能由**旧实例**插进【同一个窗口对象】（诊断日志已证实），
+                    //    那行的处理器绑定旧实例（它的 panel/origWin 是旧的）⇒ 点了没反应。
+                    //    现在点击时**现查**当前活动实例的实现 ⇒ 无论这行谁插的都能打开。
+                    function openPanel() {
+                        try {
+                            if (gpnDisposed) return;                       // 旧运行时不响应
+                            const now = Date.now();
+                            if (now - locked < 400) return;
+                            locked = now;
+                            if (panel && panel.active === true) return;   // 已经开着
+                            if (!buildPanel(ccg)) return;
+                            if (origWin) origWin.active = false;
+                            panel.active = true;
+                            clog('已打开配置窗体（入口行被点击）');
+                        } catch (e) { warn('【配置界面】打开出错', e); }
+                    }
+                    try { const _rgo = gpnGlobalReg(); if (_rgo) _rgo.open = openPanel; } catch (eO) { /* 忽略 */ }
+                    row.on('touch-end', () => {
+                        try {
+                            const _rgp = gpnGlobalReg();
+                            if (_rgp && typeof _rgp.open === 'function') { _rgp.open(); return; }
+                            openPanel();
+                        } catch (e) { warn('【配置界面】打开出错', e); }
+                    });
+                    return row;
+                }
+
+                /* ---------- render：唯一的状态画法（颜色 + 文字 + 置灰） ---------- */
+                function renderAll() {
+                    entries.forEach((e, i) => {
+                        try {
+                            const on = featOn(e.key);
+                            const blocked = !!(e.master && !featOn(e.master));
+                            if (e.sprite) e.sprite.color = blocked ? GREY : (on ? GREEN : RED);
+                            if (e.labelNode) {
+                                if (blocked) { setText(e.labelNode, '关'); setRightAlign(e.labelNode, true); }
+                                else { setRightAlign(e.labelNode, false); setText(e.labelNode, on ? '开' : '关'); }
+                            }
+                            if (e.hint) { try { for (const c of (e.hint.components || [])) { if (c && c.color !== undefined) c.color = blocked ? ccColor(210, 200, 190, 255) : ccColor(120, 110, 100, 255); } } catch (eHC) { } }
+                            if (i < 3) if (verboseOn()) clog('render ' + e.key + ' ｜ 自身=' + on + ' 置灰=' + blocked + ' 颜色=' + (blocked ? '灰' : (on ? '绿' : '红')));
+                        } catch (err) { if (verboseOn()) clog('render 出错 ' + e.key + '：' + err); }
+                    });
+                }
+
+                /* ---------- 刷新已建卡片的阳光显示（数值类开关即时生效的关键） ---------- */
+                //  数据（objdata.SunCost）我们早就改了；但已建卡片把阳光缓存在 _SUNCOST 里，
+                //  必须按引擎自己的惯用法「自赋值」一次，才会同时更新缓存与价格文字。
+                function gpnRefreshCardSunCost() {
+                    // ★ 探测版：先"看清卡片组件长什么样"，再做引擎同款刷新（SUNCOST 自赋值）。
+                    //   上次的实现按"typeof c._SUNCOST === number"去找，找到 0 个 —— 说明特征选错了，
+                    //   所以这次把**所有可疑组件**都打印出来（节点名/属性键/ID/值），用证据改。
+                    let found = 0, done = 0;
+                    const shapes = [];
+                    try {
+                        const ccg = ccNode();
+                        const scene = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
+                        if (!scene) { if (verboseOn()) clog('卡片探测：拿不到场景'); return; }
+                        const seen = [];
+                        const walk = (node, depth) => {
+                            if (!node || depth > 14 || seen.length > 6000) return;
+                            seen.push(node);
+                            try {
+                                for (const c of (node.components || [])) {
+                                    if (!c) continue;
+                                    let keys = [];
+                                    try { keys = Object.keys(c); } catch (e) { keys = []; }
+                                    const hasSun = keys.indexOf('_SUNCOST') !== -1;
+                                    const hasPrice = keys.indexOf('_priceLB') !== -1;
+                                    const hasPF = keys.indexOf('PF') !== -1;
+                                    if (!hasSun && !hasPrice && !hasPF) continue;
+                                    found++;
+                                    if (shapes.length < 12) {
+                                        shapes.push(String(node.name || '?') + '[' + (hasSun ? 'S' : '-') + (hasPrice ? 'P' : '-') + (hasPF ? 'F' : '-') + ']'
+                                            + ' id=' + (c.ID !== undefined ? c.ID : '?')
+                                            + ' sun=' + (c._SUNCOST !== undefined ? c._SUNCOST : '?'));
+                                    }
+                                    // 引擎同款刷新：自赋值 ⇒ setter 同时更新缓存与价格文字
+                                    try { if (hasSun) { c.SUNCOST = c.SUNCOST; done++; } } catch (e) { /* 忽略 */ }
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            for (const kk of (node.children || [])) walk(kk, depth + 1);
+                        };
+                        walk(scene, 0);
+                        if (verboseOn()) clog('卡片探测：命中组件 ' + found + ' 个、刷新成功 ' + done + ' 个 ｜ 样本: ' + (shapes.length ? shapes.join(' , ') : '(无)'));
+                    } catch (e) { if (verboseOn()) clog('卡片探测出错：' + e); }
+                }
+
+                /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
+                function buildPanel(ccg) {
+                    try {
+                        if (panel && panel.isValid) return panel;
+                        // ★ 跨场景重建：清空旧行数据（否则 buildRows 会因为 entries 非空而跳过 ⇒ 新窗体会是空的）
+                        if (entries.length) if (verboseOn()) clog('重建面板：清空旧行数据 ' + entries.length + ' 行');
+                        entries.length = 0;
+                        panelRowsBox = null;
+                        const clone = ccg.instantiate(origWin);
+                        clone.name = 'gpnConfigWindow';
+                        try { for (const c of (clone.components || []).slice()) { if (c && c.node === clone) { try { c.destroy(); } catch (e0) { /* 忽略 */ } } } } catch (e1) { /* 忽略 */ }
+                        const cleared = clearClicks(clone);
+                        const titleNode = findDeep(clone, 'Title', 0);
+                        const titleN = titleNode ? setText(titleNode, '模组设置') : 0;
+                        panelRowsBox = findDeep(clone, 'elements', 0);
+                        // 量原版行尺寸（清空前，从第一行读）
+                        if (panelRowsBox) {
+                            const first = (panelRowsBox.children || [])[0];
+                            const cs0 = first ? sizeOf(first) : null;
+                            if (cs0) { rowW = Math.round(cs0.width); rowH = Math.round(cs0.height); }
+                            const csBox = sizeOf(panelRowsBox);
+                            if (csBox) contentW = csBox.width;
+                            killChildren(panelRowsBox, false);         // 清空原版 20 行
+                            try { const lay = (panelRowsBox.components || []).find((c) => c && c.type !== undefined && c.resizeMode !== undefined); if (lay) lay.enabled = false; } catch (e2) { /* 忽略 */ }
+                        }
+                        // 关闭按钮：自己绑（原版事件已清）
+                        const exitNode = findDeep(clone, 'buttonExit', 0);
+                        if (exitNode) {
+                            const closeIt = () => { try { clone.active = false; if (origWin) origWin.active = true; clog('已关闭配置窗体'); } catch (e) { /* 忽略 */ } };
+                            try { exitNode.on('touch-end', closeIt); } catch (e3) { /* 忽略 */ }
+                            (exitNode.children || []).forEach((k) => { try { k.on('touch-end', closeIt); } catch (e4) { /* 忽略 */ } });
+                        }
+                        clone.active = false;
+                        origWin.parent.addChild(clone);
+                        panel = clone;
+                        // ★ 登记到跨实例共享表（新实例启动时能关掉它）
+                        try {
+                            const reg = gpnPanelReg();
+                            if (reg) reg[GPN_INSTANCE_ID] = { panel: clone, origWin: origWin };
+                        } catch (eReg) { /* 忽略 */ }
+                        if (verboseOn()) clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
+                        // ★ 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
+                        buildRows(ccg);
+                        if (verboseOn()) clog('建窗体后立即建行：entries=' + entries.length + ' ｜ rowsBox=' + (panelRowsBox ? panelRowsBox.name : '无'));
+                        return clone;
+                    } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
+                }
+
+                /* ---------- 建 23 行（打开窗体时懒建一次） ---------- */
+                function buildRows(ccg) {
+                    try {
+                        if (!panelRowsBox || entries.length) { clog('buildRows 跳过：rowsBox=' + !!panelRowsBox + ' 已有行=' + entries.length); return; }
+                        const cols = 2;
+                        const cw = Math.max(320, Math.floor(contentW / cols) - 10);
+                        const ch = rowH || 140;
+                        // 分组标题
+                        try {
+                            const hdr = ccg.instantiate(entryTemplate);
+                            hdr.name = 'gpnGroupHeader';
+                            killChildren(hdr, true);
+                            clearClicks(hdr);
+                            noWidget(hdr);
+                            setText(findDeep(hdr, 'ToolTip', 0) || hdr, '【植物】');
+                            setSize(hdr, cw * cols, Math.max(60, Math.floor(ch * 0.6)));
+                            hdr.setPosition(0, 0);
+                            hdr.active = false;                     // 先不显示，等统一摆位
+                            panelRowsBox.addChild(hdr);
+                        } catch (eH) { clog('造分组标题失败：' + eH); }
+                        // 23 行
+                        INFO.forEach((it) => {
+                            try {
+                                const row = ccg.instantiate(entryTemplate);
+                                row.name = 'gpnRow_' + it.key;
+                                killChildren(row, true);
+                                clearClicks(row);
+                                noWidget(row);
+                                setSize(row, cw, ch);
+                                setText(findDeep(row, 'ToolTip', 0) || row, it.label);
+                                // ★ 括号小字（照原版"最大帧率"那行的小字样式）：目前只有"诊断日志"需要
+                                //   ⚠ 原文案是「(需重新启动游戏)」—— **已过期**：本模组的开关（含诊断日志）
+                                //     都是**点一下立刻生效**（切换处理器里紧接着就 renderAll + apply 数据补丁），
+                                //     所以改成说明它"只影响日志、不影响游戏"。
+                                let hintNode = null;
+                                if (it.key === 'verboseLog') {
+                                    try {
+                                        const tip2 = findDeep(row, 'ToolTip', 0);
+                                        if (tip2) {
+                                            const h = ccg.instantiate(tip2);
+                                            h.name = 'gpnHint';
+                                            noWidget(h);
+                                            for (const c of (h.components || [])) {
+                                                if (c && typeof c.string === 'string') {
+                                                    c.string = '(仅影响日志)';
+                                                    try { c.fontSize = Math.max(18, Math.round((c.fontSize || 32) * 0.5)); } catch (eF) { }
+                                                    try { c.lineHeight = Math.max(20, Math.round((c.lineHeight || 36) * 0.5)); } catch (eL2) { }
+                                                    try { c.color = ccColor(120, 110, 100, 255); } catch (eC) { }
+                                                }
+                                                if (c && c.isAlignLeft !== undefined) c.enabled = false;
+                                            }
+                                            row.addChild(h);
+                                            const rowCs = sizeOf(row);
+                                            h.setPosition(Math.floor((rowCs ? rowCs.width : 948) / 2) - 150, -(ch / 2) + 26);
+                                            hintNode = h;
+                                        }
+                                    } catch (eH2) { clog('小字添加失败：' + eH2); }
+                                }
+                                // 状态小字：克隆 ToolTip，放到行内右侧
+                                let stateLab = null;
+                                try {
+                                    const tip = findDeep(row, 'ToolTip', 0);
+                                    if (tip) {
+                                        const st = ccg.instantiate(tip);
+                                        st.name = 'gpnState';
+                                        noWidget(st);
+                                        row.addChild(st);
+                                        st.setPosition(Math.floor(cw / 2) - 70, 0);
+                                        stateLab = st;
+                                    }
+                                } catch (eS) { /* 忽略 */ }
+                                const e = { key: it.key, label: it.label, master: it.master || null, masterLabel: null, row: row, sprite: findSprite(row), labelNode: stateLab, hint: hintNode };
+                                entries.push(e);
+                                let lock = 0;
+                                row.on('touch-end', () => {
+                                    try {
+                                        if (gpnDisposed) return;                       // 旧运行时不响应
+                                        const now = Date.now();
+                                        if (now - lock < 300) return;
+                                        lock = now;
+                                        if (e.master && !featOn(e.master)) { clog('已拦下：' + e.key + ' 需先开启 ' + (e.master || '')); return; }
+                                        const next = !featOn(e.key);
+                                        featSet(e.key, next);
+                                        renderAll();                                   // ★ 全量重画（父变 ⇒ 子立刻变灰）
+                                        try { if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') gpnApplyDataPatch.apply(); } catch (eA) { /* 忽略 */ }
+                                        try { gpnRefreshCardSunCost(); } catch (eB) { /* 忽略 */ }   // 数值类：刷新已建卡片的阳光显示
+                                        clog('切换：' + e.label + '(' + e.key + ') ⇒ ' + (next ? '开' : '关'));
+                                    } catch (err) { warn('【配置界面】切换出错', err); }
+                                });
+                                row.active = false;                        // 先不显示，等统一摆位
+                                panelRowsBox.addChild(row);
+                            } catch (eR) { clog('造行失败 ' + it.key + '：' + eR); }
+                        });
+                        // 补上父名字（用于"需先开启XXX"文案）
+                        entries.forEach((e) => { if (e.master) { const m = entries.find((x) => x.key === e.master); e.masterLabel = m ? m.label : e.master; } });
+                        // 统一摆位（标题 + 23 行）
+                        let idx = 0;
+                        (panelRowsBox.children || []).forEach((k) => {
+                            try {
+                                if (k.name === 'gpnGroupHeader') {
+                                    k.setPosition(0, -Math.floor((Math.max(60, Math.floor(ch * 0.6))) / 2));
+                                    k.active = true;
+                                    return;
+                                }
+                                const col = idx % cols, r = Math.floor(idx / cols);
+                                const hdrH = Math.max(60, Math.floor(ch * 0.6));
+                                k.setPosition(-Math.floor(contentW / 2) + Math.floor(cw / 2) + col * cw, -(hdrH) - (ch / 2) - r * ch);
+                                k.active = true;
+                                idx++;
+                            } catch (eP) { /* 忽略 */ }
+                        });
+                        const perCol = Math.max(1, Math.ceil(idx / cols));
+                        const needH = Math.max(1440, Math.max(60, Math.floor(ch * 0.6)) + perCol * ch + ch);
+                        setSize(panelRowsBox, contentW, needH);
+                        if (panelRowsBox.updateLayout) panelRowsBox.updateLayout();
+                        if (verboseOn()) clog('已铺 ' + idx + ' 行（2 列，行宽 ' + cw + '，行高 ' + ch + '，内容区高度 ' + needH + '）');
+                        // 【诊断】确认每行真的找到了 sprite 与状态 Label（避免"看着像改了、其实没改到"）
+                        entries.slice(0, 4).forEach((e) => {
+                            try {
+                                if (verboseOn()) clog('  行自检 ' + e.key + ' ｜ sprite=' + (e.sprite ? '有' : '无')
+                                    + ' ｜ 状态Label=' + (e.labelNode ? '有' : '无')
+                                    + (e.sprite ? (' ｜ 当前色=' + e.sprite.color.r + ',' + e.sprite.color.g + ',' + e.sprite.color.b) : ''));
+                            } catch (eD) { /* 忽略 */ }
+                        });
+                        renderAll();
+                    } catch (e) { warn('【配置界面】建行出错', e); }
+                }
+
+                /* ---------- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---------- */
+                function ensureEntry() {
+    try {
+        // ★ 过期实例不插手（双保险：注册表已被新实例覆盖时，旧闭包即使被调到也不改界面）
+        if (typeof gpnIsActiveInstance === 'function' && !gpnIsActiveInstance()) return;
+        if (!origWin || origWin.active === false) { lastWinActive = false; return; }
+        if (lastWinActive) return;
+        lastWinActive = true;
+        const ccg = ccNode();
+        if (!ccg) return;
+        const box = findDeep(origWin, 'elements', 0);
+        if (!box) { if (missLog++ < 3) clog('找不到原版 elements'); return; }
+        // 不跨场景缓存模板：每次都从"当前窗口"的 elements 里取（旧场景销毁后缓存会失效，曾崩在这里）
+        const kids = box.children || [];
+        const tpl = kids.find((k) => String((k && k.name) || '') === 'KeyBinds') || kids[kids.length - 1];
+        if (!tpl) { if (missLog++ < 3) clog('当前设置窗里找不到模板行（kids=' + kids.length + '）'); return; }
+        entryTemplate = tpl;
+        const _oldRow = kids.filter((k) => k && k.name === 'gpnConfigRow');
+        if (_oldRow.length) {
+            // ★ 关键：这行若是**别的实例**插的，它的点击处理器绑的是旧实例（点了没反应，诊断已证实）
+            //   ⇒ 删掉它、用本实例重插一行，让行的处理器与窗体都归当前活动实例。
+            let owner = null;
+            try { const _rgr = gpnGlobalReg(); owner = _rgr && _rgr.rowOwner; } catch (eRo) { /* 忽略 */ }
+            if (owner && owner !== GPN_INSTANCE_ID) {
+                clog('入口行属于旧实例(' + owner + ') ⇒ 删除并重建（本实例=' + GPN_INSTANCE_ID + '）');
+                for (const _r of _oldRow) {
+                    try { _r.removeFromParent(); } catch (eRm) { try { _r.destroy(); } catch (eRd) { /* 忽略 */ } }
+                }
+                if (box.updateLayout) box.updateLayout();
+            } else {
+                if (panel && panel.active === true) buildRows(ccg);
+                return;
+            }
+        }
+        const er = buildEntryRow(ccg);
+        box.addChild(er);
+        try { const _rgs = gpnGlobalReg(); if (_rgs) _rgs.rowOwner = GPN_INSTANCE_ID; } catch (eRso) { /* 忽略 */ }
+        if (box.updateLayout) box.updateLayout();
+        clog('入口行已插入（模板=' + tpl.name + '，场景=' + sceneName() + '）');
+    } catch (e) { warn('【配置界面】插入入口行出错', e); }
+}
+
+function sceneName() {
+    try {
+        const ccg = ccNode();
+        const sc = ccg && ccg.director && ccg.director.getScene ? ccg.director.getScene() : null;
+        return sc ? String(sc.name || '?') : '?';
+    } catch (e) { return '?'; }
+}
+function hookWin() {
+    try {
+        // ★★ 第一件事：把"本实例的入口行加载器"登记到**全局注册表**。
+        //    为什么必须放在最前面（实机证据 config-l24）：
+        //      下面有提前返回 `if (hooked && origWin && origWin.isValid) return true;`，
+        //      而 GP-NEXT「保存并重载」后新实例的 hookedScene 恰好已是 mainScene、
+        //      origWin 又是**同一个** SettingWindow 节点（场景没销毁）⇒ 新实例**每次都从这里返回**，
+        //      于是"登记"那段永远不执行 ⇒ 注册表里留的是**旧实例的闭包**
+        //      ⇒ 原型上的派发器调用旧闭包（旧闭包带"过期实例不插手"守卫）⇒ 什么都不做
+        //      ⇒ 入口行插不进去（必须进关卡再退出才能恢复）。
+        try {
+            const _rg = gpnGlobalReg();
+            if (_rg) _rg.ensure = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
+        } catch (eRg0) { /* 忽略 */ }
+        // 每个场景各有自己的 SettingWindow 组件，必须按场景重新挂钩
+        //（曾经只挂启动时那一个，导致世界地图的设置窗没有入口行）
+        const cur = sceneName();
+        if (cur !== hookedScene) {
+            hooked = false; origWin = null; lastWinActive = false; hookedScene = cur;
+            clog('场景变化，重新查找设置窗（当前场景=' + cur + '）');
+        }
+        if (hooked && origWin && origWin.isValid) return true;
+        hooked = false; origWin = null;
+        const ccg = ccNode();
+        const dir = ccg && ccg.director;
+        const scene = dir && dir.getScene ? dir.getScene() : null;
+        if (!scene) return false;
+        let comp = null;
+        const walk = (n2) => {
+            if (!n2 || comp) return;
+            try { for (const c of (n2.components || [])) { const cn = String((c && (c.__classname__ || (c.constructor && c.constructor.name))) || ''); if (cn === 'SettingWindow') { comp = c; return; } } } catch (e) { }
+            (n2.children || []).forEach(walk);
+        };
+        walk(scene);
+        if (!comp) return false;
+        origWin = comp.node;
+        const proto = Object.getPrototypeOf(comp);
+        const origOn = proto.onEnable;
+        if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
+        // ★ 关键修复：挂钩必须是【派发器】，每次调用都问"当前活动实例是谁"。
+        //   旧写法 `if (!proto.__gpnCfgHooked)` 把标记挂在**引擎原型**上（重载后依然存在），
+        //   新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
+        //   派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
+        {
+            // 注：本实例 ensureEntry 的**登记已挪到 hookWin() 最前面**（每次调用都执行，
+            //     不会被下面的提前 return 跳过）。这里只保留"装派发器"这一件事。
+            if (!proto.__gpnCfgHooked) {
+                proto.__gpnCfgHooked = true;
+                proto.onEnable = function () {
+                    const r = origOn.apply(this, arguments);
+                    try {
+                        // ★ 现查"当前活动实例"登记的 ensureEntry（旧实例的已被新实例覆盖）
+                        const _rg2 = gpnGlobalReg();
+                        const cur = _rg2 && _rg2.ensure;
+                        if (typeof cur === 'function') setTimeout(cur, 300);
+                    } catch (e) { }
+                    return r;
+                };
+            }
+        }
+        hooked = true;
+        clog('已挂上设置窗 onEnable（场景=' + cur + '）');
+        return true;
+    } catch (e) { warn('【配置界面】挂钩出错', e); return false; }
+}
+
+let ticks = 0;
+                let gpnCfgTimer = null;
+                let gpnLastScene = '';
+                gpnCfgTimer = setInterval(() => {
+                    try {
+                        if (gpnDisposed) { clearInterval(gpnCfgTimer); return; }
+                        // ★ 切场景 ⇒ 重新把数据补丁落一遍。
+                        //   为什么（实机证据）：暗影龙葵关掉后，进关卡/沙盒里阳光仍是 125（我们的值），
+                        //   而 apply() 内部诊断显示它看到的开关已经是 false ⇒ 说明游戏在进关卡时会重新
+                        //   加载/重置数据，把启动时写下去的值覆盖掉了（readJsons 钩子实测没触发）。
+                        //   钢地刺能生效、龙葵不能，差别就在"关卡是否重新读它"。
+                        try {
+                            const _sc = sceneName();
+                            if (_sc && _sc !== gpnLastScene) {
+                                gpnLastScene = _sc;
+                                if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') {
+                                    const _ok = gpnApplyDataPatch.apply();
+                                    clog('切场景(' + _sc + ')后重新落地数据补丁：' + _ok);
+                                }
+                            }
+                        } catch (eS) { /* 只影响这一项 */ }
+                        if (!hookWin()) { ticks++; return; }
+                        // 兜底轮询：入口行可能被原版窗体重建而丢失
+                        ensureEntry();
+                        // 窗体开着且行还没建 ⇒ 补建
+                        if (panel && panel.active === true && !entries.length && panelRowsBox) buildRows(ccNode());
+                    } catch (e) { /* 忽略 */ }
+                }, 1000);
+                clog('已就绪（版本 ' + gpnCfgV + '：入口行=配置界面+蓝齿轮；点它打开配置窗体）');
+                // ★ 注册官方生命周期清理：GP-NEXT「保存并重载」会 dispose 本运行时的 ctx，
+                //   届时必须让本实例安静下来（停轮询 / 停存盘 / 停响应点击），
+                //   否则旧实例会与新实例并行 —— 实机表现为「改一个开关、另一个也跟着变」。
+                try {
+                    const RT = gpnCtx && gpnCtx.runtime;
+                    if (RT && typeof RT.onDispose === 'function') {
+                        RT.onDispose(() => {
+                            if (gpnDisposed) return;
+                            gpnDisposed = true;
+                            try { if (gpnCfgTimer) clearInterval(gpnCfgTimer); } catch (e) { /* 忽略 */ }
+                            try { entries.length = 0; panelRowsBox = null; } catch (e) { /* 忽略 */ }
+                            try { if (panel && panel.isValid) panel.active = false; } catch (e) { /* 忽略 */ }
+                            try { clog('收到 onDispose：本实例已停止活动'); } catch (e) { /* 忽略 */ }
+                        }, '配置界面');
+                    } else { clog('ctx.runtime.onDispose 不可用 ⇒ 仅靠 setup 返回值清理'); }
+                } catch (eR) { clog('注册 onDispose 失败：' + eR); }
+            } catch (e) { warn('【配置界面】安装失败', e); }
             // ---- 2. 巴豆 ----
-            if (featOn('chilibean')) {
+            {
                 const chili = makeChiliPatches(chiliMod.ChiliBean, zombieMod.Zombie, zombieMod.ZombiePoison);
                 recs.push(...chili.recs);
             }
 
             // ---- 3. 钢地刺 ----
-            if (featOn('spikerock')) {
+            {
                 const spy = makeSpikerockPatch(spikerockMod.SpikerockPlant);
                 if (spy) recs.push(spy);
             }
 
             // ---- 4. 心蕊 ----
-            if (featOn('bloomingheart')) {
+            {
                 const bloom = makeBloomingHeartPatch(bloomMod.bloomingheartShot,
                     charMgrMod.Rectangle, squareMod.Square);
                 if (bloom) recs.push(bloom);
             }
 
             // ---- 5. 暗影龙葵：先重写 _shoot 打标记，再装穿透 ----
-            if (featOn('nightshade')) {
+            {
                 const night = makeNightShadePatch(nightMod.NightShadePlant,
                     prjMod.PrjFunctions, ccMod.Vec2, characterMod.CharacterType);
                 if (night) recs.push(night);
@@ -4922,7 +6834,7 @@ export default {
 
             // 私有字段桥 / 溅射 / 穿透都长在 commonShot 上：
             // 暗影龙葵、星星果、甜椒投手任意一个开着就得装（各自靠私有标记判定，互不干扰）
-            if (featOn('nightshade') || featOn('starfruit') || featOn('pepperpult') || featOn('dandelion')) {
+            {
                 const pierce = makePiercePatch(shotMod.commonShot,
                     characterMod.CharacterType, charMgrMod.ZombieDamageDetails,
                     zombiesMod && zombiesMod.ZombieEnum);
@@ -4930,7 +6842,7 @@ export default {
             }
 
             // ---- 18. 飓风甘蓝：全屏寒风 ----
-            if (featOn('hurrikale')) {
+            {
                 const hur = makeHurrikalePatch(hurrikaleMod && hurrikaleMod.HurrikalePlant,
                     zombieMod && zombieMod.Zombie, {
                         Square: squareMod.Square,
@@ -4944,7 +6856,7 @@ export default {
             }
 
             // ---- 19. 魔音甜菜 ----
-            if (featOn('phatbeet')) {
+            {
                 const pb = makePhatBeetPatch(phatbeetMod && phatbeetMod.PhatBeetPlant, {
                     Square: squareMod.Square,
                     Rectangle: charMgrMod.Rectangle,
@@ -4960,12 +6872,13 @@ export default {
                 if (pb) recs.push(...pb);
             }
             // ---- 22. 寒冰射手：冰锥（普攻 + 大招每发独立掷，薄荷 x3）----
-            if (featOn('snowpea')) {
+            // ⚠️【即时生效改造】不再用 featOn 包住安装：补丁常驻，行为在钩子里运行期现查
+            {
                 const spf = makeSnowPeaFreezePatch(snowPeaMod && snowPeaMod.SnowPeaPlant);
                 if (spf) recs.push(...spf);
             }
             // ---- 23. 红针花：左键循环切换形态 ----
-            if (featOn('redstinger')) {
+            {
                 const rs = makeRedStingerPatch(redStingerMod && redStingerMod.RedStingerPlant, {
                     cc: ccMod, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2,
                     Square: squareMod.Square, FrontYard: frontYardMod && frontYardMod.FrontYard,
@@ -4973,55 +6886,72 @@ export default {
                 if (rs) recs.push(...rs);
             }
             // ---- 24. 暗影夏威夷果：暗影态本体隐身（视觉）+ 暗影物质耐久 + 打光后真隐身 ----
-            if (featOn('murkadamia')) {
+            {
                 const mk = makeMurkadamiaPatch(murkadamiaMod && murkadamiaMod.MurkadamiaNutPlant, {
                     cc: ccMod,
                 });
                 if (mk) recs.push(...mk);
             }
             // ---- 25. 裂荚射手：左键左右翻转 + 前后豌豆数对调 ----
-            if (featOn('splitpea')) {
+            //  ⚠️【即时生效改造·样板】这里**不再**用 `featOn` 包住安装 ——
+            //  补丁**永远装着**，行为在钩子内部**运行期现查** `featOn('splitpea')`。
+            //  这样在游戏内配置界面改开关就能**立刻生效**（不需要退出游戏重进）。
+            //  其它功能后续按同一套路逐个改造（阶段②）。
+            {
                 const sp = makeSplitPeaPatch(splitPeaMod && splitPeaMod.SplitPeaPlant, { cc: ccMod });
                 if (sp) recs.push(...sp);
             }
             // ---- 20b. 寒冰射手：金卡（数据 + 显示两条路一起走）----
-            //  getBGAnm 在【植物管理类】（持有 PlantFeatures 的那个）上，不在 Cards.ts 上。
-            //  先把数据改掉（OBTAINWORLD = market ⇒ 金卡 + prenium 背景），拿不到表只 warn。
-            if (featOn('snowpea')) {
-                try {
-                    const PM = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
-                    const res = PM && PM.plantRes;
-                    if (res && Array.isArray(res.PlantFeatures)) {
-                        const sd = res.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
-                        const w = (sd && sd.OBTAINWORLD) || 'market';
-                        for (const f of res.PlantFeatures) {
-                            if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = w;
-                        }
-                        log('寒冰射手：OBTAINWORLD -> ' + w + '（金卡）');
-                    } else { warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）'); }
-                } catch (e) { warn('寒冰射手：OBTAINWORLD 补丁出错', e); }
-            }
-            // 显示层兜底：包【植物管理类】的 getBGAnm，只对 snowpea 返回金卡参数
-            if (featOn('snowpea')) {
-                try {
-                    const PM = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
-                    if (PM && typeof PM.getBGAnm === 'function') {
-                        const og = PM.getBGAnm;
-                        PM.getBGAnm = function (feature, boosted) {
-                            const r = og.apply(this, arguments);
-                            if (feature && feature.CODENAME === CFG.snowpea.plantType && r) {
+            //  ⚠️【即时生效改造】这里**不再**用 featOn 包住安装：
+            //    · getBGAnm 钩子**常驻**，内部运行期现查 featOn('snowpea')；
+            //    · 数据层（OBTAINWORLD）抽成 gpnSnowPeaGoldApply()，切换 snowpea 时立刻重刷。
+            //  注意：**已经存在的卡片**不会自动重读 ⇒ 卡面在"进关卡 / 重开图鉴"重建卡面时随之变化
+            //        （引擎里没有 refreshCard 之类的刷新入口，已核对）。
+            try {
+                const PM0 = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
+                const res0 = PM0 && PM0.plantRes;
+                const listPF = (res0 && res0.PlantFeatures) ? res0.PlantFeatures : [];   // ★ 快照一次
+                if (listPF && typeof listPF.length === 'number' && listPF.length > 0) {
+                    const sd0 = res0.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
+                    const goldW = (sd0 && sd0.OBTAINWORLD) || 'market';
+                    const vanW = (res0.PlantFeatures.find((x) => x && x.CODENAME === CFG.snowpea.plantType) || {}).OBTAINWORLD;
+                    gpnSnowPeaGoldApply = function () {
+                        try {
+                            const on = featOn('snowpea');
+                            // ⚠️ 实机报过 "PlantFeatures is not iterable" ⇒ 不用 for...of，改下标循环
+                            for (let gi = 0; gi < listPF.length; gi++) {
+                                const f = listPF[gi];
+                                if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = on ? goldW : vanW;
+                            }
+                            log('寒冰射手：OBTAINWORLD -> ' + (on ? goldW + '（金卡）' : String(vanW) + '（还原）'));
+                            return true;
+                        } catch (e) { warn('寒冰射手：OBTAINWORLD 补丁出错', e); return false; }
+                    };
+                    gpnSnowPeaGoldApply();          // 启动时先应用一次
+                } else {
+                    warn('寒冰射手：拿不到 PlantFeatures（金卡改走显示层钩子）｜ len=' + (listPF ? listPF.length : 'n/a'));
+                }
+            } catch (e) { warn('寒冰射手：OBTAINWORLD 准备出错', e); }
+            // 显示层兜底：包【植物管理类】的 getBGAnm（常驻 + 运行期现查）
+            try {
+                const PM = plantsMod && plantsMod.plants;
+                if (PM && typeof PM.getBGAnm === 'function') {
+                    const og = PM.getBGAnm;
+                    PM.getBGAnm = function (feature, boosted) {
+                        try {
+                            if (featOn('snowpea') && feature && feature.CODENAME === CFG.snowpea.plantType) {
                                 return { bg: CFG.snowpea.goldBg, golden: true, lod: false };
                             }
-                            return r;
-                        };
-                        recs.push({ Cls: PM, name: 'getBGAnm', original: og });
-                        log('寒冰射手：金卡钩子（Plants.getBGAnm）已挂');
-                    } else { warn('寒冰射手：Plants.getBGAnm 不在 —— 若数据路线也失败则卡面不变金'); }
-                } catch (e) { warn('寒冰射手：金卡钩子出错', e); }
-            }
+                        } catch (e) { /* 忽略 */ }
+                        return og.apply(this, arguments);
+                    };
+                    recs.push({ Cls: PM, name: 'getBGAnm', original: og });
+                    log('寒冰射手：金卡钩子（Plants.getBGAnm）已挂（运行期现查）');
+                } else { warn('寒冰射手：Plants.getBGAnm 不在 —— 若数据路线也失败则卡面不变金'); }
+            } catch (e) { warn('寒冰射手：金卡钩子出错', e); }
 
             // ---- 17. A2 星星果追击攻击 ----
-            if (featOn('starfruit') && CFG.starfruit.followEnabled) {
+            {
                 const follow = makeStarFollowPatch(shotMod.commonShot, {
                     Square: squareMod.Square,
                     Vec2: ccMod.Vec2,
@@ -5035,7 +6965,7 @@ export default {
             }
 
             // ---- 16. 甜椒投手：落点 3x3 灼烧 ----
-            if (featOn('pepperpult')) {
+            {
                 const burn = makePepperBurnPatch(shotMod.commonShot, {
                     Square: squareMod.Square,
                     SquareType: squareMod.SquareType,
@@ -5054,6 +6984,10 @@ export default {
                     ZombieDamageType: charMgrMod.ZombieDamageType,
                     // 伞叶注册表（CharacterManager 上的静态数组）：被弹反的甜椒弹落地时按位置判定用
                     Umbrellas: charMgrMod.Umbrellas,
+                    // 「是谁反弹的」两个类（独立模块）：只用来给子弹打来源标记 ⇒
+                    //   弄臣反弹的 ⇒ 不再算投掷物（不吃伞叶）；三节棍反弹的 ⇒ 仍算投掷物（照旧可挡）
+                    DarkJesterZombieCls: darkJesterMod && (darkJesterMod.DarkJesterZombie || darkJesterMod.default),
+                    Abbot3SectionStaffCls: abbot3Mod && (abbot3Mod.Abbot3SectionStaffZombie || abbot3Mod.default),
                 });
                 if (burn) recs.push(...burn);
                 // 卸载时把还没烧完的"植物阵营火"清掉（否则会留着已经销毁的格子引用）
@@ -5061,25 +6995,25 @@ export default {
             }
 
             // ---- 6. 甜薯：自回血 + 受到治疗加成 ----
-            if (featOn('sweetpotato')) {
+            {
                 const sweet = makeSweetPotatoPatch(plantMod.Plant);
                 if (sweet) recs.push(...sweet);
             }
 
             // ---- 7. 白萝卜：受伤间隔（挂在扣血叶子上，不影响覆盖层）----
-            if (featOn('turnip')) {
+            {
                 const turnip = makeTurnipPatch(plantMod.Plant);
                 if (turnip) recs.push(turnip);
             }
 
             // ---- 8. 心蕊 DEBUFF -> 对心蕊/甜薯/热辣海枣的啃食伤害减免 ----
-            if (featOn('bloomingheart')) {
+            {
                 const victim = makeBloomingHeartVictimPatch(plantMod.Plant);
                 if (victim) recs.push(victim);
             }
 
             // ---- 9. 香水菇：香水火 13.5 秒（原版 9）+ 施加 6 层心蕊 DEBUFF ----
-            if (featOn('perfumeshroom')) {
+            {
                 const perfume = makePerfumeShroomPatch(perfumeMod.PerfumeFire, squareMod.Square,
                     zombieMod.Zombie, gfmMod.GroundFiresManager, buffCache);
                 if (perfume) recs.push(...perfume);
@@ -5091,7 +7025,7 @@ export default {
             }
 
             // ---- 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5 ----
-            if (featOn('noctarine')) {
+            {
                 const noct = makeNoctarinePatch(noctarineMod.NoctarinePlant);
                 if (noct) recs.push(noct);
                 const gas = makeNoctarineGasPatch(gasMod.noctarineBuffParticle);
@@ -5099,25 +7033,25 @@ export default {
             }
 
             // ---- 14. 腐尸豆荚：召唤权重 ----
-            if (featOn('zoybeanpod')) {
+            {
                 const zoy = makeZoybeanPatch(zoybeanMod.ZoybeanPodPlant);
                 if (zoy) recs.push(zoy);
             }
 
             // ---- 15. 蒲公英：额外一颗子弹 ----
-            if (featOn('dandelion')) {
+            {
                 const dan = makeDandelionPatch(dandelionMod.DandelionPlant, squareMod.Square, shotMod.commonShot);
                 if (dan) recs.push(...dan);
             }
 
             // ---- 12. 推植物：跳过「不可推」的挡路植物（不再飞出屏幕）----
-            if (featOn('pushPlantFix')) {
+            {
                 const pushFix = makePushSkipPatch(charMgrMod.footballmech);
                 if (pushFix) recs.push(...pushFix);
             }
 
             // ---- 11. 高坚果：同原始坚果，可扛 3 次巨人砸击 ----
-            if (featOn('tallnut')) {
+            {
                 // !! WallNut.ts 导出的名字是 WallNutPlant（大写 N），不是 WallnutPlant ——
                 //    写错会拿到 undefined，补丁会「静默跳过」（v2.4.0 就是这个 BUG：扛 3 次砸击没生效）
                 const wallNutCls = wallNutMod.WallNutPlant || wallNutMod.WallnutPlant;
@@ -5129,7 +7063,7 @@ export default {
             }
 
             {
-                const off = Object.keys(FEATURES).filter((k) => !featOn(k) && k !== 'verboseLog');
+                const off = Object.keys(FEATURES_LIVE).filter((k) => !featOn(k) && k !== 'verboseLog');
                 // 依赖：starfruit 关掉 ⇒ starfruitFollowMerge 一律视为关闭（运行时判定，绝不去改玩家的 features.json）。
                 //   ① 把它也列进【已关闭】，玩家能看到"我没关它、它也关了"；
                 //   ② 玩家【显式写了 true】时额外打一行黄色提示，解释为什么没生效。
@@ -5143,6 +7077,20 @@ export default {
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
+            log('[CTM] BUILD = config-l38 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
+            //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
+            if (verboseOn()) {
+                try {
+                    const _ao = gpnAlmOverview();
+                    if (_ao && !_ao.error) {
+                        log('【图鉴文案总览】已就绪：图鉴共 ' + _ao.total + ' 条 ｜ 我们改过 '
+                            + _ao.changed.length + ' 株 ｜ 详情请执行 gpnAlmDumpAll()');
+                    } else {
+                        log('【图鉴文案总览】暂不可用（' + ((_ao && _ao.error) || '数据容器未就绪') + '）');
+                    }
+                } catch (eAO) { /* 只影响这一行日志 */ }
+            }
             log('已加载 v' + MOD_VERSION + '：'
                 + '巴豆(' + (CFG.chilibean.fullFartForEveryEater ? '每只完整' : '其余静默') + ')、'
                 + '钢地刺(阳光' + CFG.spikerock.sunCost + '/承受' + CFG.spikerock.maxSpike + '次/每' + perTooth
@@ -5202,6 +7150,11 @@ export default {
                 + '推植物跳过挡路者(' + (CFG.pushPlant.skipBlockers ? '开' : '关') + ')');
 
             return function cleanup() {
+                // ★ 先停下"本实例的活动"（轮询 / 点击 / 存盘），再做原型还原。
+                //   为什么关键：GP-NEXT「保存并重载」时旧运行时会被 dispose，但我们没注册清理，
+                //   旧代码会继续跑（继续操作界面、继续存盘）⇒ 与新运行时并行 ⇒ 开关错乱。
+                gpnDisposed = true;
+                try { if (typeof gpnCfgTimer !== 'undefined' && gpnCfgTimer) clearInterval(gpnCfgTimer); } catch (e) { /* 忽略 */ }
                 // !! 必须【倒序】还原：同一个方法可能被多个补丁层层包裹
                 //    （例如 commonShot.dealDamageToZombie 被"甜椒灼烧"和"星星果追击"各包了一层），
                 //    正序还原会把先包的那层包装重新装回去 = 卸载后补丁还在。
@@ -5218,3 +7171,4 @@ export default {
         });
     },
 };
+
