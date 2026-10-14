@@ -5718,7 +5718,6 @@ function gpnBloomingHeartLandingApply(shot, deps) {
     //   ⛑ 兜底才用引擎的格子中心 `Square.getSquareWorldPosition(l, c, .5, .5)`。
     const W = (typeof Square.SquareWidth === 'number') ? Square.SquareWidth : 68;
     const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
-    let rec = null;
     const mkRec = (v) => {
         try {
             if (!v || typeof v.x !== 'number' || typeof v.y !== 'number') return null;
@@ -5727,15 +5726,26 @@ function gpnBloomingHeartLandingApply(shot, deps) {
         } catch (e) { }
         return null;
     };
+    // ★★ 判定框：以【落点所在格的格心】为中心，3 格宽 × 1 格高。
+    //   为什么用**格心**而不是"落点坐标"（两者只差半格，但很关键）：
+    //     · 1×3 的语义是"**以落点那一格为中心**，左右各一格"；
+    //     · 弹道可能落在格子的**边缘**，用落点坐标会让框整体偏半格 ⇒ 一侧的邻格吃不到；
+    //     · 引擎自己的按格取框（`ChillyPepper.getLnCRec`）也是先 `getSquareWorldPosition(l, c, .5, .5)`。
+    //   取法：格心（最准，与僵尸的 bodyRec 同一套世界坐标）→ 落点坐标（兜底）。
+    let rec = null;
     try {
-        const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX
-            : ((shot.worldPosition && typeof shot.worldPosition.x === 'number') ? shot.worldPosition.x : null);
-        const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY
-            : ((shot.worldPosition && typeof shot.worldPosition.y === 'number') ? shot.worldPosition.y : null);
-        if (px !== null && py !== null) rec = mkRec({ x: px, y: py });
+        if (typeof Square.getSquareWorldPosition === 'function') {
+            rec = mkRec(Square.getSquareWorldPosition(lane, (col < 0 ? 8 : col), 0.5, 0.5));
+        }
     } catch (e) { rec = null; }
-    if (!rec && typeof Square.getSquareWorldPosition === 'function') {
-        try { rec = mkRec(Square.getSquareWorldPosition(lane, col, 0.5, 0.5)); } catch (e) { rec = null; }
+    if (!rec) {
+        try {
+            const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX
+                : ((shot.worldPosition && typeof shot.worldPosition.x === 'number') ? shot.worldPosition.x : null);
+            const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY
+                : ((shot.worldPosition && typeof shot.worldPosition.y === 'number') ? shot.worldPosition.y : null);
+            if (px !== null && py !== null) rec = mkRec({ x: px, y: py });
+        } catch (e) { rec = null; }
     }
     if (!rec) return false;
 
