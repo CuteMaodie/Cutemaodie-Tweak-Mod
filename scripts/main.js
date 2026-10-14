@@ -2192,9 +2192,41 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
         if (!zombie.inLnC || !zombie.inLane || typeof zombie.inLane.zombiePool !== 'function') {
             return original.call(this, zombie);
         }
-        // 场内：以命中目标所在格为中心、同排 3 格宽的判定框
-        const rec = Rectangle.createRectangleNodeCenter(
-            zombie.inLnC.node,
+        // 场内：以**命中目标所在格**为中心、同排 3 格宽的判定框
+        //   ⚠️ 中心怎么取（踩过坑，按可靠性排序）：
+        //     ① **格子中心**（引擎的 `Square.getSquareWorldPosition(l, c, .5, .5)`）—— 最准，
+        //        它和僵尸的 bodyRec 是同一套世界坐标（引擎自己的 `getLnCRec` 也用它）；
+        //     ② 僵尸自己的 `worldPositionX/Y`；
+        //     ③ `zombie.inLnC.node.worldPosition`。
+        //   ❌ 不要用 ③ 打头：`LnC.plantPoint` 这个 getter 在 `_plantPoint` 为空时会**退回 `node`**，
+        //      而 `node` 未必是格心（自检抓到过：框心跑到 (0,0)，把三格外的僵尸框进来、
+        //      相邻格的反而没框到）。
+        const zLane = (typeof zombie.lIndex === 'number' && zombie.lIndex >= 0 && zombie.lIndex <= 4)
+            ? zombie.lIndex : gpnLaneByY(zombie.worldPositionY, Square);
+        const zCol = (typeof zombie.cIndex === 'number' && zombie.cIndex >= 0 && zombie.cIndex <= 8)
+            ? zombie.cIndex
+            : ((typeof zombie.worldPositionX === 'number' && typeof Square.judgeCIndexReal === 'function')
+                ? Square.judgeCIndexReal(zombie.worldPositionX) : -1);
+        const recBoxCenter = (function () {
+            const z = zombie;
+            try {
+                if (zLane >= 0 && zLane <= 4 && zCol >= 0 && zCol <= 8
+                    && typeof Square.getSquareWorldPosition === 'function') {
+                    const v = Square.getSquareWorldPosition(zLane, zCol, 0.5, 0.5);
+                    if (v && typeof v.x === 'number' && typeof v.y === 'number') return v;
+                }
+            } catch (e) { }
+            if (typeof z.worldPositionX === 'number' && typeof z.worldPositionY === 'number') {
+                return { x: z.worldPositionX, y: z.worldPositionY };
+            }
+            if (z.worldPosition && typeof z.worldPosition.x === 'number') return z.worldPosition;
+            const n = z.inLnC && z.inLnC.node;
+            if (n && typeof n.getWorldPosition === 'function') return n.getWorldPosition();
+            return (n && n.worldPosition) ? n.worldPosition : null;
+        }());
+        if (!recBoxCenter) return original.call(this, zombie);
+        const rec = Rectangle.createRectangleCenter(
+            recBoxCenter,
             Square.SquareWidth * CFG.bloomingheart.splashWidthTiles,
             Square.SquareHeight
         );
@@ -2210,23 +2242,50 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
     };
     recs.push({ Cls: Shot, name: 'beforeZombieHit', original });
 
-    // ★★ 新增：**直接落地**也要铺 1×3（原来只有"命中僵尸"一个入口 ⇒ 落地时永不生效）
-    //   挂在 commonShot.hitFloor（引擎真正调用的落地入口），且只对"心蕊的弹"生效
-    //   （靠 `DefenceRateList` 认领）。已命中过僵尸的那一发不重复铺。
+    // ★★ 新增：**直接落地 / 打空飞出场外**都要铺 1×3
+    //   （原来只有"命中僵尸"一个入口 ⇒ 这两种情况都永不生效）
+    //
+    //   ★ 必须挂**两个**入口（逐字核对 1.5.5 bundle 后确定的）：
+    //   ① `commonShot.hitFloor` —— 弹道**在草坪范围内**落地时走它
+    //      （`hitBorderOrGround`：`currentDetectHitGround() && this.height <= 0` ⇒ `hitFloor(e)`）；
+    //   ② `commonShot.onFaded` —— 弹道**飞出屏幕时走的是 `fade()`**，而
+    //      `hitBorderOrGround` 的越界分支直接 `this.fade()`（**根本不调 hitFloor**），
+    //      而 `fade()` 里有一句 `this.onFaded()`（`commonShot.onFaded` 默认是空函数，
+    //      正是引擎留给子类/补丁的扩展点；`bloomingheartShot` **没有覆写它** ⇒ 我们挂基类就能覆盖到）。
+    //      ⇒ **心蕊打空、子弹飞到最右列之外淡出** 走的就是这条，只挂 hitFloor 会漏掉它。
+    //
+    //   两个入口共用 `__gpnBloomLanded` 标记 ⇒ 同一发绝不会重复施加。
+    //   认领方式：只看弹道自带的 `DefenceRateList`（心蕊系弹道专属）⇒ 其它植物的弹不受影响。
+    const bloomLandingHook = function () {
+        try {
+            if (featOn('bloomingheart') && !this.__gpnBloomHit && !this.__gpnBloomLanded) {
+                gpnBloomingHeartLandingApply(this, deps);
+            }
+        } catch (e) { warn('心蕊：落地 1×3 出错', e); }
+    };
+
     if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.hitFloor === 'function') {
         const recL = methodRecord(CommonShot, 'hitFloor');
         CommonShot.prototype.hitFloor = function () {
             const r = recL.original.apply(this, arguments);
-            try {
-                if (featOn('bloomingheart') && !this.__gpnBloomHit && !this.__gpnBloomLanded) {
-                    gpnBloomingHeartLandingApply(this, deps);
-                }
-            } catch (e) { warn('心蕊：落地 1×3 出错', e); }
+            bloomLandingHook.call(this);
             return r;
         };
         recs.push(recL);
     } else {
-        warn('心蕊：拿不到 commonShot.hitFloor ⇒ 「直接落地」的 1×3 不会生效');
+        warn('心蕊：拿不到 commonShot.hitFloor（草坪内落地的 1×3 可能不生效）');
+    }
+
+    if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.onFaded === 'function') {
+        const recF = methodRecord(CommonShot, 'onFaded');
+        CommonShot.prototype.onFaded = function () {
+            const r = recF.original.apply(this, arguments);
+            bloomLandingHook.call(this);          // ★ 打空飞出场外（fade）时的那条路
+            return r;
+        };
+        recs.push(recF);
+    } else {
+        warn('心蕊：拿不到 commonShot.onFaded ⇒ 「打空飞出场外」的 1×3 不会生效');
     }
     return recs;
 }
@@ -5603,29 +5662,46 @@ function gpnBloomingHeartLandingApply(shot, deps) {
     if (lane < 0) return false;
     const laneObj = gpnLaneObj(lane, Square);
     if (!laneObj || typeof laneObj.zombiePool !== 'function') return false;
-    // 落点所在列（用真实列号，不钳制；场外时自然会落空，由 gpnOffFieldAreaApply 那种兜底负责）
+    // 落点所在列：优先按落点坐标的真实列号（**不钳制**；场外/越界交给 gpnOffFieldAreaApply）
+    //   ⚠️ 用 `judgeCIndexReal`（真实列号，可为 -1 / 9）而不是 `judgeCIndex`（会把越界钳成 8）
     let col = -1;
     try {
-        const r = shot.bodyRec && shot.bodyRec.prjX ? shot.bodyRec.prjX() : null;
-        if (r && typeof Square.judgeCIndex === 'function') col = Square.judgeCIndex(r.x);
+        const r = (shot.bodyRec && typeof shot.bodyRec.prjX === 'function') ? shot.bodyRec.prjX() : null;
+        const px = (r && typeof r.x === 'number') ? r.x
+            : ((typeof shot.worldPositionX === 'number') ? shot.worldPositionX : null);
+        if (px !== null) {
+            if (typeof Square.judgeCIndexReal === 'function') col = Square.judgeCIndexReal(px);
+            else if (typeof Square.judgeCIndex === 'function') col = Square.judgeCIndex(px);
+        }
     } catch (e) { col = -1; }
-    if (col < 0) col = 8;                               // 拿不到就按最右列
+    if (col < 0 || col > 8) col = Math.max(0, Math.min(8, col));   // 越界钳进草坪（落点必在草坪内）
 
-    // 判定框：以落点为中心，3 格宽 × 1 格高
+    // ★★ 判定框：以**落点**为中心，3 格宽 × 1 格高。
+    //   ⚠️ 优先用【弹道自己的世界坐标】：它就是落点，最可靠、也不依赖任何坐标换算。
+    //   ❌ 曾经用 `Square.getLnC(l,c).node` 的 worldPosition —— 那是 Cocos 节点的位置，
+    //      **未必是格心**（`plantPoint` 这个 getter 在 `_plantPoint` 为空时还会**退回 `node`**）
+    //      ⇒ 判定框会偏 ⇒ **落点附近的僵尸吃不到 debuff**（这就是"落空落地不生效"的原因）。
+    //   ⛑ 兜底才用引擎的格子中心 `Square.getSquareWorldPosition(l, c, .5, .5)`。
+    const W = (typeof Square.SquareWidth === 'number') ? Square.SquareWidth : 68;
+    const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
     let rec = null;
-    try {
-        const cellNode = Square.getLnC(lane, Math.min(8, col));
-        if (cellNode && cellNode.node) rec = Rect.createRectangleNodeCenter(cellNode.node, 68 * 3, 80.77);
-        else if (cellNode && typeof cellNode.getSquareWorldPosition === 'function') rec = null;
-    } catch (e) { rec = null; }
-    if (!rec) {
+    const mkRec = (v) => {
         try {
-            const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX : 0;
-            const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY : 0;
-            if (typeof Rect.createRectangleCenter === 'function' && deps.Vec2) {
-                rec = Rect.createRectangleCenter(new deps.Vec2(px, py), 68 * 3, 80.77);
-            }
-        } catch (e2) { rec = null; }
+            if (!v || typeof v.x !== 'number' || typeof v.y !== 'number') return null;
+            if (typeof Rect.createRectangleCenter === 'function') return Rect.createRectangleCenter(v, W * 3, H);
+            if (typeof Rect.createRectangleNodeCenter === 'function') return Rect.createRectangleNodeCenter({ worldPosition: { x: v.x, y: v.y } }, W * 3, H);
+        } catch (e) { }
+        return null;
+    };
+    try {
+        const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX
+            : ((shot.worldPosition && typeof shot.worldPosition.x === 'number') ? shot.worldPosition.x : null);
+        const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY
+            : ((shot.worldPosition && typeof shot.worldPosition.y === 'number') ? shot.worldPosition.y : null);
+        if (px !== null && py !== null) rec = mkRec({ x: px, y: py });
+    } catch (e) { rec = null; }
+    if (!rec && typeof Square.getSquareWorldPosition === 'function') {
+        try { rec = mkRec(Square.getSquareWorldPosition(lane, col, 0.5, 0.5)); } catch (e) { rec = null; }
     }
     if (!rec) return false;
 
