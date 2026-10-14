@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.1.0';
+const MOD_VERSION = '1.2.0';
 /* ★ 实例身份：每次模块被加载都会生成一个新的 ID。
  *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -2166,20 +2166,33 @@ function makeSpikerockPatch(SpikerockPlant) {
 /* =========================================================================
  * 4. 心蕊：debuff 由单体改成 1x3
  * =======================================================================*/
-function makeBloomingHeartPatch(Shot, Rectangle, Square) {
+function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
     if (!Shot || !Shot.prototype || typeof Shot.prototype.beforeZombieHit !== 'function') {
         warn('跳过心蕊：拿不到 beforeZombieHit');
         return null;
     }
     if (!Rectangle || !Square) { warn('跳过心蕊：拿不到 Rectangle / Square'); return null; }
+    const deps = { Square, Rectangle };
     const original = Shot.prototype.beforeZombieHit;
+    const recs = [];
 
     Shot.prototype.beforeZombieHit = function (zombie) {
         // 【运行期开关】关掉 ⇒ 只走原版单体命中，不再把 debuff 扩散成 1×3
         if (!featOn('bloomingheart')) return original.call(this, zombie);
-        if (!zombie || !zombie.inLnC || !zombie.inLane) return original.call(this, zombie);
+        if (!zombie) return original.call(this, zombie);
 
-        // 以命中目标所在格为中心、同排 3 格宽的判定框
+        // ★★ 场外（最右列更右侧）：`zombie.inLnC` 是全场共用的假格 `LnCRight`（lIndex = -2），
+        //    原来以它的 `node` 为中心铺 3 格 ⇒ 判定框会落在场外 ⇒ **范围失效**。
+        //    这里改走"按 Y 求行 + 以命中目标为中心"的兜底（与引擎寒冰辣椒同款思路）。
+        if (gpnIsOffField(zombie) || gpnIsOffField(this)) {
+            gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
+            return original.call(this, zombie);
+        }
+
+        if (!zombie.inLnC || !zombie.inLane || typeof zombie.inLane.zombiePool !== 'function') {
+            return original.call(this, zombie);
+        }
+        // 场内：以命中目标所在格为中心、同排 3 格宽的判定框
         const rec = Rectangle.createRectangleNodeCenter(
             zombie.inLnC.node,
             Square.SquareWidth * CFG.bloomingheart.splashWidthTiles,
@@ -2192,8 +2205,30 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square) {
             if (typeof z.pushBloomingHeartDefenceRateList !== 'function') continue;
             z.pushBloomingHeartDefenceRateList(this.DefenceRateList, this.BloomingHeartBuffPar);
         }
+        this.__gpnBloomHit = true;      // 标记"这一发打过僵尸" ⇒ 落地时不再重复铺
+        return original.call(this, zombie);
     };
-    return { Cls: Shot, name: 'beforeZombieHit', original };
+    recs.push({ Cls: Shot, name: 'beforeZombieHit', original });
+
+    // ★★ 新增：**直接落地**也要铺 1×3（原来只有"命中僵尸"一个入口 ⇒ 落地时永不生效）
+    //   挂在 commonShot.hitFloor（引擎真正调用的落地入口），且只对"心蕊的弹"生效
+    //   （靠 `DefenceRateList` 认领）。已命中过僵尸的那一发不重复铺。
+    if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.hitFloor === 'function') {
+        const recL = methodRecord(CommonShot, 'hitFloor');
+        CommonShot.prototype.hitFloor = function () {
+            const r = recL.original.apply(this, arguments);
+            try {
+                if (featOn('bloomingheart') && !this.__gpnBloomHit && !this.__gpnBloomLanded) {
+                    gpnBloomingHeartLandingApply(this, deps);
+                }
+            } catch (e) { warn('心蕊：落地 1×3 出错', e); }
+            return r;
+        };
+        recs.push(recL);
+    } else {
+        warn('心蕊：拿不到 commonShot.hitFloor ⇒ 「直接落地」的 1×3 不会生效');
+    }
+    return recs;
 }
 
 /* =========================================================================
@@ -3496,8 +3531,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
  *        改由 gpnPlantFireAt / gpnTickPlantFires 自己每帧结算（烧植物 + 被催眠僵尸，
  *        绝不碰普通僵尸；照样化冰面 + 清零冻结进度）。见 gpnPepperBurnAt 里的 plantSide。
  * =======================================================================*/
-function gpnPepperBurnAt(shot, deps, cellOverride) {
-    const { Square, SquareType, GroundFireColorEnum, JalapenoFire, GroundFiresManager } = deps;
+function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareType, GroundFireColorEnum, JalapenoFire, GroundFiresManager } = deps;
     if (shot.__gpnBurned) return;
     const dur = CFG.pepperpult.burnSeconds;
     // 私有标记里存的是【总伤害比例】：
@@ -3539,21 +3573,32 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {
 
     // 落点：优先用「被打中的那个障碍物所在的格子」（墓碑/冰块/冲浪板都是一格一物），
     // 其次用子弹当前所在格，最后按坐标查格。
+    // ★ 但**场外**要特殊处理（见下）：那时上面的三种都拿不到可用的实体格。
     let cell = (cellOverride && typeof cellOverride.get3x3 === 'function') ? cellOverride : shot.inLnC;
     if (!cell && Square && typeof Square.getLnC === 'function'
         && shot.lIndex >= 0 && shot.cIndex >= 0) {
         cell = Square.getLnC(shot.lIndex, shot.cIndex);
     }
 
-    const fires = [];
-    // 要铺火的格子：
-    //   正常     = 落点格的 get3x3()（9 格）
-    //   落点拿不到 = 直接按子弹坐标铺 3x3
-    // v2.8.3 修：打到「最右列【右边一格】的场外目标」时，getLnC 会返回空 ——
-    //   以前这里直接 return，导致【整片火都不生成】（不是场内部分没火，是一片都没有）。
-    //   现在按坐标铺 3x3：场外格 addGroundFire 自己会拒绝，3x3 里【场内那部分照常出火】。
-    let cells = (cell && typeof cell.get3x3 === 'function') ? cell.get3x3() : null;
-    if (!cells || !cells.length) cells = gpnBurnCellsByCoord(shot, Square);
+    // ★★ 场外右侧（打的是「最右列更右侧」的目标）：**改成最右列的 3×1**（用户口径 2026/10/14）
+    //   为什么不能用原来的 3x3：场外格 `LnCRight` 是**全场共用的假格**，`get3x3()` 拿不到实体格；
+    //   而兜底 `gpnBurnCellsByCoord` 里 `shot.lIndex = -2 < 0` ⇒ 直接返回空 ⇒ **一片火都不生成**
+    //   （那条「甜椒灼烧：一片火都没生成」的刷屏就是这么来的）。
+    //   现在：行号按 **Y 坐标**求（不能用 lIndex）、只在**最右列**铺，行超出草坪的**不铺**。
+    const offRight = gpnIsOffFieldRight(cell) || (typeof shot.lIndex === 'number' && shot.lIndex < 0);
+    let cells = null;
+    if (offRight) {
+        const lane = gpnLaneByY(shot.worldPositionY, Square);
+        cells = gpnRightmostCells3x1(lane, Square);
+        if (!cells.length) warn('甜椒灼烧：打到场外目标，但求不到草坪行（Y=' + shot.worldPositionY + '）⇒ 这次不铺火');
+    } else {
+        cells = (cell && typeof cell.get3x3 === 'function') ? cell.get3x3() : null;
+        if (!cells || !cells.length) cells = gpnBurnCellsByCoord(shot, Square);
+    }
+    const fires = [];       // 要铺火的格子：
+                            //   正常     = 落点格的 get3x3()（9 格）
+                            //   场外右侧 = 最右列的 3×1（见上面的 offRight 分支）
+                            //   其它拿不到 = 按子弹坐标铺 3x3（gpnBurnCellsByCoord）
     let skipped = 0;
     for (const c of cells) {
         if (!c || typeof c.addGroundFire !== 'function') continue;
@@ -3564,9 +3609,14 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {
         if (f) fires.push(f);
     }
     if (!fires.length) {
+        // ★ 噪音治理（2026/10/14 用户要求）：这两句原来**没有门**，而"打场外目标"每发都会走到这里
+        //   ⇒ `verboseLog` 关着也照样刷屏。
+        //   现在：**天空/海面关卡属于正常地形**（不是异常）⇒ 降为 verbose 日志；
+        //        「一片火都没生成」保留为真警告，但**加去重**（同一帧/同种原因只报一次）。
         if (skipped) {
-            warn('甜椒灼烧：3x3 里 ' + skipped + ' 格是天空/海面，剩下拿不到格子，这次不铺火');
-        } else {
+            if (verboseOn()) log('甜椒灼烧：' + skipped + ' 格是天空/海面（该地形本就不出火）'
+                + (offRight ? '，场外目标：本次不铺火' : '，剩下拿不到格子'));
+        } else if (gpnWarnOnce('pepperNoFire')) {
             warn('甜椒灼烧：一片火都没生成');
         }
         return;
@@ -3609,7 +3659,8 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {
     } else {
         // v2.7.0/2.7.1 的「有火没伤害」就是走到这里：火粒子已经铺出去了（上面那步），
         // 但没有任何火批次被注册 ⇒ 每帧结算的伤害一次都不会发生。
-        warn('甜椒灼烧：拿不到 GroundFiresManager.component（火已铺出，但不会有伤害）');
+        // ★ 噪音治理：这是**环境级异常**（每次都一样），一句话只报一次就够。
+        if (gpnWarnOnce('pepperNoMgr')) warn('甜椒灼烧：拿不到 GroundFiresManager.component（火已铺出，但不会有伤害）');
         return;
     }
     shot.__gpnBurned = true;
@@ -3654,6 +3705,117 @@ function gpnBurnCellsByCoord(shot, Square) {
             const sq = Square.getLnC(l + dl, c + dc);
             if (sq) out.push(sq);
         }
+    }
+    return out;
+}
+
+/** ★ 场外判定 + 位置修补（修「最右列之外的场外目标，范围效果失效」，2026/10/14 用户报告）
+
+ *  引擎事实（已逐字核对 1.5.5 bundle）：
+ *    · `Square.judgeCIndex(x)`：`x > 草坪右边界 + 9*SquareWidth` ⇒ 返回 **9**
+ *      （**最右列（cIndex 8）的更右侧** ⇒ cIndex = 9）；左侧场外 ⇒ -1。
+ *    · `Square.getLnC(l, c)`：`c === 9` ⇒ 返回 **`LnCRight`** —— 它是**全场唯一一个**格对象，
+ *      初始化时被设成 `inLane = getLane(-2)`、**`lIndex = -2`**、`cIndex = 9`。
+ *    · 于是**场外**的弹道/僵尸：`inLnC === LnCRight`、**`lIndex === -2`**。
+ *    ⚠️ 而引擎的通用范围通道 `defaultDealSplashDamage` 有一道守卫
+ *      `if (!(!this.inLane || this.lIndex > 4 || this.lIndex < 0)) { … }`
+ *      ⇒ **场外（lIndex = -2）时整段范围效果被跳过**，看起来就像"范围失效、变成单体"。
+ *      （`dealSplashDamageForEach` 里还依赖 `inLane.midY` 与 `lIndex`，场外同样拿不到。）
+ *  所以场外必须**绕开这条通道**，照原版「寒冰辣椒 `_chillLane`」的模板自己做：
+ *    **按 Y 求行（行池）→ 自算判定框 → 直接对僵尸施加效果**。
+ */
+
+/** 「同一类警告只报一次」——用于**每次触发都会重复**的警告（避免刷屏）。
+ *  与 `verboseOn()` 的区别：这类是**真警告**（有问题、要让人看见），只是不需要重复 N 遍。 */
+const GPN_WARN_ONCE = {};
+function gpnWarnOnce(key) {
+    if (GPN_WARN_ONCE[key]) return false;
+    GPN_WARN_ONCE[key] = true;
+    return true;
+}
+
+/** 判定：`inLnC` 是不是「场外右侧」那个共享假格 */
+function gpnIsOffFieldRight(cell) {
+    try { return !!cell && cell.cIndex === 9; } catch (e) { return false; }
+}
+
+/** 判定：这个弹道/僵尸是不是站在场外（`lIndex < 0` 或 `inLnC` 是场外格） */
+function gpnIsOffField(obj) {
+    if (!obj) return false;
+    try {
+        if (typeof obj.lIndex === 'number' && obj.lIndex < 0) return true;
+        return gpnIsOffFieldRight(obj.inLnC);
+    } catch (e) { return false; }
+}
+
+/** 按 Y 坐标求草坪行号（0..4）。
+ *  为什么不用 `obj.lIndex`：**场外时它是 -2**；而 `getLane(-2)` 也不是"它所在的那一行"。
+ *  行号 = 让 `lane.midY` 最接近 `y` 的那一行。
+ *  ⚠️ 用 `Square.getAllLane()`（引擎返回 5 条真实车道的数组）而不是 `getLane(i)`——
+ *     两者在引擎里等价，但前者是**一次性数组**、语义更明确（自检里 `getLane(i)` 会被 mock 覆写）。 */
+function gpnLaneByY(y, Square) {
+    try {
+        if (!Square || typeof y !== 'number' || isNaN(y)) return -1;
+        let best = -1, bestD = Infinity;
+        const arr = (typeof Square.getAllLane === 'function') ? Square.getAllLane() : null;
+        const n = (arr && arr.length) ? arr.length : 5;
+        for (let i = 0; i < n; i++) {
+            const lane = arr ? arr[i] : (typeof Square.getLane === 'function' ? Square.getLane(i) : null);
+            if (!lane || typeof lane.midY !== 'number') continue;
+            const d = Math.abs(lane.midY - y);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        return best;
+    } catch (e) { return -1; }
+}
+
+/** 取第 i 行的行对象（优先 `getLane`，拿不到再退回 `getAllLane`）。 */
+function gpnLaneObj(i, Square) {
+    try {
+        if (!Square) return null;
+        let lane = (typeof Square.getLane === 'function') ? Square.getLane(i) : null;
+        if (lane && typeof lane.zombiePool === 'function') return lane;
+        if (typeof Square.getAllLane === 'function') {
+            const arr = Square.getAllLane();
+            if (arr && arr[i] && typeof arr[i].zombiePool === 'function') return arr[i];
+        }
+        return lane || null;
+    } catch (e) { return null; }
+}
+
+/** 以某个对象（僵尸/弹道）的**世界坐标**为中心造一个判定框。
+ *  ⚠️ 为什么不用它的 `inLnC.node`：**场外时 `inLnC` 是全场共用的假格 `LnCRight`**，
+ *     它的 `node` 只有一个位置 ⇒ 所有场外目标都会叠在同一个点上（判定框必然错）。
+ *  @returns Rectangle | null */
+function gpnRectAtZombie(obj, deps, halfW, halfH) {
+    const Rect = deps && deps.Rectangle, Vec2 = deps && deps.Vec2;
+    if (!obj || !Rect) return null;
+    const px = (typeof obj.worldPositionX === 'number') ? obj.worldPositionX
+        : (obj.worldPosition && typeof obj.worldPosition.x === 'number') ? obj.worldPosition.x : null;
+    const py = (typeof obj.worldPositionY === 'number') ? obj.worldPositionY
+        : (obj.worldPosition && typeof obj.worldPosition.y === 'number') ? obj.worldPosition.y : null;
+    if (px === null || py === null) return null;
+    try {
+        if (Vec2 && typeof Rect.createRectangleCenter === 'function') {
+            return Rect.createRectangleCenter(new Vec2(px, py), halfW * 2, halfH * 2);
+        }
+        if (typeof Rect.createRectangleSide === 'function') {
+            return Rect.createRectangleSide(new (Vec2 || Object)(px, py), halfW * 2, halfH * 2);
+        }
+    } catch (e) { /* 拿不到就返回 null，由调用方决定 */ }
+    return null;
+}
+
+/** 最右列的 3×1 格子（以 `lane` 行为中心、取草坪最右列 cIndex = 8）。
+ *  用户口径（2026/10/14）：**行号超出 0..4 时不铺**（只铺场内那两行）。 */
+function gpnRightmostCells3x1(lane, Square) {
+    const out = [];
+    if (!Square || typeof Square.getLnC !== 'function' || typeof lane !== 'number' || lane < 0) return out;
+    for (let dl = -1; dl <= 1; dl++) {
+        const l = lane + dl;
+        if (l < 0 || l > 4) continue;                 // ★ 超出草坪的行不铺
+        const sq = Square.getLnC(l, 8);               // ★ 最右列
+        if (sq) out.push(sq);
     }
     return out;
 }
@@ -3871,6 +4033,7 @@ function makePlantFireTickPatch(GroundFiresManager, deps) {
 
 function makePepperBurnPatch(CommonShot, deps) {
     if (!CommonShot || !CommonShot.prototype) { warn('跳过甜椒灼烧：拿不到 commonShot'); return null; }
+    gpnPepperDeps = deps;      // ★ 自检/诊断用：把依赖存下来（`_pepperBurnAt` 靠它）
     const recs = [];
 
     // 命中目标 -> 烧
@@ -5354,6 +5517,135 @@ function gpnCloneProjectile(Container, fromAlias, newAlias, tweak) {
     return e2;
 }
 
+/** 甜椒落点铺火用到的引擎依赖（`setup()` 里分配，供自检/诊断复用）。
+ *  ⚠️ 只是**引用存档**，不改变任何行为。 */
+let gpnPepperDeps = null;
+
+/** ★★ 场外范围兜底（修 2026/10/14 用户报告的三个 BUG）★★
+ *
+ *  问题：**最右列（cIndex 8）的更右侧 = 场外**，那里的格是全场共用的假格 `LnCRight`
+ *        （**`lIndex = -2`**、`cIndex = 9`）。引擎的通用范围通道 `SplashDamage` 带一道
+ *        `lIndex 必须 0..4` 的守卫 ⇒ **场外时整段范围效果被跳过** ⇒ 只有被直接命中的那一个生效。
+ *
+ *  本函数绕开那条通道，照原版「寒冰辣椒 `_chillLane`」的模板做：
+ *      **按 Y 求行 → 行池（`lane.zombiePool()`）→ 自算判定框 → 直接对僵尸施加效果**
+ *
+ *  @param shot  命中的那颗弹道（`commonShot` 实例）
+ *  @param z     被直接命中的僵尸
+ *  @param deps  `{ Square, Rectangle }`（引擎类）
+ *  @param kinds 要兜底的效果：`'snow'`（冰减速/冻结，读弹道自身的 `chill`/`freeze`）
+ *                              `'bloom'`（心蕊 1×3 减防 DEBUFF，读弹道自身的 `DefenceRateList`）
+ *  @returns 是否真的施加了（只为日志用）
+ */
+function gpnOffFieldAreaApply(shot, z, deps, kinds) {
+    if (!shot) return false;
+    const Square = deps && deps.Square, Rect = deps && deps.Rectangle;
+    if (!Square || !Rect || typeof Square.getLane !== 'function') return false;
+    // ① 只有【场外】才兜底：场内一律交给引擎，绝不重复施加
+    if (!gpnIsOffField(shot) && !gpnIsOffField(z)) return false;
+    // ② 行号：**不能用 lIndex（场外是 -2）**，按 Y 坐标求
+    const lane = gpnLaneByY((z && typeof z.worldPositionY === 'number') ? z.worldPositionY : shot.worldPositionY, Square);
+    if (lane < 0) return false;
+    const laneObj = gpnLaneObj(lane, Square);
+    if (!laneObj || typeof laneObj.zombiePool !== 'function') return false;
+
+    const pool = laneObj.zombiePool();
+    if (!pool) return false;
+    const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
+    let applied = 0;
+
+    for (const zz of pool.concat()) {                       // ★ concat()：遍历中可能有人死亡
+        if (!zz || typeof zz.isAlive !== 'function' || !zz.isAlive()) continue;
+        // 被【直接命中】的那一只：一定生效（它就是范围的中心）
+        const isTarget = (zz === z);
+        // 其余：按它自己的世界坐标现算判定框（1 格宽 × 1 格高 ⇒ 半宽 68 恰好碰见左右 1 格）
+        const hit = isTarget || (function () {
+            const rz = gpnRectAtZombie(zz, deps, 68, H);
+            if (!rz) return false;
+            const body = zz.bodyRecReal || zz.bodyRec;
+            return !!(body && rz.judgeCrossRec(body));
+        }());
+
+
+
+        if (kinds.indexOf('snow') !== -1) {
+            const chill = (typeof shot.chill === 'number' && shot.chill > 0) ? shot.chill : 0;
+            const freeze = (typeof shot.freeze === 'number' && shot.freeze > 0) ? shot.freeze : 0;
+            if (chill > 0 && typeof zz.setChill === 'function') { try { zz.setChill(chill); applied++; } catch (e) { } }
+            if (freeze > 0 && typeof zz.setFreeze === 'function') { try { zz.setFreeze(freeze); applied++; } catch (e) { } }
+        }
+        if (kinds.indexOf('bloom') !== -1) {
+            // 心蕊：弹道上带着 DefenceRateList（减防值）与 Buff 特效参数，原样转发
+            if (typeof zz.pushBloomingHeartDefenceRateList === 'function' && shot.DefenceRateList) {
+                try { zz.pushBloomingHeartDefenceRateList(shot.DefenceRateList, shot.BloomingHeartBuffPar); applied++; } catch (e) { }
+            }
+        }
+    }
+    if (applied && dbgOn(CFG.pepperpult.debugLog)) {
+        log('【场外范围兜底】行=' + lane + '，共施加 ' + applied + ' 次（' + kinds.join('/') + '）');
+    }
+    return applied > 0;
+}
+
+/** ★★ 心蕊「直接落地」也要铺 1×3（用户口径 2026/10/14）★★
+ *
+ *  原来只有 `beforeZombieHit`（**命中僵尸**）这一个入口 ⇒ 弹道没碰到僵尸、直接落地时
+ *  1×3 永远不生效。这里补一条**落地入口**：落点所在行、以**落点格**为中心的 3 格。
+ *  ⚠️ 只在"没打中任何僵尸"时铺（打中了就由 `beforeZombieHit` 负责，避免重复）。
+ */
+function gpnBloomingHeartLandingApply(shot, deps) {
+    if (!shot || shot.__gpnBloomLanded) return false;
+    shot.__gpnBloomLanded = true;                       // 一发只处理一次
+    const Square = deps && deps.Square, Rect = deps && deps.Rectangle;
+    if (!Square || !Rect || typeof Square.getLane !== 'function' || typeof Square.getLnC !== 'function') return false;
+    if (!shot.DefenceRateList) return false;            // 不是心蕊的弹（没带减防表）⇒ 不插手
+    const lane = gpnLaneByY((typeof shot.worldPositionY === 'number') ? shot.worldPositionY : NaN, Square);
+    if (lane < 0) return false;
+    const laneObj = gpnLaneObj(lane, Square);
+    if (!laneObj || typeof laneObj.zombiePool !== 'function') return false;
+    // 落点所在列（用真实列号，不钳制；场外时自然会落空，由 gpnOffFieldAreaApply 那种兜底负责）
+    let col = -1;
+    try {
+        const r = shot.bodyRec && shot.bodyRec.prjX ? shot.bodyRec.prjX() : null;
+        if (r && typeof Square.judgeCIndex === 'function') col = Square.judgeCIndex(r.x);
+    } catch (e) { col = -1; }
+    if (col < 0) col = 8;                               // 拿不到就按最右列
+
+    // 判定框：以落点为中心，3 格宽 × 1 格高
+    let rec = null;
+    try {
+        const cellNode = Square.getLnC(lane, Math.min(8, col));
+        if (cellNode && cellNode.node) rec = Rect.createRectangleNodeCenter(cellNode.node, 68 * 3, 80.77);
+        else if (cellNode && typeof cellNode.getSquareWorldPosition === 'function') rec = null;
+    } catch (e) { rec = null; }
+    if (!rec) {
+        try {
+            const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX : 0;
+            const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY : 0;
+            if (typeof Rect.createRectangleCenter === 'function' && deps.Vec2) {
+                rec = Rect.createRectangleCenter(new deps.Vec2(px, py), 68 * 3, 80.77);
+            }
+        } catch (e2) { rec = null; }
+    }
+    if (!rec) return false;
+
+    const pool = laneObj.zombiePool();
+    if (!pool) return false;
+    let applied = 0;
+    for (const zz of pool.concat()) {
+        if (!zz || typeof zz.isAlive !== 'function' || !zz.isAlive()) continue;
+        const body = zz.bodyRecReal || zz.bodyRec;
+        if (!body || !rec.judgeCrossRec(body)) continue;
+        if (typeof zz.pushBloomingHeartDefenceRateList === 'function') {
+            try { zz.pushBloomingHeartDefenceRateList(shot.DefenceRateList, shot.BloomingHeartBuffPar); applied++; } catch (e) { }
+        }
+    }
+    if (dbgOn(CFG.bloomingheart.debugLog)) {
+        log('心蕊【落地 1×3】行=' + lane + ' 列=' + col + ' ⇒ 施加 ' + applied + ' 个目标');
+    }
+    return applied > 0;
+}
+
 /** 寒冰射手（Snow Pea）：冰锥概率控制
  *  引擎事实：普攻走 get defaultPea(){ Math.random() < ChanceToFreeze ? PeaFreezeType : PeaType }；
  *  而【大招】在 onFoodLeftPeaCountDec 里【显式】传 PeaTypePlantfood ⇒ 绕过 defaultPea ⇒ 永远不出冰锥；
@@ -5362,10 +5654,37 @@ function gpnCloneProjectile(Container, fromAlias, newAlias, tweak) {
  *    · 大招弹（显式 PeaTypePlantfood）-> 每发独立掷
  *    · 普攻（不传类型）            -> 由我们掷并把类型显式传进去（才吃薄荷 x3）
  *    · 其它调用（已显式传类型）    -> 原样放行 */
-function makeSnowPeaFreezePatch(SnowPeaPlant) {
+function makeSnowPeaFreezePatch(SnowPeaPlant, CommonShot, deps) {
     const recs = [];
     const P = SnowPeaPlant && SnowPeaPlant.prototype;
     if (!P || typeof P._shoot !== 'function') { warn('跳过寒冰射手冰锥：拿不到 SnowPeaPlant._shoot'); return null; }
+
+    // ★★ 场外兜底（修 2026/10/14 用户报告）：寒冰的「单格冰减速 / 冰锥单格冻结」走的是引擎的
+    //    `SplashDamage` 通道，而那条通道有 `lIndex 必须 0..4` 的守卫 ⇒ **打场外目标时整段失效**
+    //    （表现为"实际为单体"）。这里补一条入场：**只在场外**时自己按"行池 + 判定框"施加
+    //    （场内仍交给引擎，绝不重复）。
+    //    认领方式：看弹道自身有没有 `chill`/`freeze`（寒冰系弹道才有）⇒ 其它植物的弹不受影响。
+    if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.dealDamageToZombie === 'function') {
+        const recD = methodRecord(CommonShot, 'dealDamageToZombie');
+        CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
+            const r = recD.original.apply(this, arguments);
+            try {
+                if (featOn('snowpea') && isDirect !== false && z && !this.__gpnSnowOffField) {
+                    const snowish = (typeof this.chill === 'number' && this.chill > 0)
+                        || (typeof this.freeze === 'number' && this.freeze > 0);
+                    if (snowish && (gpnIsOffField(this) || gpnIsOffField(z))) {
+                        this.__gpnSnowOffField = true;      // 一发只兜一次
+                        gpnOffFieldAreaApply(this, z, deps, ['snow']);
+                    }
+                }
+            } catch (e) { warn('寒冰射手：场外减速兜底出错', e); }
+            return r;
+        };
+        recs.push(recD);
+    } else {
+        warn('寒冰射手：拿不到 commonShot.dealDamageToZombie ⇒ 场外目标的单格减速仍会失效');
+    }
+
     const C = CFG.snowpea;
     const rec = methodRecord(SnowPeaPlant, '_shoot');
     P._shoot = function (a0, a1, a2) {
@@ -6092,6 +6411,14 @@ export default {
     _almTextOf: gpnAlmTextOf,          // 同上：取一株的图鉴文本（只读）
     _ALM_CHANGED: GPN_ALM_CHANGED,     // 同上：[图鉴 alias, 功能开关名] 名单（自检守卫用）
     _zhNum: gpnZhNum,                  // 同上：中文数字（0~20 汉字，超出回落阿拉伯）
+    // 场外范围兜底（修 2026/10/14 三个 BUG）—— 工具/纯函数，自检直接单测
+    _isOffField: gpnIsOffField,                 // 判定：这个弹道/僵尸是否在场外（lIndex<0 或 inLnC.cIndex==9）
+    _isOffFieldRight: gpnIsOffFieldRight,       // 判定：这个格是不是「场外右侧」那个共享假格
+    _laneByY: gpnLaneByY,                       // 按 Y 坐标求草坪行号（0..4）
+    _rightmostCells3x1: gpnRightmostCells3x1,   // 最右列的 3×1 格子（行超出草坪的不铺）
+    _offFieldAreaApply: gpnOffFieldAreaApply,   // 场外范围兜底（行池 + 判定框 + 直接施加）
+    _pepperBurnAt: (shot, d) => gpnPepperBurnAt(shot, d),   // 甜椒落点铺火（自检核对"场外 ⇒ 最右列 3×1"）
+    _pepperDeps: () => gpnPepperDeps,           // 上面那个函数需要的引擎依赖（setup 时填好）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
     _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
@@ -6820,8 +7147,8 @@ let ticks = 0;
             // ---- 4. 心蕊 ----
             {
                 const bloom = makeBloomingHeartPatch(bloomMod.bloomingheartShot,
-                    charMgrMod.Rectangle, squareMod.Square);
-                if (bloom) recs.push(bloom);
+                    charMgrMod.Rectangle, squareMod.Square, shotMod.commonShot);
+                if (bloom) recs.push(...bloom);
             }
 
             // ---- 5. 暗影龙葵：先重写 _shoot 打标记，再装穿透 ----
@@ -6874,7 +7201,9 @@ let ticks = 0;
             // ---- 22. 寒冰射手：冰锥（普攻 + 大招每发独立掷，薄荷 x3）----
             // ⚠️【即时生效改造】不再用 featOn 包住安装：补丁常驻，行为在钩子里运行期现查
             {
-                const spf = makeSnowPeaFreezePatch(snowPeaMod && snowPeaMod.SnowPeaPlant);
+                const spf = makeSnowPeaFreezePatch(snowPeaMod && snowPeaMod.SnowPeaPlant,
+                    shotMod && shotMod.commonShot,
+                    { Square: squareMod.Square, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2 });
                 if (spf) recs.push(...spf);
             }
             // ---- 23. 红针花：左键循环切换形态 ----
@@ -7077,7 +7406,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l38 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l39 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
