@@ -2181,11 +2181,20 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
         if (!featOn('bloomingheart')) return original.call(this, zombie);
         if (!zombie) return original.call(this, zombie);
 
+        // ★【目标已死】引擎仍会调 `beforeZombieHit`（`commonShotPopOnTouch` 对死僵尸只是不 pop）
+        //   ⇒ 这时一个目标都不该吃，也**绝不能**打「已命中」标记 —— 否则子弹落地时的 1×3 会被跳过
+        //   （用户实测报的第二种情况：子弹已投出、目标刚好死了、落地没生效）。
+        if (typeof zombie.isAlive === 'function' && !zombie.isAlive()) {
+            return original.call(this, zombie);
+        }
+
         // ★★ 场外（最右列更右侧）：`zombie.inLnC` 是全场共用的假格 `LnCRight`（lIndex = -2），
         //    原来以它的 `node` 为中心铺 3 格 ⇒ 判定框会落在场外 ⇒ **范围失效**。
         //    这里改走"按 Y 求行 + 以命中目标为中心"的兜底（与引擎寒冰辣椒同款思路）。
         if (gpnIsOffField(zombie) || gpnIsOffField(this)) {
-            gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
+            const nOff = gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
+            // ⚠️ 只有**真的施加过**才算「命中过」（返回值是真实施加次数）
+            if (nOff > 0) this.__gpnBloomHit = true;
             return original.call(this, zombie);
         }
 
@@ -5610,22 +5619,46 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
 
     const pool = laneObj.zombiePool();
     if (!pool) return false;
+    const W = (typeof Square.SquareWidth === 'number') ? Square.SquareWidth : 68;
     const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
+
+    // ★★★ 范围判定框：**以"命中目标"为中心造【唯一一个】框**，再拿它去判行池里每一只。
+    //   ❌❌ 绝对不要"以被检查的那只僵尸自己为中心造框"—— 那样 `judgeCrossRec(它自己的 body)`
+    //       **必然为真** ⇒ 行池里每一只都会通过 ⇒ **整行僵尸全被挂上 DEBUFF**
+    //       （用户实测报的恶性 BUG，就是这个写法造成的）。
+    //   中心取法（按可靠性）：命中目标的世界坐标 → 弹道自己的世界坐标 → 最右列格心。
+    let cx = null, cy = null;
+    try {
+        const zz0 = z;
+        if (zz0 && typeof zz0.worldPositionX === 'number' && typeof zz0.worldPositionY === 'number') {
+            cx = zz0.worldPositionX; cy = zz0.worldPositionY;
+        } else if (shot && typeof shot.worldPositionX === 'number' && typeof shot.worldPositionY === 'number') {
+            cx = shot.worldPositionX; cy = shot.worldPositionY;
+        } else if (typeof Square.getSquareWorldPosition === 'function') {
+            const v = Square.getSquareWorldPosition(lane, 8, 0.5, 0.5);
+            if (v) { cx = v.x; cy = v.y; }
+        }
+    } catch (e) { cx = null; }
+    if (cx === null || cy === null) return false;
+
+    let rec = null;
+    try {
+        // 宽 = 2 格（左右各 1 格），高 = 1 格（只在同一行）
+        if (typeof Rect.createRectangleCenter === 'function') rec = Rect.createRectangleCenter({ x: cx, y: cy }, W * 2, H);
+    } catch (e) { rec = null; }
+    if (!rec) return false;
+
     let applied = 0;
-
-    for (const zz of pool.concat()) {                       // ★ concat()：遍历中可能有人死亡
+    for (const zz of pool.concat()) {                       // concat()：遍历中可能有人死亡
         if (!zz || typeof zz.isAlive !== 'function' || !zz.isAlive()) continue;
-        // 被【直接命中】的那一只：一定生效（它就是范围的中心）
-        const isTarget = (zz === z);
-        // 其余：按它自己的世界坐标现算判定框（1 格宽 × 1 格高 ⇒ 半宽 68 恰好碰见左右 1 格）
-        const hit = isTarget || (function () {
-            const rz = gpnRectAtZombie(zz, deps, 68, H);
-            if (!rz) return false;
+        // 被【直接命中】的那一只一定生效；其余必须**真的落在框里**才算
+        let hit = (zz === z);
+        if (!hit) {
             const body = zz.bodyRecReal || zz.bodyRec;
-            return !!(body && rz.judgeCrossRec(body));
-        }());
-
-
+            hit = !!(body && rec.judgeCrossRec(body));
+        }
+        // ★★★ 不在范围内 ⇒ 必须跳过（少了这一句 ⇒ 行池里每只都会吃到 ⇒ 整行全挂）
+        if (!hit) continue;
 
         if (kinds.indexOf('snow') !== -1) {
             const chill = (typeof shot.chill === 'number' && shot.chill > 0) ? shot.chill : 0;
@@ -5634,16 +5667,17 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
             if (freeze > 0 && typeof zz.setFreeze === 'function') { try { zz.setFreeze(freeze); applied++; } catch (e) { } }
         }
         if (kinds.indexOf('bloom') !== -1) {
-            // 心蕊：弹道上带着 DefenceRateList（减防值）与 Buff 特效参数，原样转发
             if (typeof zz.pushBloomingHeartDefenceRateList === 'function' && shot.DefenceRateList) {
                 try { zz.pushBloomingHeartDefenceRateList(shot.DefenceRateList, shot.BloomingHeartBuffPar); applied++; } catch (e) { }
             }
         }
     }
     if (applied && dbgOn(CFG.pepperpult.debugLog)) {
-        log('【场外范围兜底】行=' + lane + '，共施加 ' + applied + ' 次（' + kinds.join('/') + '）');
+        log('【场外范围兜底】行=' + lane + ' 框心=(' + cx + ',' + cy + ') 共施加 ' + applied + ' 次（' + kinds.join('/') + '）');
     }
-    return applied > 0;
+    // ★ 返回**真实施加次数**（不是布尔）：调用方靠它判断"有没有真的生效过"
+    //   （决定要不要打 __gpnBloomHit 标记，见心蕊的 beforeZombieHit）。
+    return (shot.__gpnOffFieldApplied = applied);
 }
 
 /** ★★ 心蕊「直接落地」也要铺 1×3（用户口径 2026/10/14）★★
