@@ -2181,20 +2181,11 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
         if (!featOn('bloomingheart')) return original.call(this, zombie);
         if (!zombie) return original.call(this, zombie);
 
-        // ★【目标已死】引擎仍会调 `beforeZombieHit`（`commonShotPopOnTouch` 对死僵尸只是不 pop）
-        //   ⇒ 这时一个目标都不该吃，也**绝不能**打「已命中」标记 —— 否则子弹落地时的 1×3 会被跳过
-        //   （用户实测报的第二种情况：子弹已投出、目标刚好死了、落地没生效）。
-        if (typeof zombie.isAlive === 'function' && !zombie.isAlive()) {
-            return original.call(this, zombie);
-        }
-
         // ★★ 场外（最右列更右侧）：`zombie.inLnC` 是全场共用的假格 `LnCRight`（lIndex = -2），
         //    原来以它的 `node` 为中心铺 3 格 ⇒ 判定框会落在场外 ⇒ **范围失效**。
         //    这里改走"按 Y 求行 + 以命中目标为中心"的兜底（与引擎寒冰辣椒同款思路）。
         if (gpnIsOffField(zombie) || gpnIsOffField(this)) {
-            const nOff = gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
-            // ⚠️ 只有**真的施加过**才算「命中过」（返回值是真实施加次数）
-            if (nOff > 0) this.__gpnBloomHit = true;
+            gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
             return original.call(this, zombie);
         }
 
@@ -2246,56 +2237,9 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
             if (typeof z.pushBloomingHeartDefenceRateList !== 'function') continue;
             z.pushBloomingHeartDefenceRateList(this.DefenceRateList, this.BloomingHeartBuffPar);
         }
-        this.__gpnBloomHit = true;      // 标记"这一发打过僵尸" ⇒ 落地时不再重复铺
         return original.call(this, zombie);
     };
     recs.push({ Cls: Shot, name: 'beforeZombieHit', original });
-
-    // ★★ 新增：**直接落地 / 打空飞出场外**都要铺 1×3
-    //   （原来只有"命中僵尸"一个入口 ⇒ 这两种情况都永不生效）
-    //
-    //   ★ 必须挂**两个**入口（逐字核对 1.5.5 bundle 后确定的）：
-    //   ① `commonShot.hitFloor` —— 弹道**在草坪范围内**落地时走它
-    //      （`hitBorderOrGround`：`currentDetectHitGround() && this.height <= 0` ⇒ `hitFloor(e)`）；
-    //   ② `commonShot.onFaded` —— 弹道**飞出屏幕时走的是 `fade()`**，而
-    //      `hitBorderOrGround` 的越界分支直接 `this.fade()`（**根本不调 hitFloor**），
-    //      而 `fade()` 里有一句 `this.onFaded()`（`commonShot.onFaded` 默认是空函数，
-    //      正是引擎留给子类/补丁的扩展点；`bloomingheartShot` **没有覆写它** ⇒ 我们挂基类就能覆盖到）。
-    //      ⇒ **心蕊打空、子弹飞到最右列之外淡出** 走的就是这条，只挂 hitFloor 会漏掉它。
-    //
-    //   两个入口共用 `__gpnBloomLanded` 标记 ⇒ 同一发绝不会重复施加。
-    //   认领方式：只看弹道自带的 `DefenceRateList`（心蕊系弹道专属）⇒ 其它植物的弹不受影响。
-    const bloomLandingHook = function () {
-        try {
-            if (featOn('bloomingheart') && !this.__gpnBloomHit && !this.__gpnBloomLanded) {
-                gpnBloomingHeartLandingApply(this, deps);
-            }
-        } catch (e) { warn('心蕊：落地 1×3 出错', e); }
-    };
-
-    if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.hitFloor === 'function') {
-        const recL = methodRecord(CommonShot, 'hitFloor');
-        CommonShot.prototype.hitFloor = function () {
-            const r = recL.original.apply(this, arguments);
-            bloomLandingHook.call(this);
-            return r;
-        };
-        recs.push(recL);
-    } else {
-        warn('心蕊：拿不到 commonShot.hitFloor（草坪内落地的 1×3 可能不生效）');
-    }
-
-    if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.onFaded === 'function') {
-        const recF = methodRecord(CommonShot, 'onFaded');
-        CommonShot.prototype.onFaded = function () {
-            const r = recF.original.apply(this, arguments);
-            bloomLandingHook.call(this);          // ★ 打空飞出场外（fade）时的那条路
-            return r;
-        };
-        recs.push(recF);
-    } else {
-        warn('心蕊：拿不到 commonShot.onFaded ⇒ 「打空飞出场外」的 1×3 不会生效');
-    }
     return recs;
 }
 
@@ -3849,29 +3793,6 @@ function gpnLaneObj(i, Square) {
         }
         return lane || null;
     } catch (e) { return null; }
-}
-
-/** 以某个对象（僵尸/弹道）的**世界坐标**为中心造一个判定框。
- *  ⚠️ 为什么不用它的 `inLnC.node`：**场外时 `inLnC` 是全场共用的假格 `LnCRight`**，
- *     它的 `node` 只有一个位置 ⇒ 所有场外目标都会叠在同一个点上（判定框必然错）。
- *  @returns Rectangle | null */
-function gpnRectAtZombie(obj, deps, halfW, halfH) {
-    const Rect = deps && deps.Rectangle, Vec2 = deps && deps.Vec2;
-    if (!obj || !Rect) return null;
-    const px = (typeof obj.worldPositionX === 'number') ? obj.worldPositionX
-        : (obj.worldPosition && typeof obj.worldPosition.x === 'number') ? obj.worldPosition.x : null;
-    const py = (typeof obj.worldPositionY === 'number') ? obj.worldPositionY
-        : (obj.worldPosition && typeof obj.worldPosition.y === 'number') ? obj.worldPosition.y : null;
-    if (px === null || py === null) return null;
-    try {
-        if (Vec2 && typeof Rect.createRectangleCenter === 'function') {
-            return Rect.createRectangleCenter(new Vec2(px, py), halfW * 2, halfH * 2);
-        }
-        if (typeof Rect.createRectangleSide === 'function') {
-            return Rect.createRectangleSide(new (Vec2 || Object)(px, py), halfW * 2, halfH * 2);
-        }
-    } catch (e) { /* 拿不到就返回 null，由调用方决定 */ }
-    return null;
 }
 
 /** 最右列的 3×1 格子（以 `lane` 行为中心、取草坪最右列 cIndex = 8）。
@@ -5675,96 +5596,10 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
     if (applied && dbgOn(CFG.pepperpult.debugLog)) {
         log('【场外范围兜底】行=' + lane + ' 框心=(' + cx + ',' + cy + ') 共施加 ' + applied + ' 次（' + kinds.join('/') + '）');
     }
-    // ★ 返回**真实施加次数**（不是布尔）：调用方靠它判断"有没有真的生效过"
-    //   （决定要不要打 __gpnBloomHit 标记，见心蕊的 beforeZombieHit）。
+    // ★ 返回**真实施加次数**（不是布尔）：调用方靠它判断"有没有真的生效过"。
     return (shot.__gpnOffFieldApplied = applied);
 }
 
-/** ★★ 心蕊「直接落地」也要铺 1×3（用户口径 2026/10/14）★★
- *
- *  原来只有 `beforeZombieHit`（**命中僵尸**）这一个入口 ⇒ 弹道没碰到僵尸、直接落地时
- *  1×3 永远不生效。这里补一条**落地入口**：落点所在行、以**落点格**为中心的 3 格。
- *  ⚠️ 只在"没打中任何僵尸"时铺（打中了就由 `beforeZombieHit` 负责，避免重复）。
- */
-function gpnBloomingHeartLandingApply(shot, deps) {
-    if (!shot || shot.__gpnBloomLanded) return false;
-    shot.__gpnBloomLanded = true;                       // 一发只处理一次
-    const Square = deps && deps.Square, Rect = deps && deps.Rectangle;
-    if (!Square || !Rect || typeof Square.getLane !== 'function' || typeof Square.getLnC !== 'function') return false;
-    if (!shot.DefenceRateList) return false;            // 不是心蕊的弹（没带减防表）⇒ 不插手
-    const lane = gpnLaneByY((typeof shot.worldPositionY === 'number') ? shot.worldPositionY : NaN, Square);
-    if (lane < 0) return false;
-    const laneObj = gpnLaneObj(lane, Square);
-    if (!laneObj || typeof laneObj.zombiePool !== 'function') return false;
-    // 落点所在列：优先按落点坐标的真实列号（**不钳制**；场外/越界交给 gpnOffFieldAreaApply）
-    //   ⚠️ 用 `judgeCIndexReal`（真实列号，可为 -1 / 9）而不是 `judgeCIndex`（会把越界钳成 8）
-    let col = -1;
-    try {
-        const r = (shot.bodyRec && typeof shot.bodyRec.prjX === 'function') ? shot.bodyRec.prjX() : null;
-        const px = (r && typeof r.x === 'number') ? r.x
-            : ((typeof shot.worldPositionX === 'number') ? shot.worldPositionX : null);
-        if (px !== null) {
-            if (typeof Square.judgeCIndexReal === 'function') col = Square.judgeCIndexReal(px);
-            else if (typeof Square.judgeCIndex === 'function') col = Square.judgeCIndex(px);
-        }
-    } catch (e) { col = -1; }
-    if (col < 0 || col > 8) col = Math.max(0, Math.min(8, col));   // 越界钳进草坪（落点必在草坪内）
-
-    // ★★ 判定框：以**落点**为中心，3 格宽 × 1 格高。
-    //   ⚠️ 优先用【弹道自己的世界坐标】：它就是落点，最可靠、也不依赖任何坐标换算。
-    //   ❌ 曾经用 `Square.getLnC(l,c).node` 的 worldPosition —— 那是 Cocos 节点的位置，
-    //      **未必是格心**（`plantPoint` 这个 getter 在 `_plantPoint` 为空时还会**退回 `node`**）
-    //      ⇒ 判定框会偏 ⇒ **落点附近的僵尸吃不到 debuff**（这就是"落空落地不生效"的原因）。
-    //   ⛑ 兜底才用引擎的格子中心 `Square.getSquareWorldPosition(l, c, .5, .5)`。
-    const W = (typeof Square.SquareWidth === 'number') ? Square.SquareWidth : 68;
-    const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
-    const mkRec = (v) => {
-        try {
-            if (!v || typeof v.x !== 'number' || typeof v.y !== 'number') return null;
-            if (typeof Rect.createRectangleCenter === 'function') return Rect.createRectangleCenter(v, W * 3, H);
-            if (typeof Rect.createRectangleNodeCenter === 'function') return Rect.createRectangleNodeCenter({ worldPosition: { x: v.x, y: v.y } }, W * 3, H);
-        } catch (e) { }
-        return null;
-    };
-    // ★★ 判定框：以【落点所在格的格心】为中心，3 格宽 × 1 格高。
-    //   为什么用**格心**而不是"落点坐标"（两者只差半格，但很关键）：
-    //     · 1×3 的语义是"**以落点那一格为中心**，左右各一格"；
-    //     · 弹道可能落在格子的**边缘**，用落点坐标会让框整体偏半格 ⇒ 一侧的邻格吃不到；
-    //     · 引擎自己的按格取框（`ChillyPepper.getLnCRec`）也是先 `getSquareWorldPosition(l, c, .5, .5)`。
-    //   取法：格心（最准，与僵尸的 bodyRec 同一套世界坐标）→ 落点坐标（兜底）。
-    let rec = null;
-    try {
-        if (typeof Square.getSquareWorldPosition === 'function') {
-            rec = mkRec(Square.getSquareWorldPosition(lane, (col < 0 ? 8 : col), 0.5, 0.5));
-        }
-    } catch (e) { rec = null; }
-    if (!rec) {
-        try {
-            const px = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX
-                : ((shot.worldPosition && typeof shot.worldPosition.x === 'number') ? shot.worldPosition.x : null);
-            const py = (typeof shot.worldPositionY === 'number') ? shot.worldPositionY
-                : ((shot.worldPosition && typeof shot.worldPosition.y === 'number') ? shot.worldPosition.y : null);
-            if (px !== null && py !== null) rec = mkRec({ x: px, y: py });
-        } catch (e) { rec = null; }
-    }
-    if (!rec) return false;
-
-    const pool = laneObj.zombiePool();
-    if (!pool) return false;
-    let applied = 0;
-    for (const zz of pool.concat()) {
-        if (!zz || typeof zz.isAlive !== 'function' || !zz.isAlive()) continue;
-        const body = zz.bodyRecReal || zz.bodyRec;
-        if (!body || !rec.judgeCrossRec(body)) continue;
-        if (typeof zz.pushBloomingHeartDefenceRateList === 'function') {
-            try { zz.pushBloomingHeartDefenceRateList(shot.DefenceRateList, shot.BloomingHeartBuffPar); applied++; } catch (e) { }
-        }
-    }
-    if (dbgOn(CFG.bloomingheart.debugLog)) {
-        log('心蕊【落地 1×3】行=' + lane + ' 列=' + col + ' ⇒ 施加 ' + applied + ' 个目标');
-    }
-    return applied > 0;
-}
 
 /** 寒冰射手（Snow Pea）：冰锥概率控制
  *  引擎事实：普攻走 get defaultPea(){ Math.random() < ChanceToFreeze ? PeaFreezeType : PeaType }；
