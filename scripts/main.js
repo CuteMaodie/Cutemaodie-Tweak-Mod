@@ -71,6 +71,7 @@ const FEATURES = {
     redstinger: true,       // 红针花：承伤 ×0.2 / ×0.1 + 左键切形态
     murkadamia: true,       // 暗影夏威夷果：暗影态本体隐身 / 暗影物质 5000
     splitpea: true,         // 裂荚射手：左键左右翻转 / 前后豌豆对调
+    meteorflowerAim: true,  // 流星花：索敌改造（第1颗本行优先/可索障碍与护盾、第2颗不再打歪）；关掉=原版索敌
     // ↓ 诊断日志总开关：★注意★ 它在表里登记成 false —— 日志开关故意和别的开关【反着来】：
     //   · 只有 features.json 里显式写 true 才开；写 false / 删掉 / 整个文件读不到 ⇒ 一律【关】；
     //   · 打开后 = 所有"每次触发一条"的诊断日志（各功能的 debugLog）全部回来，方便排查。
@@ -5670,6 +5671,846 @@ function makeSnowPeaFreezePatch(SnowPeaPlant, CommonShot, deps) {
 }
 
 
+/* =========================================================================
+ * 流星花（MeteorFlower）：索敌策略
+ *
+ *  ⚠️ 现状 = **P0（只挂空补丁，行为与原版逐字等价）**。
+ *     后续步骤：
+ *       P1 第 2 颗流星：去掉"35% 打歪"，改为 50% 密度最高格 / 50% 随机僵尸格
+ *       P2 第 1 颗流星：本行最靠左 → 全场最靠左（两级优先；`cIndex` 最小）
+ *       P3 第 1/2 颗：可索敌"障碍物 + 敌方护盾"
+ *       P4 features.json 开关 `meteorflowerAim`
+ *
+ *  === 引擎事实（已逐字核对 1.5.5 bundle，见 §开发修订记录）===
+ *   · 模块 `chunks:///_virtual/MeteorFlower.ts`，导出 `MeteorFlowerPlant`（`t("MeteorFlowerPlant",...)`）。
+ *   · 原版索敌写在 `MeteorFlowerPlant.prototype.detectEnemy`：
+ *       只有 `thrownAmount <= 0`（第 1 颗）或 `Math.random() < SecondMeteorMissChance(0.35)`（第 2 颗）
+ *       时才去找目标；找目标的规则是【全草坪僵尸池里 cIndex 最大（最靠右）的那只所在格】。
+ *     - 僵尸筛选：`isInLawn()`（lIndex 0..4 且 cIndex 0..8）；所在格 `getSquareType()` 必须是
+ *       `solid` 或 `deck`。
+ *     - 池为空 ⇒ 退化查 `TombPool`（墓碑）。
+ *     - 第 2 颗若没选出目标（35% 打歪 / 池空）⇒ `Square.getRandomLnC()` **随机一个草坪格照砸**。
+ *   · 投掷入口：
+ *       `_throw(pos)`：`pos.worldPosition` 是**格心 Vec3**（`LnC.plantPoint`），落点 = 该格；
+ *                     内部 `lobOneCabbageOnPos(..., new Vec2(pos.worldPosition.x - 10*SquareWidth,
+ *                     pos.worldPosition.y), 700, this.inLane.prjLayer, pos.worldPosition.toVec2(), ...)`
+ *       `_throwAtZombie(z)`：以僵尸世界坐标为目标，走 `lobOneCabbageOnZombie`。
+ *     两者着陆后都 `setTileLiquid` 铺熔岩 + `judgeInLnC` + 吓跑同格恐龙。
+ *   · 一次点燃期扔 `MeteorCountOnce(2)` 颗，之后 `rest()` 休息 `RestTime(7)` 秒。
+ *   · 大招 `specialPlantFood` **不走 detectEnemy**（自己每 0.1s 对草坪内随机僵尸扔 5 颗）。
+ *
+ *  === 关键辅助事实 ===
+ *   · 三种护盾实体（`ZombieEnum.future_protector_shield` / `future_infinut_shield` /
+ *     `modern_moonflower_shield`）都是 **`Zombie` 的子类**、`isRealZombie === false`，
+ *     并且**会被注册进 `ZombiePool.pool()`**（`registerZombie` 只判 `hypnotized`，不看 isRealZombie）
+ *     ⇒ 遍历"真僵尸"时必须把它们排除（本模组已有 `gpnIsShieldZombie` 可复用）。
+ *   · 护盾**在哪一方由它自己的 `hypnotized` 决定**（引擎 `turnVelocity` 里就会把植物方的盾杀掉重建）；
+ *     `hypnotized === false` ⇒ 僵尸方（可被植物攻击）；`true` ⇒ 植物方（自家，不砸）。
+ *   · `LnC.zombieShields` 是护盾的权威容器；`Lane.laneLnCs` / `Square.getAllLnC()` 可列举格子。
+ *   · 墓碑（含**冲浪板**）走 `TombPool` / `Lane.tombPool()`，与护盾**不重叠**。
+ *     `TombEnum` 共 32 项，其中 6 项**不应当是流星目标**：
+ *       kongfu_TNT(17) / planttarget_iceblock(21) / zombietarget_iceblock(22) /
+ *       zombietarget_birthday_present(23) / zomboss_iceage_glacier_block(24) / planttarget_squid(25)
+ * =======================================================================*/
+
+/* ===== 流星花索敌：模块级纯函数（自检直接单测；补丁本体也调用它们，避免两份实现）=====
+ *  deps 需要 `{ Square, ZombieEnum }`。
+ *  ⚠️ 全部**只读**输入、不产生副作用、不依赖 this ⇒ 可以被自检用假数据反复调用。 */
+
+/** 对象的所在格（统一走 `inLnC`；**不要**用 `.cIndex/.lIndex` 缓存字段） */
+function gpnMeteorCellOf(o) { return (o && o.inLnC) || null; }
+
+/** 真僵尸：`isRealZombie === true` 且**不是**护盾实体 且存活 且**敌方** 且在场内。
+ *  ⚠️ 三种护盾是 `Zombie` 的子类、**会混在 `ZombiePool.pool()` 里**，
+ *     所以必须用 `gpnIsShieldZombie` 排除（本模组既有函数，按 ID 认）。 */
+function gpnMeteorIsRealZombie(z, deps) {
+    if (!z || z.isRealZombie !== true) return false;
+    const ZombieEnum = deps && deps.ZombieEnum;
+    try { if (gpnIsShieldZombie(z, ZombieEnum)) return false; } catch (e) { /* 保持原判 */ }
+    if (typeof z.isAlive === 'function' && !z.isAlive()) return false;
+    if (z.hypnotized === true) return false;                       // Q11-终：看我方 ⇒ 排除
+    const c = gpnMeteorCellOf(z);
+    return !!(c && typeof c.isInLawn === 'function' && c.isInLawn());
+}
+
+/** 身体中心的 world x（优先 `bodyRecReal`；退化到 `worldPositionX`） */
+function gpnMeteorBodyCenterX(z) {
+    const r = z && (z.bodyRecReal || z.bodyRec);
+    if (r) {
+        if (typeof r.prjX === 'function') { try { const p = r.prjX(); if (p && typeof p.x === 'number') return p.x; } catch (e) { } }
+        if (typeof r.x === 'number') return r.x;
+    }
+    return (z && typeof z.worldPositionX === 'number') ? z.worldPositionX : null;
+}
+
+/** 把 world x 换算成列号 0..8（优先 `judgeCIndexReal`） */
+function gpnMeteorColOfX(x, Square) {
+    let c = -1;
+    try {
+        if (Square && typeof Square.judgeCIndexReal === 'function') c = Square.judgeCIndexReal(x);
+        else if (Square && typeof Square.judgeCIndex === 'function') c = Square.judgeCIndex(x);
+    } catch (e) { c = -1; }
+    if (c < 0 || c > 8) c = Math.max(0, Math.min(8, c));
+    return c;
+}
+
+/** 收集场上"真僵尸"（P1：只有僵尸；障碍物/护盾是 P3） */
+function gpnMeteorCollectZombies(ZombiePool, deps) {
+    const out = [];
+    try {
+        const pool = (ZombiePool && typeof ZombiePool.pool === 'function') ? (ZombiePool.pool() || []) : [];
+        for (const z of pool) { if (gpnMeteorIsRealZombie(z, deps)) out.push(z); }
+    } catch (e) { /* 出错就返回已收集到的；调用方会退回原版 */ }
+    return out;
+}
+
+/** ★ 1×3 同排横带密度最高的那一格（并列随机）。
+ *  窗口 = 该格 + 左右各一格，**限同一行**（与 `meteor` 的 `w=3,h=1` 伤害范围同构）。
+ *  僵尸算在哪一列 = **身体中心**所在列 ⇒ 一只僵尸只贡献给一列，不会重复计数。
+ *  @param forbidLanes 可选：排除这些行（**只给自检做"同排隔离"构造性证明用**；
+ *                     正常调用不传 ⇒ 行为不变） */
+function gpnMeteorPickDensestCell(zombies, deps, forbidLanes) {
+    const Square = deps && deps.Square;
+    const forbid = forbidLanes || null;
+    const byLane = new Map();
+    for (const z of (zombies || [])) {
+        const c = gpnMeteorCellOf(z); if (!c) continue;
+        const bx = gpnMeteorBodyCenterX(z); if (bx === null) continue;
+        const col = gpnMeteorColOfX(bx, Square);
+        let cnt = byLane.get(c.lIndex);
+        if (!cnt) { cnt = new Array(9).fill(0); byLane.set(c.lIndex, cnt); }
+        cnt[col]++;
+    }
+    let best = -1; const ties = [];
+    byLane.forEach((cnt, lane) => {
+        if (forbid && forbid.indexOf(lane) !== -1) return;
+        for (let c = 0; c <= 8; c++) {
+            const s = (c > 0 ? cnt[c - 1] : 0) + cnt[c] + (c < 8 ? cnt[c + 1] : 0);
+            if (s > best) { best = s; ties.length = 0; ties.push({ lIndex: lane, cIndex: c }); }
+            else if (s === best) ties.push({ lIndex: lane, cIndex: c });
+        }
+    });
+    return ties.length ? ties[Math.floor(Math.random() * ties.length)] : null;
+}
+
+/** ★ 只返回"最高分"（不随机、不挑格）—— 专用于自检做
+ *  **"窗口限同一行"的构造性证明**：若窗口真的限同一行，那么
+ *  "只统计行X" 与 "统计所有行" 得到的**该行最大分必须相等**；
+ *  一旦跨行累加（3×3 那种错法），两者就不等。
+ *  @param forbidLanes 只给自检用；正常调用不传 ⇒ 行为不变 */
+function gpnMeteorDensestScore(zombies, deps, forbidLanes) {
+    const Square = deps && deps.Square;
+    const forbid = forbidLanes || null;
+    const byLane = new Map();
+    for (const z of (zombies || [])) {
+        const c = gpnMeteorCellOf(z); if (!c) continue;
+        const bx = gpnMeteorBodyCenterX(z); if (bx === null) continue;
+        const col = gpnMeteorColOfX(bx, Square);
+        let cnt = byLane.get(c.lIndex);
+        if (!cnt) { cnt = new Array(9).fill(0); byLane.set(c.lIndex, cnt); }
+        cnt[col]++;
+    }
+    let best = -1;
+    byLane.forEach((cnt, lane) => {
+        if (forbid && forbid.indexOf(lane) !== -1) return;
+        for (let c = 0; c <= 8; c++) {
+            const s = (c > 0 ? cnt[c - 1] : 0) + cnt[c] + (c < 8 ? cnt[c + 1] : 0);
+            if (s > best) best = s;
+        }
+    });
+    return best;
+}
+
+/** 从"有僵尸的格"里随机一格（同一格多只只算一次） */
+function gpnMeteorPickRandomZombieCell(zombies) {
+    const cells = [], seen = new Set();
+    for (const z of (zombies || [])) {
+        const c = gpnMeteorCellOf(z); if (!c) continue;
+        const k = c.lIndex + ',' + c.cIndex;
+        if (seen.has(k)) continue;
+        seen.add(k); cells.push(c);
+    }
+    return cells.length ? cells[Math.floor(Math.random() * cells.length)] : null;
+}
+
+/** ★ 不应当作"障碍物"目标的 Tomb 类型（按 `TombEnum` 的**数值**认，见引擎 `TombEnum`）。
+ *
+ *  用户口径（2026/10/15 **最终定稿**）：**只排除 1 类** —— 功夫世界的**炸药桶**：
+ *      17 `kongfu_TNT`  ← 会爆炸的炸药架（实机截图确认就是它）
+ *
+ *  其余 **30 项全部算障碍物**（含冲浪板、背包、帐篷、街机、音箱、各世界墓碑、功夫货架、
+ *  以及 21/22/23 的冰砖与生日礼物、24 冰河 BOSS 冰川块、25 章鱼）——
+ *  用户明确要求"只保留 kongfu_TNT"，故 21~25 都**回到白名单**。
+ *
+ *  ⚠️ 用**数值**而不是名字：数值最稳，不受导出名变化影响。
+ *  📌 历史：2026/10/15 初版曾把 17/21/22/23/24/25 都排除；
+ *     用户逐条核对后改成"只排除 17"（冰砖/生日礼物/章鱼/冰川块 都恢复可砸）。 */
+const GPN_METEOR_TOMB_BLACK = [17];
+/** 判断某个 Tomb 是否属于黑名单（抽出来便于单测；非数字 ID 视为「不在黑名单」）。
+ *  ⚠️ `typeof id === 'number'` 是**防御性冗余**：`Array.prototype.indexOf` 用严格相等（`===`），
+ *     字符串 `'17'` 本来就不会命中数字 `17` ⇒ 这条守卫去掉也不改变行为
+ *     （对应的变异体 r3 是**等价变异体**，已记录，不是漏网）。
+ *     保留它是为了将来若把黑名单换成 `Set`/`includes` 之类的写法时仍然安全。 */
+function gpnMeteorTombIsBlacklisted(id) {
+    return typeof id === 'number' && GPN_METEOR_TOMB_BLACK.indexOf(id) !== -1;
+}
+
+/** 取对象的所在格 —— **按类别决定用哪个来源**（2026/10/15 实机教训）。
+ *
+ *  为什么必须分类（P3 首版就是因此**收不到任何墓碑**）：
+ *    · **墓碑/Tomb**：权威是**对象自身的 \`lIndex/cIndex\`** —— 引擎 \`tombPool\` 就是按它过滤的
+ *      （\`n.lIndex == t.LaneIndex\`）。而它的 \`inLnC\` 指向的格子，\`lIndex\` **可能还是 -2**
+ *      （\`LnC\` 构造默认 -2；网格初始化只给 \`LnCAbstract/LnCLeft/LnCRight/LnCHere/LnCThere\` 赋过值；
+ *        \`standardize()\` 也只算 lefter/righter）
+ *      ⇒ **拿 \`inLnC.lIndex\` 判范围会把墓碑全判成"场外"而丢弃**。
+ *    · **僵尸/护盾**：权威是 **\`inLnC\`** —— 僵尸自身的 \`lIndex\` 由 \`Character.getLaneIndex()\`
+ *      从世界坐标算出来，会与 \`inLnC\` 不同步；引擎里 \`a.lIndex == d.inLnC.lIndex\` 这种比较说明
+ *      **两套索引并存**，而"在哪一格"应当以 \`inLnC\` 为准。
+ *
+ *  ⇒ 策略：\`preferOwn === true\`（墓碑）走 **自身字段 → inLnC**；否则（僵尸/护盾）走 **inLnC → 自身**。
+ *     两条路径都**要求范围合法**（行 0..4、列 0..8），否则视为"不在草坪"。
+ *
+ *  @param preferOwn 是否优先用对象自身的 \`lIndex/cIndex\`（墓碑传 true） */
+function gpnMeteorCellOfAny(o, preferOwn) {
+    if (!o) return null;
+    const ok = (l, c) => (typeof l === 'number' && typeof c === 'number'
+        && l >= 0 && l <= 4 && c >= 0 && c <= 8);
+    const own = () => (ok(o.lIndex, o.cIndex)
+        ? { lIndex: o.lIndex, cIndex: o.cIndex, isInLawn: () => true, __via: 'own' } : null);
+    const via = () => {
+        const c0 = o.inLnC;
+        return (c0 && ok(c0.lIndex, c0.cIndex))
+            ? { lIndex: c0.lIndex, cIndex: c0.cIndex, isInLawn: () => true, __via: 'inLnC' } : null;
+    };
+    return preferOwn ? (own() || via()) : (via() || own());
+}
+
+/** 收集"障碍物"（各行的 `tombPool(0)` = 非魅惑墓碑；**含冲浪板** —— 它就是墓碑的一种）。
+ *  ★ 分行**用 `getAllLane()` 的循环下标**（= 引擎的 `lane.LaneIndex`，权威），
+ *    不再依赖墓碑/格子各自的索引字段（两者可能不同源，见 `gpnMeteorCellOfAny` 的说明）。
+ *  @returns 实体数组（能取到格的才收） */
+function gpnMeteorCollectTombs(Square, laneIndex) {
+    const out = [];
+    const push = (t) => {
+        if (!t || t.ignored) return;
+        if (typeof t.isAlive === 'function' && !t.isAlive()) return;
+        if (t.hypnotized === true) return;                       // 我方墓碑 ⇒ 不砸
+        if (gpnMeteorTombIsBlacklisted(t.ID)) return;
+        const c = gpnMeteorCellOfAny(t, true);   // ★ 墓碑：优先用**对象自身**的 lIndex/cIndex
+        if (!c) return;
+        out.push(t);
+    };
+    try {
+        const lanes = Square.getAllLane() || [];
+        for (let i = 0; i < lanes.length; i++) {
+            if (typeof laneIndex === 'number' && laneIndex >= 0 && i !== laneIndex) continue;
+            const lane = lanes[i];
+            if (!lane || typeof lane.tombPool !== 'function') continue;
+            let list = null;
+            try { list = lane.tombPool(0); } catch (e) { list = null; }   // 0 = 非魅惑（僵尸方）
+            if (!list) { try { list = lane.tombPool(); } catch (e2) { list = null; } }
+            for (const t of (list || [])) push(t);
+        }
+    } catch (e) { /* 拿不到就少一类候选，不影响别处 */ }
+    return out;
+}
+
+/** 收集"**敌方护盾**"（`LnC.zombieShields` 里 `hypnotized === false` 的那些）。
+ *
+ *  为什么按 `hypnotized` 而不是按 ID：用户口径（2026/10/15）——
+ *     **这三种护盾（力场盾 / 全息坚果大招 / 月光花大招）实际上可以属于任一方**
+ *     （引擎 `turnVelocity` 里就会把植物方的盾杀掉、再生成一个），
+ *     所以判据只能是"这个盾**此刻**在哪一方" ⇒ 我方(`hypnotized === true`)不砸。 */
+function gpnMeteorCollectEnemyShields(Square, laneIndex) {
+    const out = [];
+    const push = (s) => {
+        if (!s) return;
+        if (typeof s.isAlive === 'function' && !s.isAlive()) return;
+        if (s.hypnotized === true) return;                       // 我方护盾 ⇒ 不砸
+        const c = s.inLnC;
+        if (!c || typeof c.lIndex !== 'number') return;
+        if (typeof laneIndex === 'number' && laneIndex >= 0 && c.lIndex !== laneIndex) return;
+        if (c.lIndex < 0 || c.lIndex > 4 || c.cIndex < 0 || c.cIndex > 8) return;
+        out.push(s);
+    };
+    try {
+        const lnCs = (typeof Square.getAllLnC === 'function') ? (Square.getAllLnC() || []) : [];
+        for (const cell of lnCs) {
+            for (const s of ((cell && cell.zombieShields) || [])) push(s);
+        }
+    } catch (e) { /* 同上：拿不到就少一类候选 */ }
+    return out;
+}
+
+/** 障碍物 ∪ 敌方护盾（`laneIndex` 传 null = 全场） */
+function gpnMeteorCollectObstacles(Square, laneIndex) {
+    return gpnMeteorCollectTombs(Square, laneIndex)
+        .concat(gpnMeteorCollectEnemyShields(Square, laneIndex));
+}
+
+
+/** ★★ 第 1 颗流星的索敌（**P2 → P3**：四级优先，全部取 **`cIndex` 最小 = 最靠左**）。
+ *
+ *  用户口径（2026/10/15）：
+ *    ① **本行**（该株流星花所在行）僵尸里 `cIndex` 最小的那一只；
+ *    ② 本行没有 ⇒ **全场**僵尸里 `cIndex` 最小的一只；
+ *    ★③ 本行没有僵尸 ⇒ **本行障碍物（墓碑/冲浪板/…）∪ 敌方护盾** 里 `cIndex` 最小的那个；
+ *    ★④ 本行也没有 ⇒ **全场障碍物 ∪ 敌方护盾** 里 `cIndex` 最小的那个；
+ *    ⑤ 都没有 ⇒ 返回 `null` ⇒ 调用方走**原版兜底**（`Square.getRandomLnC()` 随机草坪格）。
+ *  **僵尸整体优先于障碍/护盾**（①②永远先于③④）。
+ *  ⚠️ 原版**不索敌障碍/护盾**，也**不区分本行**（它直接取全场僵尸 `cIndex` 最大）；
+ *     ⇒ 本模组这四条是**有意的行为变更**。
+ *  📌 历史：2026/10/15 先做 P2（最靠右→修正为最靠左），再补 P3 的③④。
+ *
+ *  @param deps `{ obstacles?: 障碍/护盾实体数组（调用方用 gpnMeteorCollectObstacles 采好）}`
+ *              —— 传进来而不是在这里采，是为了**分开单测**（采集 / 选格 各自可测）。
+ *  @returns `{zombie, cell, cIndex, kind}` | null（`kind` ∈ zombie/tomb/shield）
+ */
+function gpnMeteorFirstTarget(laneIndex, zombies, deps) {
+    /** 取 `cIndex` **最小**（最靠左）的那个；并列时保留先遇到的那个（由数组顺序决定） */
+    const pickMinC = (list, laneFilter) => {
+        let best = Infinity, bestObj = null, bestC = null, bestKind = null;
+        for (const o of (list || [])) {
+            // ★ 类别判定（2026/10/15 修：原来墓碑会被误判成 shield —— 真实墓碑既没有
+            //   `__gpnMeteorKind`（那是自检打标）也没有 `isRealZombie`）
+            //   顺序：显式标记 → 真僵尸 → 有 inLnC（僵尸/护盾） → 否则算墓碑（靠自身 lIndex/cIndex）
+            //   ⚠️ 判据要用 **gpnMeteorCellOfAny**（取可用格索引），**不能**只看 `o.inLnC` 是否存在 ——
+            //      实机墓碑也有 `inLnC`，但那个格子的 `lIndex` 是 -2（见 gpnMeteorCellOfAny 的说明）
+            //      ⇒ 只判 `inLnC` 会把墓碑误算成 shield（P3b 断言抓到过）。
+            const _ownOk = (o && typeof o.lIndex === 'number' && typeof o.cIndex === 'number'
+                && o.lIndex >= 0 && o.lIndex <= 4 && o.cIndex >= 0 && o.cIndex <= 8);
+            const kind = (o && o.__gpnMeteorKind === 'tomb') ? 'tomb'
+                : (o && o.__gpnMeteorKind === 'shield') ? 'shield'
+                    : (o && o.isRealZombie === true) ? 'zombie'
+                        : _ownOk ? 'tomb'          // 有可用的自身格索引 ⇒ 墓碑
+                            : (o && o.inLnC) ? 'shield' : 'tomb';
+            const c = gpnMeteorCellOfAny(o, kind === 'tomb');   // ★ 按类别取格
+            if (!c) continue;
+            if (laneFilter !== null && c.lIndex !== laneFilter) continue;
+            // ⚠️ 严格 `<` ⇒ **并列时保留先遇到的**（列表顺序：僵尸 → 墓碑 → 护盾）⇒ **确定性**
+            if (c.cIndex < best) { best = c.cIndex; bestObj = o; bestC = c; bestKind = kind; }
+        }
+        return bestObj ? { zombie: bestObj, cell: bestC, cIndex: best, kind: bestKind } : null;
+    };
+    // ① 本行僵尸最靠左
+    const laneOk = (typeof laneIndex === 'number' && laneIndex >= 0) ? laneIndex : null;
+    const inLane = pickMinC(zombies, laneOk);
+    if (inLane) return inLane;
+    // ② 全场僵尸最靠左
+    const anyLane = pickMinC(zombies, null);
+    if (anyLane) return anyLane;
+    // ★ P3：③ 本行障碍物 ∪ 敌方护盾最靠左 → ④ 全场障碍物 ∪ 敌方护盾最靠左
+    const obstacles = (deps && Array.isArray(deps.obstacles)) ? deps.obstacles : [];
+    if (obstacles.length > 0) {
+        const obLane = pickMinC(obstacles, laneOk);
+        if (obLane) return obLane;
+        const obAll = pickMinC(obstacles, null);
+        if (obAll) return obAll;
+    }
+    // ⑤ 都没有 ⇒ 交给调用方走原版兜底
+    return null;
+}
+
+
+/** ★ 第 2 颗流星的落点：**不再打歪**。
+ *    · 场上**有僵尸**：50% ⇒ 1×3 同排横带密度最高的那一格（`gpnMeteorPickDensestCell`）
+ *                      50% ⇒ 从"有僵尸的格"里随机一格（`gpnMeteorPickRandomZombieCell`）
+ *    ★ 场上**没僵尸但有障碍物/敌方护盾**（P3，用户口径 Q8）：
+ *                      从"有障碍/护盾的格"里**随机一格**
+ *    · 两者都没有 ⇒ 返回 null ⇒ 调用方落**原版口径的随机草坪格**兜底（不会停在中途）。
+ *  @param deps `{ Square, obstacles?: 障碍/护盾实体数组 }` */
+function gpnMeteorSecondCell(zombies, deps) {
+    if (zombies && zombies.length > 0) {
+        return (Math.random() < 0.5)
+            ? gpnMeteorPickDensestCell(zombies, deps)
+            : gpnMeteorPickRandomZombieCell(zombies);
+    }
+    // ★ P3：没僵尸 ⇒ 优先砸"障碍物 / 敌方护盾"所在的格（随机一格）
+    const obstacles = (deps && Array.isArray(deps.obstacles)) ? deps.obstacles : [];
+    if (obstacles.length > 0) return gpnMeteorPickRandomObstacleCell(obstacles);
+    return null;
+}
+
+/** 从"有障碍/护盾的格"里随机一格（同一格多个只算一次） */
+function gpnMeteorPickRandomObstacleCell(list) {
+    const cells = [], seen = new Set();
+    for (const o of (list || [])) {
+        // 这里只服务"障碍格随机"，传 true 即可（自身字段优先后自动退回 inLnC）
+        const c = gpnMeteorCellOfAny(o, true);
+        if (!c) continue;
+        const k = c.lIndex + ',' + c.cIndex;
+        if (seen.has(k)) continue;
+        seen.add(k); cells.push({ lIndex: c.lIndex, cIndex: c.cIndex });
+    }
+    return cells.length ? cells[Math.floor(Math.random() * cells.length)] : null;
+}
+
+
+/** ★ 原版口径的"随机草坪格"兜底：`Square.getRandomLnC()`（默认 0..4 行 × 0..8 列均匀随机）。
+ *
+ *  这是**恢复原版行为** —— 原版 `detectEnemy` 里就有这一句：
+ *      `if (this.thrownAmount > 0 && !bestLnC) bestLnC = Square.getRandomLnC();`
+ *  我们只是把"没有可选目标"这一小类交还给原版兜底（用户口径 2026/10/15 拍板 B1）。
+ *
+ *  ⚠️ 为什么必须要有兜底：引擎 `specialPlantUpdate` 里
+ *      `this.busy <= 0 && i > 0 ⇒ this.detectEnemy()`
+ *    ⇒ 若我们"不投掷也不收尾"，`busy` 会一直是 0 ⇒ **每帧重进** ⇒
+ *      `thrownAmount` 卡在 1、`ignited` 永真 ⇒ `rest()` 永不调用 ⇒
+ *      **动画永远停在"正在攻击"**（实机 1685 次/局 的日志刷屏 + 卡死）。
+ *
+ *  @returns `{lIndex, cIndex}` | null（拿不到就返回 null，由调用方收尾） */
+function gpnMeteorRandomLawnCell(Square) {
+    try {
+        if (!Square || typeof Square.getRandomLnC !== 'function') return null;
+        const lnC = Square.getRandomLnC();
+        if (!lnC || typeof lnC.lIndex !== 'number' || typeof lnC.cIndex !== 'number') return null;
+        if (lnC.lIndex < 0 || lnC.lIndex > 4 || lnC.cIndex < 0 || lnC.cIndex > 8) return null;
+        return { lIndex: lnC.lIndex, cIndex: lnC.cIndex };
+    } catch (e) { return null; }
+}
+
+/** ★ 本轮"到此为止"：结束 ignited 循环，让引擎自己接管余下流程。
+ *
+ *  为什么只需 `rest()`：
+ *    `rest()` 会 `busy = +∞`（⇒ `specialPlantUpdate` 不再每帧调 `detectEnemy`）、
+ *    `ignited = false`、播 `SummonEnd`；随后引擎自己的
+ *    `animationListener("rest")` 会设 `resting = RestTime × _cdScale`，
+ *    再经 `resting → 0` 触发 `Recover` → `awaken` → 重新 `igniteStart`。
+ *  ⇒ 与"投完第 2 颗后的正常收尾"**调用点完全相同**，是引擎自有机制。
+ *  ⚠️ 刻意**不**去写 `resting` 等引擎内部字段（少碰内部状态 = 少风险）。 */
+function gpnMeteorCycleBailOut(pl) {
+    try { if (pl && typeof pl.rest === 'function') pl.rest(); } catch (e) { /* 收尾失败也不能抛给引擎 */ }
+}
+
+
+/** ★ 引擎"方格类型"里能让流星花点燃的那两种（`SquareTypeEnum.solid` / `.deck`）**的真实数值**。
+ *
+ *  引擎原文（`MeteorFlowerPlant.specialPlantUpdate`）：
+ *      `i != y.solid && i != y.deck || (e = !0)`  ⇒ 只有这两种格上的僵尸才点火。
+ *
+ *  ⚠️⚠️ **绝不硬编码**：`SquareTypeEnum` 的枚举名在 bundle 里是压缩异名，从字节里挖不出数值；
+ *     而且不同 gp-next 版本可能变动。⇒ **运行时用引擎自己导出的 `SquareType` 读一次**，
+ *     读不到就把"用到了没校准的数值"这件事记下来、并**放弃**点燃门改造（宁可少一个功能，也不能瞎点火）。
+ *
+ *  📌 2026/10/15 教训：我一开始凭印象写成 `solid=1 / deck=2`，与自检里的 `solid:0 / deck:4` 冲突
+ *     ⇒ 最终改为**完全不依赖枚举**的判据（isInLawn）——见 `gpnMeteorShouldIgnite`。 */
+/* ⚠️ 2026/10/15 教训：这里原本想"运行时读 SquareType 枚举来校准 solid/deck"，
+ *   但 `Square.ts` **并不导出 SquareType**（它在 `LnC.ts` 里，数值 solid=0/deck=4）
+ *   ⇒ `squareMod.SquareType` 恒为 undefined ⇒ 校准必失败 ⇒ **点燃门静默跳过**（实机暴露）。
+ *   ⇒ 改为**完全不依赖任何枚举**的判据（见 `gpnMeteorShouldIgnite`）：
+ *     「僵尸在草坪格」**或**「场上有可瞄准障碍」——既准确又不怕引擎改枚举。 */
+/** ★★ 流星花的"**门**"：有没有**可瞄准的障碍**（墓碑 ∪ 敌方护盾）。
+ *
+ *  ⚠️ 为什么需要这个（本轮改造的核心，2026/10/15）：
+ *    引擎 `MeteorFlowerPlant.specialPlantUpdate` 里的点燃条件**只认僵尸**：
+ *        `p.inLawnPool().forEach(t => { var i = t.inLnC?.getSquareType();
+ *                                       (i == solid || i == deck) && (e = true); });
+ *        e && this.igniteStart();`
+ *    ⇒ 没有僵尸时**根本不会点燃** ⇒ 我们的索敌函数（在 `detectEnemy` 里）**永远进不去**
+ *      ⇒ 第 1 颗的"障碍级"是**死代码**（用户口径 A：僵尸优先，没僵尸才找障碍）。
+ *
+ *  ★ 本 MOD 内部先例：**蒲公英**能"主动索敌障碍"，正是因为它把**开火门**也改了
+ *    （`makeDandelionPatch` 的补丁②：`detectEnemy` = 活僵尸 **或** 可见障碍）。
+ *    这里照同一模式，给流星花补上"障碍也能开门"。
+ *
+ *  @returns 场上"可瞄准障碍"的个数（墓碑 + 敌方护盾） */
+function gpnMeteorHasIgnitableObstacle(Square) {
+    try {
+        return gpnMeteorCollectTombs(Square, null).length
+            + gpnMeteorCollectEnemyShields(Square, null).length;
+    } catch (e) { return 0; }
+}
+
+/** ★★ 点燃门的**决策**（纯函数，便于单测）：原版这一帧**没有**点燃它，
+ *  但我们该不该因为"场上有可瞄准障碍"补一次点燃？
+ *
+ *  @param deps `{ awakenBefore, awakenAfter, ignited, featOn, hasObstacle }`（都由调用方先算好）
+ *  @returns true = 应当补点燃
+ *
+ *  ⚠️ 为什么抽出来：这段判断曾写在包装里，被"全局校准值"与"测试桩"的时序问题**反复掩盖**
+ *     （2026/10/15 排查了很久）。抽成纯函数后，逻辑只依赖入参 ⇒ 可被确定性地单测。 */
+function gpnMeteorShouldSupplementIgnite(deps) {
+    const d = deps || {};
+    return !!(d.featOn === true
+        && d.awakenBefore === true          // 原版调用前是待命状态
+        && d.awakenAfter === false          // 原版这一帧把它唤醒了（否则不该我们管）
+        && d.ignited !== true               // 还没真正点燃
+        && d.hasObstacle === true);         // 场上有可瞄准障碍
+}
+
+
+
+
+/** ★★ 点燃门判据（**纯函数**，便于单测）：这一帧要不要点燃流星花？
+ *
+ *  规则（用户口径 A：僵尸优先、没有僵尸才找障碍）：
+ *    ① **有僵尸在草坪格** ⇒ 点燃（这也是引擎原版的判据）
+ *    ② 否则**场上有可瞄准障碍**（墓碑 ∪ 敌方护盾）⇒ 也点燃（本模组的扩展，照蒲公英模式）
+ *    ③ 都没有 ⇒ 不点燃（不空放）
+ *
+ *  ⚠️ 为什么不用 `SquareTypeEnum.solid/deck` 精确复刻引擎判据：
+ *    `SquareType` 不在 `Square.ts` 的导出里（它在 `LnC.ts`，数值 solid=0/deck=4），
+ *    取不到就会让整个改造**静默失效**（2026/10/15 实机踩过）。
+ *    改用 `isInLawn()`：语义等价（草坪 = 能站僵尸的格），且**不依赖任何枚举**。
+ *
+ *  @param deps `{ awaken, featOn, zombieInLawn, obstacleCount }`（均由调用方先算好）
+ *  @returns true = 应当点燃
+ */
+function gpnMeteorShouldIgnite(deps) {
+    const d = deps || {};
+    if (d.featOn !== true) return false;
+    if (d.awaken !== true) return false;          // 只在待命状态才点火
+    if (d.zombieInLawn === true) return true;     // ① 原版判据
+    if (typeof d.obstacleCount === 'number' && d.obstacleCount > 0) return true;  // ② 扩展
+    return false;
+}
+
+
+/** ★★ "本轮已点燃"标记（防止重复点火）。
+ *
+ *  为什么需要（2026/10/15 实机 F12 发现）：
+ *    引擎原本只在 `awaken === true` 时才调 `igniteStart()` ⇒ 天然一次；
+ *    我们的补点燃是"每帧判断"（`specialPlantUpdate` 每帧都会跑）⇒
+ *    在"原版不点火、场上有障碍"的场面里会**连续补点燃**（日志里出现连续 3 行），
+ *    而 `igniteStart()` 会 `playAnimation("SummonStart")` ⇒ **召唤动画被反复重启**。
+ *  ⇒ 用 WeakSet 记住"本轮已经点燃过"，并在 `rest()` / `recover()`（一轮结束）时清除。
+ *  ⚠️ 用 WeakSet（不是普通标记）：不会因为植物被销毁而留下悬挂引用。 */
+const gpnMeteorIgnitedSet = new WeakSet();
+/** 本轮是否已点燃过（幂等保护） */
+function gpnMeteorAlreadyIgnited(pl) {
+    try { return !!(pl && gpnMeteorIgnitedSet.has(pl)); } catch (e) { return false; }
+}
+/** 标记本轮已点燃 */
+function gpnMeteorMarkIgnited(pl) {
+    try { if (pl) gpnMeteorIgnitedSet.add(pl); } catch (e) { }
+}
+/** 清除本轮标记（一轮结束时调用） */
+function gpnMeteorClearIgnited(pl) {
+    try { if (pl) gpnMeteorIgnitedSet.delete(pl); } catch (e) { }
+}
+
+
+/** 场上有没有"在草坪格"的僵尸（用来复刻引擎的点燃判据，且不依赖枚举） */
+function gpnMeteorZombieInLawn(Square) {
+    try {
+        const la = (Square && typeof Square.getAllLane === 'function') ? (Square.getAllLane() || []) : [];
+        for (const lane of la) {
+            if (!lane) continue;
+            try { if (typeof lane.isInLawn === 'function' && !lane.isInLawn()) continue; } catch (e0) { }
+            let zp = null;
+            try { zp = (typeof lane.zombiePool === 'function') ? (lane.zombiePool() || []) : []; } catch (e1) { zp = []; }
+            for (const z of zp) {
+                const c = z && z.inLnC;
+                if (!c) continue;
+                try { if (typeof c.isInLawn === 'function' && c.isInLawn()) return true; } catch (e2) { }
+            }
+        }
+    } catch (e) { }
+    return false;
+}
+
+/** P1 起步：流星花索敌 —— 第 2 颗流星改为"不再打歪"。
+ *
+ *  === P1 的行为（相对原版）===
+ *    · 第 2 颗**取消** `SecondMeteorMissChance(0.35)` 的打歪判定（原版会随机砸一个草坪格）。
+ *    · 改为 50/50：
+ *        50% ⇒ **1×3 同排横带密度最高**的那一格（= 这一击能打到最多僵尸的位置）
+ *        50% ⇒ 从"**有僵尸的所有格**"里随机一格
+ *    · 若场上**没有任何僵尸** ⇒ 本颗**不发射**（与原版"随机砸一格"不同，这是用户口径 Q9）。
+ *
+ *  === 第 1 颗**仍走原版**（P1 不动它）===
+ *    P2 起第 1 颗 = "本行最靠左 → 全场最靠左"（`cIndex` 最小）；P3 再加"障碍物 / 敌方护盾"。
+ *    所以本函数里第 1 颗的路径是"整段照抄原版条件与选法"，**逐字等价**。
+ *
+ *  @param MeteorFlowerPlant 引擎 `MeteorFlower.ts` 导出的植物类
+ *  @returns 补丁记录数组（空数组表示没挂上） */
+let gpnMeteorLastZombieEnum = null;      // 工厂最近一次收到的 ZombieEnum（**只读记录**，给自检）
+function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
+    const recs = [];
+    // ★★ 归一化：本工厂的调用方可能传**类**，也可能传**原型**（两种写法都在用）——
+    //    2026/10/15 踩过这个坑：点燃门改造用 `methodRecord(P, ...)` 时，
+    //    若 P 是原型就会让 `Cls.prototype` 变 undefined ⇒ **改造静默跳过**（实机看不出原因）。
+    //    ⇒ 这里统一解析出真正的 prototype，并且**始终用 prototype 做补丁**（不再依赖调用约定）。
+    const _maybeCls = MeteorFlowerPlant;
+    const P = (_maybeCls && _maybeCls.prototype && typeof _maybeCls.prototype.detectEnemy === 'function')
+        ? _maybeCls.prototype                                   // 传的是类
+        : ((_maybeCls && typeof _maybeCls.detectEnemy === 'function') ? _maybeCls : null);  // 传的是原型
+    const _cls = (_maybeCls && _maybeCls.prototype) ? _maybeCls : { prototype: P };   // 供 methodRecord 用
+    try { gpnMeteorLastZombieEnum = (deps && deps.ZombieEnum) || gpnMeteorLastZombieEnum; } catch (e) { }
+    if (!P || typeof P.detectEnemy !== 'function') {
+        warn('流星花索敌：拿不到 MeteorFlowerPlant 的 detectEnemy'
+            + '（MeteorFlower.ts 未载入，或原版改了类名）—— 本功能整体不生效，改为原版行为。');
+        return recs;
+    }
+
+    const original = P.detectEnemy;
+    const D = deps || {};
+    // ★ 点燃门改造不再需要任何枚举校准（改用 isInLawn 判据）
+    const Square = D.Square, ZombiePool = D.ZombiePool;
+    const D2 = { Square: Square, ZombieEnum: D.ZombieEnum };   // 模块级工具需要的依赖
+
+    /** 局部别名（补丁里用着顺手；实现只有一份 = 模块级的那个） */
+    const meteorCycleBailOut = (pl, diag, why) => {
+        if (diag) { try { log('流星花【第2颗】⇒ 收尾（' + why + '）'); } catch (e0) { } }
+        gpnMeteorCycleBailOut(pl);
+    };
+
+    // ---- 依赖健全性：任何一个关键依赖缺失 ⇒ 整个功能直通原版（绝不半残运行）----
+    const depsOk = !!(Square && typeof Square.getLnC === 'function'
+        && typeof Square.getAllLane === 'function'
+        && ZombiePool && typeof ZombiePool.pool === 'function');
+    if (!depsOk) {
+        warn('流星花索敌：依赖不全（Square / ZombiePool）—— 本功能整体不生效，改为原版行为。');
+        return recs;
+    }
+
+    /** 砸向"某一格"：走原版 `_throw`，入参必须是格子的 `plantPoint`。
+     *
+     *  ⚠️⚠️ **绝对不要拷贝 `plantPoint`（`Object.assign` / 展开 / clone 都不行）** ——
+     *     `LnC.plantPoint` 是个 **getter**：
+     *         get() { return this._plantPoint ? this._plantPoint : this.node }
+     *     ① 它可能返回 **Cocos `node`**（`_plantPoint` 为空时）；`node.worldPosition` 是 **Vec3**，
+     *        **没有 `toVec2()`** ⇒ 引擎 `_throw` 里 `n.worldPosition.toVec2()` 会炸；
+     *     ② 拷贝会丢掉 getter / 原型 / 非枚举属性 ⇒ 引擎拿到残缺对象
+     *        ⇒ 实机表现 = `TypeError: Cannot read properties of undefined (reading 'x')`
+     *          抛在引擎 `_throw` 内部（`lobOneCabbageOnPos` 之前，异步 ⇒ "Uncaught (in promise)"）
+     *        ⇒ **投掷流程中断 ⇒ 这一颗流星直接没了**（而 `thrownAmount` 已 ++，日志看着还正常）。
+     *     【实机教训 2026/10/15】P1 第 2 颗"消失"就是这个原因。
+     *
+     *  ⇒ 正确做法：**原样把 `lnC.plantPoint` 传进去**。
+     *     给自检用的 `__cell` 标记**直接挂在那个对象上**（引擎不认这个字段，无副作用）。 */
+    function throwAtCell(pl, cell) {
+        const lnC = Square.getLnC(cell.lIndex, cell.cIndex);
+        if (!lnC) return false;
+        let pos = null;
+        try { pos = lnC.plantPoint; } catch (e) { pos = null; }
+        if (!pos) return false;
+        // 结构性自检：连 `worldPosition` 都没有 ⇒ 这颗投不出去（例如 plantPoint 回了空 node）
+        //   宁可**提前失败**（调用方退回原版），也不要让异常抛进引擎的异步流程里
+        let wp = null;
+        try { wp = pos.worldPosition; } catch (e) { wp = null; }
+        if (!wp || typeof wp.x !== 'number') return false;
+        // ⚠️ `__cell` 标记**只在自检实例上写**：实机绝不往引擎对象（可能是共享的 Cocos 节点）写字段。
+        //    自检通过 `inst.__gpnMeteorTest = true` 开启。
+        if (pl && pl.__gpnMeteorTest === true) {
+            try { pos.__cell = cell; } catch (e) { /* 冻住也不影响投掷 */ }
+        }
+        pl._throw(pos);
+        return true;
+    }
+
+    // ---- 补丁本体 ----
+    const rec = { Cls: MeteorFlowerPlant, name: 'detectEnemy', original };
+    P.detectEnemy = function () {
+        // 诊断（仅 verboseLog）：把每次索敌的"走位"记下来，用于定位"第 2 颗不见了"
+        const _diag = verboseOn();
+        const _d3 = () => {
+            if (!_diag) return;
+            try {
+                const raw = (ZombiePool.pool() || []).length;
+                log('流星花【索敌】thrownAmount=' + this.thrownAmount
+                    + ' inLane=' + !!this.inLane
+                    + ' 原始池=' + raw
+                    + ' feat=' + featOn('meteorflowerAim'));
+            } catch (e) { /* 诊断自身出错不影响逻辑 */ }
+        };
+        _d3();
+
+        // ★ 运行期开关：关掉 ⇒ 与原版**逐字等价**（直通，不做任何额外判断）
+        if (!featOn('meteorflowerAim')) { if (_diag) log('流星花【索敌】⇒ 开关关，直通原版'); return original.apply(this, arguments); }
+
+        try {
+            // ⚠️ `_throw` 内部要用 `this.inLane.prjLayer` ⇒ 没有 inLane 时不能接管
+            if (!this.inLane) { if (_diag) log('流星花【索敌】⇒ 无 inLane，直通原版'); return original.apply(this, arguments); }
+
+            // —— 第 1 颗：**P2/P3 新索敌**（本行僵尸→全场僵尸→本行障碍/护盾→全场障碍/护盾→原版兜底）——
+            if (!(this.thrownAmount > 0)) {
+                const _lane = (this.inLane && typeof this.inLane.LaneIndex === 'number') ? this.inLane.LaneIndex : null;
+                const _zs1 = gpnMeteorCollectZombies(ZombiePool, D2);
+                // ★ P3：障碍 ∪ 敌方护盾。**分开采**，便于诊断把"墓碑数 / 护盾数"分开打
+                const _tomb1 = gpnMeteorCollectTombs(Square, null);
+                const _shld1 = gpnMeteorCollectEnemyShields(Square, null);
+                const _obs1 = _tomb1.concat(_shld1);
+                const _t1 = gpnMeteorFirstTarget(_lane, _zs1, { Square: Square, obstacles: _obs1 });
+                if (_t1 && _t1.zombie) {
+                    // ★ `kind === 'zombie'` ⇒ 走**原版** `_throwAtZombie`（瞄准僵尸世界坐标、带追踪；保留原版手感）
+                    //   `kind === 'tomb' / 'shield'` ⇒ 它们没有"可追踪的僵尸坐标"语义 ⇒ 走 `_throw(cell)`（落格心）
+                    const _z = _t1.zombie;
+                    const _isZ = (_t1.kind === 'zombie');
+                    const _ok = _isZ
+                        && (typeof _z.worldPositionX === 'number' && typeof _z.worldPositionY === 'number')
+                        && (typeof this._throwAtZombie === 'function');
+                    if (_diag) {
+                        log('流星花【第1颗】本行=' + _lane + ' 真僵尸=' + _zs1.length
+                            + ' 墓碑=' + _tomb1.length + ' 护盾=' + _shld1.length
+                            + ' ⇒ 目标格=' + _t1.cell.lIndex + ',' + _t1.cell.cIndex + ' 类别=' + _t1.kind
+                            + (_ok ? '（走原版 _throwAtZombie）' : '（走 _throw 格心）'));
+                    }
+                    if (_ok) {
+                        this._throwAtZombie(_z);
+                        this.thrownAmount++;
+                        this.busy = 0.5;
+                        const _once1 = (this._objdataOwn && typeof this._objdataOwn.MeteorCountOnce === 'number')
+                            ? this._objdataOwn.MeteorCountOnce : 2;
+                        if (this.thrownAmount >= _once1) this.rest();
+                        return;
+                    }
+                    // 非僵尸目标（墓碑/护盾），或僵尸缺世界坐标 ⇒ 退到"按格投"
+                    if (throwAtCell(this, _t1.cell)) {
+                        this.thrownAmount++;
+                        this.busy = 0.5;
+                        const _once1z = (this._objdataOwn && typeof this._objdataOwn.MeteorCountOnce === 'number')
+                            ? this._objdataOwn.MeteorCountOnce : 2;
+                        if (this.thrownAmount >= _once1z) this.rest();
+                        return;
+                    }
+                }
+                // 没有僵尸目标（或僵尸结构异常）⇒ **原版口径兜底**：随机草坪格
+                let _c1 = gpnMeteorRandomLawnCell(Square);
+                if (_diag) {
+                    log('流星花【第1颗】本行=' + _lane + ' 真僵尸=' + _zs1.length + ' 墓碑=' + _tomb1.length + ' 护盾=' + _shld1.length
+                        + ' ⇒ 无目标，兜底随机格=' + (_c1 ? (_c1.lIndex + ',' + _c1.cIndex) : 'null'));
+                }
+                if (!_c1 || !throwAtCell(this, _c1)) { meteorCycleBailOut(this, _diag, '第1颗兜底失败'); return; }
+                this.thrownAmount++;
+                this.busy = 0.5;
+                const _once1b = (this._objdataOwn && typeof this._objdataOwn.MeteorCountOnce === 'number')
+                    ? this._objdataOwn.MeteorCountOnce : 2;
+                if (this.thrownAmount >= _once1b) this.rest();
+                return;
+            }
+
+            // —— 第 2 颗：新策略（不再打歪）——
+            //    ⚠️ 逻辑全在**模块级纯函数** `gpnMeteorSecondCell()` 里（便于自检直接单测）
+            const _zs = gpnMeteorCollectZombies(ZombiePool, D2);
+            const _tomb2 = gpnMeteorCollectTombs(Square, null);
+            const _shld2 = gpnMeteorCollectEnemyShields(Square, null);
+            const _obs2 = _tomb2.concat(_shld2);
+            let cell = gpnMeteorSecondCell(_zs, { Square: Square, obstacles: _obs2 });
+            let fellBack = false;
+
+            // ★★【1】任何"没有可选目标"（池空 / 只剩场外僵尸 / 全被筛掉）
+            //        ⇒ 按**原版口径**落"全草坪随机一格"（用户口径 2026/10/15 拍板）
+            //   ⚠️ 绝不能在这里 `return`：引擎会每帧重调（busy 恒 0）⇒ 死循环 + 动画卡死
+            if (!cell) {
+                fellBack = true;
+                cell = gpnMeteorRandomLawnCell(Square);
+            }
+            if (_diag) {
+                log('流星花【第2颗】真僵尸=' + _zs.length + ' 墓碑=' + _tomb2.length + ' 护盾=' + _shld2.length
+                    + ' 选出格=' + (cell ? (cell.lIndex + ',' + cell.cIndex) : 'null')
+                    + (fellBack ? '（兜底：随机草坪格）' : ''));
+            }
+
+            // ★★【2】兜底也拿不到 ⇒ **收尾**（结束本轮），绝不停在半路
+            if (!cell) { meteorCycleBailOut(this, _diag, '连随机格都拿不到'); return; }
+
+            // ★★【3】投出去；结构性失败（plantPoint 无 worldPosition 等）
+            //        ⇒ 再试一次随机格，仍失败才收尾（**不回退原版**，避免"我投了一半+原版又投一颗"）
+            if (!throwAtCell(this, cell)) {
+                const alt = fellBack ? null : gpnMeteorRandomLawnCell(Square);
+                if (!alt || !throwAtCell(this, alt)) { meteorCycleBailOut(this, _diag, '投掷结构性失败'); return; }
+            }
+
+            // ★ 尾部状态机：逐字照抄原版（thrownAmount++ / busy / rest）
+            this.thrownAmount++;
+            this.busy = 0.5;
+            // `MeteorCountOnce` 是实例的 objdataOwn 字段；原版就在这里读它
+            const _once = (this._objdataOwn && typeof this._objdataOwn.MeteorCountOnce === 'number')
+                ? this._objdataOwn.MeteorCountOnce : 2;
+            if (this.thrownAmount >= _once) this.rest();
+        } catch (e) {
+            // 意外 ⇒ **收尾**（不再回退原版：那会导致"半投掷 + 原版再投一颗"的怪状态）
+            warn('流星花索敌（第2颗）出错，本轮收尾：', e);
+            meteorCycleBailOut(this, true, '异常');
+        }
+    };
+    recs.push(rec);
+
+    // ================= ② 点燃门（照本 MOD 蒲公英的模式） =================
+    //   引擎的点燃条件**只认僵尸**（僵尸落在 solid/deck 格）⇒ 没僵尸时永不点燃
+    //   ⇒ 索敌函数进不去 ⇒ 第 1 颗的"障碍级"是死代码。
+    //   ★ 这里**只补**"原版没点燃、但场上存在可瞄准障碍"这一种情形：
+    //     · 绝不动原版条件与时机（原版该点燃的仍然点燃）
+    //     · 原版已经点燃 ⇒ 我们什么都不做（避免同一帧二次 igniteStart）
+    //     · `igniteStart()` 自身有幂等保护（它会把 awaken 置 false）⇒ 不会连开
+    if (typeof P.specialPlantUpdate === 'function') {
+        let recIgnite = null;
+        // ⚠️ 用归一化后的 `_cls`（它保证 `.prototype` 指向真正的 prototype）
+        try { recIgnite = methodRecord(_cls, 'specialPlantUpdate'); } catch (e) { recIgnite = null; }
+        if (recIgnite && typeof recIgnite.original === 'function') {
+            // ★ 包 `rest()` / `recover()`：一轮结束 ⇒ 清掉"本轮已点燃"标记。
+            //   ⚠️ 只做"清除标记"这一件事，**不改动原方法任何行为**。
+            for (const _mn of ['rest', 'recover']) {
+                try {
+                    if (typeof P[_mn] === 'function') {
+                        const _rec = methodRecord(_cls, _mn);
+                        P[_mn] = function () {
+                            gpnMeteorClearIgnited(this);
+                            return _rec.original.apply(this, arguments);
+                        };
+                        recs.push(_rec);
+                    }
+                } catch (e5) { /* 包不上也不影响主体 */ }
+            }
+
+            P.specialPlantUpdate = function () {
+                const _wasAwaken = (this.awaken === true);           // 原版调用前状态
+                const _restingWas = this.resting;                     // 原版调用前 resting
+                const r = recIgnite.original.apply(this, arguments); // ★ 原版流程完全不变
+                try {
+                    // ★ 只在"原版这一帧**没有**点燃它"时考虑补点燃。
+                    //   ⚠️ 判据：引擎 `igniteStart()` = `resting = Infinity; awaken = false`
+                    //      ⇒ 若原版已点火，`awaken` 也会变 false ⇒ **光看 awaken 会重复点火**
+                    //        （2026/10/15 自检场景 A 抓到：igniteStart 被调了 2 次）。
+                    //      ⇒ 用 resting 的**跃变**判定："有限值 → Infinity" = 原版刚点过火。
+                    //   ⚠️ 必须是**函数**（`_vanillaIgnited()`）：写成值会让 `!x` 永远为 false
+                    //      —— 2026/10/15 这个笔误让"补点燃"整段**静默失效**，排查了很久。
+                    const _vanillaIgnited = () => isFinite(_restingWas) && (this.resting === Infinity);
+                    // ⚠️⚠️ **绝不能再加 `this.awaken === false`**：引擎 igniteStart() 会把 awaken
+                    //    置 false，而**原版这一帧若点了火也会置 false** ⇒ 两者无法区分，
+                    //    那个条件会把"补点燃"**永远挡住**（自检场景 B 与实机都复现过）。
+                    //    唯一可靠判据 = resting 的跃变（有限值 → Infinity）。
+                    if (_wasAwaken && !_vanillaIgnited() && this.ignited !== true
+                        && !gpnMeteorAlreadyIgnited(this)) {   // ★ 幂等：本轮只点一次
+                        const _obs = gpnMeteorHasIgnitableObstacle(Square);
+                        if (gpnMeteorShouldIgnite({
+                            featOn: featOn('meteorflowerAim'),
+                            awaken: true,                 // 我们只在原版刚把它唤醒时才走到这里
+                            zombieInLawn: gpnMeteorZombieInLawn(Square),
+                            obstacleCount: _obs,
+                        })) {
+                            gpnMeteorMarkIgnited(this);   // ★ 先标记，避免同一帧内重复
+                            this.igniteStart();
+                            if (verboseOn()) {
+                                log('流星花【点燃】补点燃（障碍=' + _obs + '）');
+                            }
+                        }
+                    }
+                } catch (e4) { /* 补点燃失败不影响原版流程 */ }
+                return r;
+            };
+            recs.push(recIgnite);   // ★ push 真实 rec（含 original/own），交给统一的还原逻辑
+        } else {
+            warn('流星花：拿不到 specialPlantUpdate（点燃门改造跳过 —— 第 1 颗将无法索敌障碍）。');
+        }
+    } else {
+        warn('流星花：没有 specialPlantUpdate（点燃门改造跳过 —— 第 1 颗将无法索敌障碍）。');
+    }
+
+    // ★ 明确的"成功"日志（一次性，只在 setup 时打一条）。
+    //   ⚠️ 为什么不加 `if (verboseOn())` 门：这条是**接线/版本确认**用的，
+    //      性质与 `[CTM] BUILD = ...` 相同 —— 没有它就只能靠"没有告警"反证，
+    //      实机排查会很别扭（P0 实机验证时就吃过这个亏）。一行、一次，不会刷屏。
+    log('流星花索敌：补丁已挂（第 1 颗 = 本行僵尸→全场僵尸→本行障碍/敌方护盾→全场障碍/敌方护盾，'
+        + '全部取 cIndex 最小（最靠左）；第 2 颗 = 50% 密度最高格 / 50% 随机僵尸格，'
+        + '无僵尸但有障碍/护盾则从中随机一格，都没有则按原版口径落随机草坪格；'
+        + '★ 点燃门已照"蒲公英模式"扩展：原版无僵尸格点火时，若场上有可瞄准障碍也会点燃'
+        + '）');
+    return recs;
+}
+
+
 /** 红针花（Red Stinger）：左键循环切换形态（0 -> 1 -> 2 -> 0）
  *  引擎事实（已逐条核对）：
  *    · inArea 是【带 setter 的访问器】=> 赋值即自动刷新 待机/随机/射击/死亡 动画 ✓
@@ -6351,6 +7192,8 @@ export default {
     _config: CFG,
     _vanilla: VANILLA,                 // 同上：原版值表（"关掉开关时写回什么"的唯一出处）
     _features: FEATURES,               // 同上：自检用来核对开关表
+    _featSet: featSet,                 // ★ 配置界面写入开关的入口（自检用来验证"即时生效"）
+    _featOn: featOn,                   // 运行期判定
     _featDefaults: gpnFeatDefaults,     // 同上：出厂默认
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
@@ -6374,6 +7217,30 @@ export default {
     _offFieldAreaApply: gpnOffFieldAreaApply,   // 场外范围兜底（行池 + 判定框 + 直接施加）
     _pepperBurnAt: (shot, d) => gpnPepperBurnAt(shot, d),   // 甜椒落点铺火（自检核对"场外 ⇒ 最右列 3×1"）
     _pepperDeps: () => gpnPepperDeps,           // 上面那个函数需要的引擎依赖（setup 时填好）
+    // 流星花索敌（P0~）—— 工厂本体 + 纯函数，自检直接单测
+    _meteorAimPatch: makeMeteorFlowerAimPatch,  // 流星花：索敌补丁工厂
+    _meteorIsRealZombie: gpnMeteorIsRealZombie, // 真僵尸判定（排除护盾/被魅惑/非场内）
+    _meteorCollectZombies: gpnMeteorCollectZombies,
+    _meteorFirstTarget: gpnMeteorFirstTarget,   // ★ 第 1 颗索敌（本行最靠左 → 全场最靠左 → 障碍/护盾 → 兜底）
+    _meteorTombBlack: GPN_METEOR_TOMB_BLACK,    // ★ 不当障碍物的 Tomb（**只有** kongfu_TNT=17）
+    _meteorTombIsBlacklisted: gpnMeteorTombIsBlacklisted,  // 黑名单判定（自检单测）
+    _meteorCollectTombs: gpnMeteorCollectTombs,             // 障碍物采集（含冲浪板；剔黑名单/我方/死亡）
+    _meteorCollectEnemyShields: gpnMeteorCollectEnemyShields, // 敌方护盾采集（按 hypnotized 判阵营）
+    _meteorCollectObstacles: gpnMeteorCollectObstacles,     // 上面两者合并
+    _meteorDensestCell: gpnMeteorPickDensestCell,   // ★ 1×3 同排横带密度最高格（并列随机）
+    _meteorDensestScore: gpnMeteorDensestScore,     // ★ 只返回最高分（自检做「同排隔离」构造性证明）
+    _meteorRandomZombieCell: gpnMeteorPickRandomZombieCell,
+    _meteorSecondCell: gpnMeteorSecondCell,     // ★ 第 2 颗落点（50/50；无目标 ⇒ null ⇒ 调用方走随机格兜底）
+    _meteorRandomLawnCell: gpnMeteorRandomLawnCell, // ★ 原版口径的"随机草坪格"兜底
+    _meteorShouldIgnite: gpnMeteorShouldIgnite,             // ★ 点燃门判据（纯函数）
+    _meteorZombieInLawn: gpnMeteorZombieInLawn,             // 场上有没有草坪格僵尸
+    _meteorAlreadyIgnited: gpnMeteorAlreadyIgnited,             // ★ 本轮是否已点燃（幂等）
+    _meteorMarkIgnited: gpnMeteorMarkIgnited,                   // 标记（自检用）
+    _meteorClearIgnited: gpnMeteorClearIgnited,                 // 清除标记
+    _meteorHasIgnitableObstacle: gpnMeteorHasIgnitableObstacle, // ★ 点燃门：有没有可瞄准障碍
+    _meteorShouldSupplementIgnite: gpnMeteorShouldSupplementIgnite, // ★ 补点燃决策（纯函数）
+    _meteorCycleBailOut: gpnMeteorCycleBailOut,     // ★ 本轮收尾（= 调引擎 rest()），防"每帧死循环+动画卡死"
+    _meteorShieldEnum: () => gpnMeteorLastZombieEnum,   // 工厂收到的 ZombieEnum（自检单测护盾判定用）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
     _gpnSpSelfHealState: () => ({ total: gpnSpSelfHealTotal, spots: gpnSpSelfHealSpots, stack: gpnSpSelfHealFirstStack }),  // 诊断用
@@ -6455,6 +7322,7 @@ export default {
             'chunks:///_virtual/PerfumeShroom.ts',     // 34（香水菇本体：把香水火时长 9 → 13.5 秒）
             'chunks:///_virtual/DarkJesterZombie.ts',  // 35（弄臣僵尸：反弹甜椒弹时打"来源=弄臣"标记）
             'chunks:///_virtual/Abbot3SectionStaffZombie.ts', // 36（三节棍僵尸：只打"来源=三节棍"标记，行为不变）
+            'chunks:///_virtual/MeteorFlower.ts',      // 37（流星花：索敌策略重写 —— 第1颗本行优先/可索障碍与护盾、第2颗不再打歪）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -6476,7 +7344,8 @@ export default {
                 phatbeetMod = mods[26], cardsMod = mods[27], plantsMod = mods[28], snowPeaMod = mods[29],
                 redStingerMod = mods[30], murkadamiaMod = mods[31], splitPeaMod = mods[32],
                 zombiesMod = mods[33], perfumeShroomMod = mods[34],
-            darkJesterMod = mods[35], abbot3Mod = mods[36];
+            darkJesterMod = mods[35], abbot3Mod = mods[36],
+                meteorMod = mods[37];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -6571,6 +7440,8 @@ export default {
                     { key: 'redstinger', label: '红针花' },
                     { key: 'murkadamia', label: '暗影夏威夷果' },
                     { key: 'splitpea', label: '裂荚射手' },
+                    { key: 'meteorflowerAim', label: '流星花' },     // ★ 2026/10/15 补：曾经漏登记 ⇒ 界面上看不到、也切不了
+                    //   （顺序与 FEATURES 略有不同是**有意的**：玩家视角下「推植物修复」更适合排在末尾）
                     { key: 'pushPlantFix', label: '推植物修复' },
                     { key: 'verboseLog', label: '诊断日志' },
                 ];
@@ -7160,6 +8031,19 @@ let ticks = 0;
                     shotMod && shotMod.commonShot,
                     { Square: squareMod.Square, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2 });
                 if (spf) recs.push(...spf);
+            }
+            // ---- 22b. 流星花：索敌策略（P0 只挂空补丁，行为与原版一致）----
+            {
+                const mf = makeMeteorFlowerAimPatch(meteorMod && meteorMod.MeteorFlowerPlant, {
+                    Square: squareMod.Square, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2,
+                    // ⚠️ `ZombiePool` / `TombPool` 是 **CharacterManager.ts** 的导出（不是 Zombie.ts）
+                    ZombiePool: charMgrMod && charMgrMod.ZombiePool,
+                    TombPool: charMgrMod && charMgrMod.TombPool,
+                    ZombieEnum: zombiesMod && zombiesMod.ZombieEnum,
+                    // ★ 点燃门改造要用它读 solid/deck 的**真实数值**（绝不硬编码）
+                    SquareType: squareMod && squareMod.SquareType,
+                });
+                if (mf) recs.push(...mf);
             }
             // ---- 23. 红针花：左键循环切换形态 ----
             {
