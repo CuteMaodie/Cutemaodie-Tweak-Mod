@@ -72,6 +72,7 @@ const FEATURES = {
     murkadamia: true,       // 暗影夏威夷果：暗影态本体隐身 / 暗影物质 5000
     splitpea: true,         // 裂荚射手：左键左右翻转 / 前后豌豆对调
     meteorflowerAim: true,  // 流星花：索敌改造（第1颗本行优先/可索障碍与护盾、第2颗不再打歪）；关掉=原版索敌
+    sporeshroom: true,      // 孢子菇：亡语（1×3 伤害+感染+0.75s眩晕）／阳光200／血量150／图鉴两条特点；关掉=全回原版
     // ↓ 诊断日志总开关：★注意★ 它在表里登记成 false —— 日志开关故意和别的开关【反着来】：
     //   · 只有 features.json 里显式写 true 才开；写 false / 删掉 / 整个文件读不到 ⇒ 一律【关】；
     //   · 打开后 = 所有"每次触发一条"的诊断日志（各功能的 debugLog）全部回来，方便排查。
@@ -355,6 +356,8 @@ const VANILLA = {
     garlic: { sunCost: 50, cooldown: 5, eatDamage: 150 },
     redstinger: { sunCost: 150, tier1: 0.3333333, tier2: 0.2 },
     pepperpult: { sunCost: 200, cooldown: 20 },
+    // 孢子菇：原版数值（来自 Objects/PlantProps.json 的 sporeshroom 条目）
+    sporeshroom: { sunCost: 150, toughness: 300 },
 };
 
 const CFG = {
@@ -380,6 +383,34 @@ const CFG = {
         },
         debuffLayer: 0.9,      // 单层减防值。与心蕊普攻一致（blooming_heart 的 DefenceRateList = [0.9]）
         debugLog: false,        // 每次减伤打一条日志，用来验证
+    },
+    sporeshroom: {
+        plantType: 'sporeshroom',
+        // ---- 数值（用户指定）----
+        sunCost: 200,          // 阳光消耗（原版 150）
+        toughness: 150,        // 血量上限（原版 300）
+        // ---- 亡语（被击败时触发；用户指定）----
+        //   伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查对应弹道的 Damage）
+        //     sporeshroom_spore  -> 50   （1 级普攻）
+        //     sporeshroom_spore1 -> 150
+        //     sporeshroom_spore2 -> 250
+        //   ⚠️ 这 3 个值**只作为兜底**：正常路径是运行期从 ProjectileProps 里读那 3 条弹道的真实 Damage。
+        deathDamageByPea: {
+            sporeshroom_spore: 50,
+            sporeshroom_spore1: 150,
+            sporeshroom_spore2: 250,
+        },
+        deathDamageFallback: 50,   // 读不到弹道数据时的兜底（= 1 级普攻）
+        deathStun: 0.75,           // 亡语附带眩晕秒数（用户指定）
+        deathRadiusTiles: 3,       // 亡语横向格数（1 行 × 3 列，以自身格为中心）
+        // ---- 亡语特效（用户指定：暗影豌豆·初档大招子弹的**命中特效**）----
+        //   资源取自 resources bundle 的 `projectiles/PeaShadowPF0PRJ`，
+        //   读它 `commonShot` 组件上的 `PopParticle`（实机实测值 = "ShadowPeaPF0PAR"）。
+        //   ⚠️ 绝不引用用户给的 PTX 贴图；这里只用引擎自己的 prefab。
+        fxPrjPath: 'projectiles/PeaShadowPF0PRJ',
+        fxPropName: 'PopParticle',
+        fxEnable: true,
+        debugLog: false,           // 每次亡语打一条日志（排查用）
     },
     perfumeshroom: {
         plantType: 'perfumeshroom',
@@ -950,6 +981,7 @@ const GPN_ALM_CHANGED = [
     ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
     ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
     ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
+    ['sporeshroom', 'sporeshroom'],
 ];
 
 function gpnAlmList() {
@@ -1620,6 +1652,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('murkadamia', '被暗影强化时本体获得隐身',
                 'While shadow-boosted, its body becomes invisible.');
         }
+        // ---- 孢子菇：新增两条特点（用户指定文案，中英）----
+        //   ⚠️ 第 2 条文案按用户口径**只提"毒性家族"** —— 但忧郁菇/毒影菇实际也吃加成，
+        //      那是用户**特意安排**的，文案保持原样、不要"补全"。
+        if (featOn('sporeshroom')) {
+            addSpecial('sporeshroom', '被击败后，伤害并感染附近的僵尸',
+                'When defeated, it damages and infects nearby zombies.');
+            addSpecial('sporeshroom', '被孢子菇感染的僵尸受到毒性家族伤害×1.5',
+                'Zombies infected by Spore-shroom take 1.5x damage from the Poison family.');
+        }
     }
     };
 
@@ -1899,6 +1940,13 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 }
             }
         }
+
+        // ---- 孢子菇：阳光 150 → 200 / 血量上限 300 → 150（两态，关掉写回原版）----
+        //   注意：这两个字段在原版数据里就叫 SunCost / Toughness（见 Objects/PlantProps.json）。
+        setField('PlantProps', CFG.sporeshroom.plantType, 'SunCost',
+            featOn('sporeshroom') ? CFG.sporeshroom.sunCost : VANILLA.sporeshroom.sunCost);
+        setField('PlantProps', CFG.sporeshroom.plantType, 'Toughness',
+            featOn('sporeshroom') ? CFG.sporeshroom.toughness : VANILLA.sporeshroom.toughness);
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
         // ★ 阳光两态放到包裹外面
@@ -6576,6 +6624,426 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
 }
 
 
+/* =========================================================================
+ * 孢子菇（SporeShroom）—— 亡语 + 数值 + 图鉴
+ *
+ *  用户需求（2026-10-16 定稿，见 `CTM\设计稿-孢子菇.md`）：
+ *    R1 亡语：以自身格为中心的 **1 行 × 3 列**，伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查弹道 Damage）
+ *    R2 亡语伤害 = **不穿甲**（armorProtection=true）+ **普通物理**（damageType=physicle 0）
+ *    R3 亡语对范围内僵尸 **先施加 `CarriedSporeShroom` 标记、再造成伤害**（⇒ 这一发自己吃 ×1.5）
+ *    R4 亡语附带 **0.75 秒眩晕**
+ *    R5 带标记的僵尸 **非"化灰"死亡 ⇒ 生成一株孢子菇**（照抄引擎 `turnIntoSporeShroom`）
+ *    R7 孢子菇**自己也要吃到 ×1.5**（含亡语伤害）—— 由 R3 的"先标记"天然满足
+ *    R8 阳光 150 → **200**、血量上限 300 → **150**
+ *    R9 图鉴新增**两条特点**（中英）
+ *    R10 亡语特效 = 暗影豌豆**初档**大招子弹的**命中特效**（`ShadowPeaPF0PAR`），100% 还原、不依赖场上暗影豌豆
+ *    R11 开关 `sporeshroom`（默认开；关掉 = 全部回原版）
+ *    R12 分两步：**第一步直伤**（本块）／第二步 Dot 的 ×1.5（后续）
+ *
+ *  === 引擎事实（逐字核对 1.5.5 bundle + 实机探针，见设计稿 §1/§4.1）===
+ *   · 模块 `chunks:///_virtual/SporeShroom.ts` 导出 `SporeShroomPlant`；它**没有**覆盖
+ *     `specialPlantOnKilled` / `specialPlantDie` ⇒ 继承 `Plant` 基类的空实现。
+ *   · `Plant.die(released, lost, particle, anm, noFoodEnd)` 里调 `this.specialPlantDie(noFoodEnd)`；
+ *     被击杀路径另调 `specialPlantOnKilled()`（爆裂坚果就是用这个做亡语）。
+ *   · `specialPlantOnKilled` **不含"被铲"**（铲子走 `die(..., noFoodEnd=true)`）—— 用户要求：铲掉不触发 ✓
+ *   · 亡语伤害对象：`new ZombieDamageDetails(dmg, true, false, false, null, ZombieDamageType.physicle)`
+ *     ⚠️ **绝不能**用 `ray`：`Zombie.defaultDealDamage` 里 `canPlayAshNow() && damageType==ray` ⇒ 化灰，
+ *        而化灰路径**不会**走 `playDie` 里的亡语分支 ⇒ 中招僵尸反而生不出孢子菇（自相矛盾）。
+ *   · 免疫：`z.ImmuneToSporeShroom`（引擎已封装 getter；僵王等恒 true）。
+ *     用户口径：**免疫僵尸照吃伤害、只是不标记**。
+ *   · 命中特效：`commonShot.prototype.playParticle` 里的 `n.parent = this.node.parent`
+ *     ⇒ 实机观测到父节点 = 车道的 **prjLayer**（`New Node` 通用名，链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）
+ *     ⇒ 这里**从活体弹道身上缓存**同一个父节点，保证特效落在**和原版一模一样**的层。
+ *   · 僵尸侧亡语（R5）：照抄 `Zombie.turnIntoSporeShroom`，**在 `playDie` 里加分支**（S3）。
+ * =======================================================================*/
+
+/** 特性表里的开关名（同时是图鉴里"我们改过"的开关名） */
+const GPN_SPORE_FEAT = 'sporeshroom';
+
+/** 亡语伤害：按孢子菇的 `CabbageType` 查对应弹道的真实 Damage。
+ *  · 正常路径：运行期从 `ProjectileProps` 里读（不硬编码，改数据也跟着变）
+ *  · 拿不到数据 ⇒ 用 CFG 里的兜底表（50/150/250） */
+function gpnSporeDeathDamage(plant, jsonMod) {
+    const C = CFG.sporeshroom;
+    // ① 本株实际在用的弹药名（`objdataOwn.CabbageType`；拿不到就用原版默认）
+    let pea = null;
+    try {
+        const od = (plant && (plant.objdataOwn || plant._objdataOwn)) || null;
+        if (od && typeof od.CabbageType === 'string') pea = od.CabbageType;
+    } catch (e) { /* 忽略 */ }
+    if (!pea) pea = 'sporeshroom_spore';
+    // ② 兜底表
+    const fb = (C.deathDamageByPea && C.deathDamageByPea[pea] != null)
+        ? C.deathDamageByPea[pea] : C.deathDamageFallback;
+    // ③ 真实数据
+    try {
+        const Ctn = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+        const prjs = Ctn && Ctn.ProjectileProps;
+        if (Array.isArray(prjs)) {
+            for (const it of prjs) {
+                if (!it || !Array.isArray(it.aliases) || it.aliases.indexOf(pea) === -1) continue;
+                const od = it.objdata || {};
+                const d = Number(od.Damage);
+                if (isFinite(d) && d > 0) return d;
+                break;
+            }
+        }
+    } catch (e) { /* 忽略 */ }
+    return fb;
+}
+
+/** 取一个"僵尸池"（按类别的通用取法，与流星花改造里用的是同一套判据） */
+function gpnSporeLaneOf(plant) {
+    try { return (plant && plant.inLane) || null; } catch (e) { return null; }
+}
+
+/** ★ 亡语特效（R10）—— 暗影豌豆**初档**大招子弹的**命中特效** prefab。
+ *  实机实测（S1/S1b/S1c 探针，见设计稿 §4.1）：
+ *    · 只读路径：`resources` bundle → `load('projectiles/PeaShadowPF0PRJ', cc.Prefab)`
+ *                → `findPropInNode(prefab.data, 'PopParticle')` ⇒ `cc.Prefab`「ShadowPeaPF0PAR」
+ *    · 实例化：`NodePools.instantiatePooly(那个 Prefab)` ⇒ `cc.Node`（实测可用）
+ *    · 落点：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`
+ *            ⇒ 实机观测到父节点 = 车道的 **prjLayer**（通用名 `New Node`）
+ *    · ⚠️ 用户给的那张**参考贴图**（PTX 文件）**仅作参考、绝不引用**，连文件名都不写进源码：
+ *      这里只用引擎自己的 prefab。
+ *  ★ 状态按**场景键**失效（换场景后旧 prefab / 旧父节点都不能再用，否则抛
+ *    `Cannot read properties of null (reading '_prefab')` —— 本工程踩过）。 */
+const GPN_SPORE_FX = {
+    prefab: null,      // 命中特效 prefab（cc.Prefab）
+    refd: false,       // 是否 addRef 过（decRef 要配平）
+    sceneKey: null,    // 缓存所属场景
+    parent: null,      // 引擎自己用的那个父节点（= 车道 prjLayer）
+    parentSceneKey: null,
+    loading: false,    // 正在加载中（避免重复发起）
+    failLogged: false,
+};
+
+/** `NodePools.instantiatePooly` 的模块级引用（setup 里注入；特效播放要用） */
+let gpnSporeInstantiateRef = null;
+
+/** 拿 cc（模块级通用取法） */
+function gpnSporeCc() {
+    try { return (typeof cc !== 'undefined' && cc) ? cc : null; } catch (e) { return null; }
+}
+
+/** 丢掉特效缓存（换场景 / 出厂清理时调）—— addRef 过的才 decRef（配平） */
+function gpnSporeFxDrop() {
+    const S = GPN_SPORE_FX;
+    try {
+        if (S.refd && S.prefab && typeof S.prefab.decRef === 'function') S.prefab.decRef();
+    } catch (e) { /* 资源可能已经没了 */ }
+    S.prefab = null; S.refd = false; S.sceneKey = null;
+    S.parent = null; S.parentSceneKey = null; S.loading = false;
+}
+
+/** 记录"引擎自己用的父节点"（由弹道钩子回填；按场景键存） */
+function gpnSporeFxSetParent(parent, deps) {
+    if (!parent) return;
+    const key = (typeof gpnFxSceneKey === 'function') ? gpnFxSceneKey(deps) : null;
+    const S = GPN_SPORE_FX;
+    S.parent = parent;
+    S.parentSceneKey = key;
+}
+
+/** 取父节点：优先"本株所在车道的 prjLayer"（最准），其次弹道钩子回填的缓存 */
+function gpnSporeFxGetParent(plant, deps) {
+    try {
+        const lane = (plant && plant.inLane) || null;
+        if (lane && lane.prjLayer) return lane.prjLayer;
+    } catch (e) { /* 忽略 */ }
+    const key = (typeof gpnFxSceneKey === 'function') ? gpnFxSceneKey(deps) : null;
+    const S = GPN_SPORE_FX;
+    if (S.parent && S.parentSceneKey === key) return S.parent;
+    return null;
+}
+
+/** 把 `Prefab.data` 树里第一个带 `prop` 的组件的该属性挖出来（照抄本 MOD 的 findPropInNode） */
+function gpnSporeFindProp(node, prop, depth) {
+    if (!node) return null;
+    if (depth === undefined) depth = 0;
+    if (depth > 8) return null;
+    try {
+        const comps = node.components || node._components || [];
+        for (let i = 0; i < comps.length; i++) {
+            const c = comps[i];
+            if (c && c[prop]) return c[prop];
+        }
+        const kids = node.children || node._children || [];
+        for (let i = 0; i < kids.length; i++) {
+            const r = gpnSporeFindProp(kids[i], prop, depth + 1);
+            if (r) return r;
+        }
+    } catch (e) { /* 忽略 */ }
+    return null;
+}
+
+/** 确保特效 prefab 已加载（幂等；失败只 warn 一次） */
+function gpnSporeFxEnsure(deps) {
+    const S = GPN_SPORE_FX;
+    const ccg = gpnSporeCc();
+    if (!ccg || !ccg.Prefab || !ccg.assetManager) return;
+    const key = (typeof gpnFxSceneKey === 'function') ? gpnFxSceneKey(deps) : null;
+    if (S.prefab && S.sceneKey === key) return;      // 已就绪
+    if (S.loading) return;
+    // 换场景了 ⇒ 先丢掉旧的（含 decRef 配平）
+    if (S.prefab && S.sceneKey !== key) gpnSporeFxDrop();
+    S.loading = true;
+
+    const mgr = ccg.assetManager;
+    const take = (bundle) => {
+        try {
+            bundle.load(CFG.sporeshroom.fxPrjPath, ccg.Prefab, (err, prefab) => {
+                S.loading = false;
+                if (err || !prefab) {
+                    if (!S.failLogged) { S.failLogged = true; warn('孢子菇亡语特效：加载 ' + CFG.sporeshroom.fxPrjPath + ' 失败：' + (err && (err.message || err))); }
+                    return;
+                }
+                try {
+                    const data = prefab.data || prefab._data;
+                    const par = gpnSporeFindProp(data, CFG.sporeshroom.fxPropName);
+                    const el = (par && par.length) ? par[0] : null;
+                    if (!el) {
+                        if (!S.failLogged) { S.failLogged = true; warn('孢子菇亡语特效：' + CFG.sporeshroom.fxPrjPath + ' 上找不到 ' + CFG.sporeshroom.fxPropName); }
+                        return;
+                    }
+                    S.prefab = el;
+                    S.sceneKey = key;
+                    S.refd = false;
+                    if (typeof el.addRef === 'function') {
+                        try { el.addRef(); S.refd = true; } catch (e2) { /* 没引用计数就算了 */ }
+                    }
+                    log('孢子菇亡语特效：已就绪（' + (el.name || el._name || '?') + '，来自 ' + CFG.sporeshroom.fxPrjPath + '）');
+                } catch (e) { warn('孢子菇亡语特效：解析 prefab 出错', e); }
+            });
+        } catch (e) { S.loading = false; warn('孢子菇亡语特效：取 prefab 出错', e); }
+    };
+
+    try {
+        const bs = mgr.bundles;
+        let b = null;
+        if (bs) {
+            if (typeof bs.get === 'function') b = bs.get('resources');
+            if (!b && bs._assets) b = bs._assets['resources'];
+        }
+        if (b) { take(b); return; }
+        mgr.loadBundle('resources', (err, bundle) => {
+            if (err || !bundle) { S.loading = false; warn('孢子菇亡语特效：loadBundle(resources) 失败：' + (err && (err.message || err))); return; }
+            take(bundle);
+        });
+    } catch (e) { S.loading = false; warn('孢子菇亡语特效：取 bundle 出错', e); }
+}
+
+/** 在 (x,y) 放一次命中特效；返回节点或 null（绝不抛错） */
+function gpnSporeFxSpawn(parent, pos) {
+    const S = GPN_SPORE_FX;
+    if (!S.prefab || !parent || !pos) return null;
+    const inst = gpnSporeInstantiateRef;              // 由 setup 注入（NodePools.instantiatePooly）
+    if (typeof inst !== 'function') return null;
+    let node = null;
+    try {
+        const ccg = gpnSporeCc();
+        node = inst(S.prefab);
+        if (!node) return null;
+        node.parent = parent;
+        if (ccg && ccg.v3) node.worldPosition = new ccg.v3(pos.x, pos.y, 0);
+        else if (node.worldPosition) { node.worldPosition.x = pos.x; node.worldPosition.y = pos.y; }
+        return node;
+    } catch (e) {
+        // ★ 资源失效（换场景）⇒ 清缓存，下次重取（本工程约定，不要求大退）
+        warn('孢子菇亡语特效：播放失败，已清缓存下次重取', e);
+        gpnSporeFxDrop();
+        return null;
+    }
+}
+
+/** 「就绪」回调（补丁工厂里用）：有父节点就直接放 */
+function gpnSporeFxReady(parent, pos) {
+    if (!parent || !pos) return null;
+    gpnSporeFxEnsure(null);
+    return gpnSporeFxSpawn(parent, pos);
+}
+
+/* ---- 弹道钩子：把「引擎自己用的那个特效父节点」记下来（只读观测，不改行为）----
+ *  为什么需要：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`；
+ *  实机探针（S1c）观测到那个父节点就是**车道的 prjLayer**（通用名 `New Node`，
+ *  链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）。
+ *  拿到它之后，孢子菇亡语特效就能落在**和原版一模一样**的层上。
+ *  实现：包装 `playParticle` —— **先原样调用原函数**，再顺手缓存 `this.node.parent`。
+ *  ⚠️ 绝不改返回值 / 副作用；关掉开关时也不拆（钩子无害，仅一次赋值）。 */
+function makeSporeShroomCommonShotHook(CommonShot, deps) {
+    const recs = [];
+    if (!CommonShot || !CommonShot.prototype || typeof CommonShot.prototype.playParticle !== 'function') {
+        warn('孢子菇亡语特效：拿不到 commonShot.playParticle（特效父节点将退化为"车道 prjLayer"直取）');
+        return recs;
+    }
+    const rec = methodRecord(CommonShot, 'playParticle');
+    CommonShot.prototype.playParticle = function () {
+        const r = rec.original.apply(this, arguments);       // ★ 先原样调用
+        try {
+            const nd = this && this.node;
+            const parent = nd && nd.parent;
+            if (parent) gpnSporeFxSetParent(parent, deps);
+        } catch (e) { /* 忽略 */ }
+        return r;
+    };
+    recs.push(rec);
+    return recs;
+}
+
+
+/**
+ * 僵尸侧门禁（R5 的"开关两态"）
+ *
+ *  ★ 引擎事实（逐字核对）：`Zombie.playDie` 里**本来就有**亡语分支 ——
+ *      `t || ( …, this.playSpecialZombieDie(e,s), …, this.CarriedSporeShroom && this.turnIntoSporeShroom("sporeshroom") )`
+ *    ⇒ 「带 `CarriedSporeShroom` 的僵尸非化灰死亡 ⇒ 变出一株孢子菇」**原版行为就是如此**
+ *      （`turnIntoSporeShroom` 里还会 `playDie(!0,null,!1)` + 缩小 + `particle.sporeShroomSpawn()`
+ *        + `SpawnPlantByType('sporeshroom',…)` + `onSpawnedAsSporeShroom()` + `shovelDropSun=!1`）。
+ *    ⇒ 我们**不需要重写**它；只需要在**开关关掉时**把它压住（否则"关掉"形同虚设）。
+ *
+ *  实现：包装 `Zombie.prototype.playDie` —— 只有"开关关 + 身上有标记"时才临时摘掉标记
+ *  （**原样调用**之后再还原），其它情况**完全不动**。这样：
+ *    · 开 ⇒ 引擎原逻辑照跑（100% 原版手感，含动画/音效/不掉阳光）
+ *    · 关 ⇒ 不生成孢子菇；且标记本身也不该再被写（见亡语里的 `if (!featOn(...)) return`）
+ */
+function makeSporeShroomZombieGate(Zombie, deps) {
+    const recs = [];
+    if (!Zombie || !Zombie.prototype || typeof Zombie.prototype.playDie !== 'function') {
+        warn('孢子菇：拿不到 Zombie.playDie（"关掉开关不生成孢子菇"这一条会失效）');
+        return recs;
+    }
+    const rec = methodRecord(Zombie, 'playDie');
+    Zombie.prototype.playDie = function () {
+        // ★ 只在"开关关 + 身上有标记"时做手脚；其余一律原样
+        let patched = false, saved = false;
+        try {
+            if (!featOn(GPN_SPORE_FEAT) && this.CarriedSporeShroom === true) {
+                saved = true;
+                this.CarriedSporeShroom = false;      // 临时摘掉 ⇒ 引擎那段 `&&` 不成立
+                patched = true;
+            }
+        } catch (e) { /* 忽略 */ }
+        const r = rec.original.apply(this, arguments);   // ★ 原样调用
+        try {
+            if (patched && saved) this.CarriedSporeShroom = true;   // 还原（僵尸可能被复用，标记该留着）
+        } catch (e) { /* 忽略 */ }
+        return r;
+    };
+    recs.push(rec);
+    return recs;
+}
+
+
+/**
+ * 孢子菇补丁工厂
+ * @param {Function} SporeShroomPlant 引擎的孢子菇植物类
+ * @param {Object} deps { cc, nodePools, jsonMod, charMgr, Rect, Vec2, ZombieDamageType, zombiePool }
+ * @returns {Array} recs（交给上层做还原/清理）
+ */
+function makeSporeShroomPatch(SporeShroomPlant, deps) {
+    const recs = [];
+    if (!SporeShroomPlant || !SporeShroomPlant.prototype) {
+        warn('跳过孢子菇：拿不到 SporeShroomPlant');
+        return recs;
+    }
+    const P = SporeShroomPlant.prototype;
+    const D = deps || {};
+    const C = CFG.sporeshroom;
+
+    /* ---------- 1) 亡语本体（R1~R4 + R10 特效） ---------- */
+    if (typeof P.specialPlantOnKilled !== 'function') {
+        warn('跳过孢子菇亡语：Plant 基类上没有 specialPlantOnKilled（原版可能改过名）');
+    } else {
+        const recKilled = methodRecord(SporeShroomPlant, 'specialPlantOnKilled');
+        P.specialPlantOnKilled = function () {
+            if (!featOn(GPN_SPORE_FEAT)) return recKilled.original.apply(this, arguments);
+            let cell = null, node = null;
+            try { cell = this.inLnC || null; node = this.node || null; } catch (e) { cell = null; }
+            // ★ 先抓住"格子 / 节点 / 世界位置"——scheduleOnce 之后 this 可能已经被清空
+            const wp = (function () {
+                try {
+                    const p = node && node.worldPosition;
+                    return (p && isFinite(p.x)) ? { x: p.x, y: p.y } : null;
+                } catch (e) { return null; }
+            })();
+            const lane = gpnSporeLaneOf(this);
+            const dmg = gpnSporeDeathDamage(this, D.jsonMod);
+
+            // 把"这一帧的受害者"先算出来（用 Rectangle 判交集；照引擎 explodeCherry3x3 的取框方式）
+            const hit = [];
+            try {
+                const Rect = D.Rectangle;
+                const Sq = D.Square;
+                const SW = (Sq && typeof Sq.SquareWidth === 'number') ? Sq.SquareWidth : 68;
+                const SH = (Sq && typeof Sq.SquareHeight === 'number') ? Sq.SquareHeight : 80.77;
+                if (wp && Rect && Rect.createRectangleNodeCenter && node) {
+                    const w = (C.deathRadiusTiles > 0 ? C.deathRadiusTiles : 3) * SW;
+                    const rect = Rect.createRectangleNodeCenter(node, w, SH);
+                    const pool = (lane && typeof lane.zombiePool === 'function') ? (lane.zombiePool() || []) : [];
+                    for (const z of pool) {
+                        try {
+                            if (!z) continue;
+                            const br = z.bodyRecReal || z.bodyRec;
+                            if (br && rect.judgeCrossRec(br)) hit.push(z);
+                        } catch (e) { /* 单只失败忽略 */ }
+                    }
+                }
+            } catch (e) { warn('孢子菇亡语：取范围内僵尸出错', e); }
+
+            if (dbgOn(C.debugLog)) {
+                log('孢子菇【亡语】伤害=' + dmg + ' 命中僵尸=' + hit.length
+                    + ' 格=' + (cell ? (cell.lIndex + ',' + cell.cIndex) : '?')
+                    + ' 位置=' + (wp ? ('(' + Math.round(wp.x) + ',' + Math.round(wp.y) + ')') : '?'));
+            }
+
+            // ★ 立刻跑（与引擎爆裂坚果一致：`inLnC.scheduleOnce(fn)`）
+            const fire = function () {
+                // ---- ① 先标记 + 眩晕（R3/R4）----
+                for (const z of hit) {
+                    try {
+                        if (!z) continue;
+                        // 标记：免疫的不标记（用户口径 Q1 = 甲：照吃伤害、只是不标记）
+                        if (z.ImmuneToSporeShroom !== true) z.CarriedSporeShroom = true;
+                        if (C.deathStun > 0 && typeof z.setStun === 'function') z.setStun(C.deathStun);
+                    } catch (e) { /* 单只失败忽略 */ }
+                }
+                // ---- ② 再造成伤害（不穿甲 + 普通物理）⇒ 吃到 ×1.5（R2/R7）----
+                for (const z of hit) {
+                    try {
+                        if (!z || typeof z.dealDamage !== 'function') continue;
+                        const ZDT = D.ZombieDamageType;
+                        const details = (typeof D.ZombieDamageDetails === 'function')
+                            ? new D.ZombieDamageDetails(dmg, true, false, false, null, ZDT)
+                            : null;
+                        if (details) z.dealDamage(details);
+                        else z.dealDamage(dmg, 0);            // 兜底：老式两参调用（不穿甲由调用方保证不了，仅应急）
+                    } catch (e) { /* 单只失败忽略 */ }
+                }
+                // ---- ③ 特效（R10；纯视觉）----
+                try {
+                    if (C.fxEnable && gpnSporeFxReady) {
+                        const parent = gpnSporeFxGetParent(null, D);
+                        if (parent) gpnSporeFxReady(parent, wp, D);
+                        else if (dbgOn(C.debugLog)) log('孢子菇亡语特效：暂时拿不到父节点（车道 prjLayer / 缓存都没有），本次跳过');
+                    }
+                } catch (e) { /* 特效失败不影响伤害 */ }
+            };
+            try {
+                if (cell && typeof cell.scheduleOnce === 'function') cell.scheduleOnce(fire);
+                else fire();                                   // 兜底：拿不到格子就同步跑
+            } catch (e) {
+                warn('孢子菇亡语：scheduleOnce 出错，改为同步执行', e);
+                try { fire(); } catch (e2) { /* 忽略 */ }
+            }
+            return recKilled.original.apply(this, arguments);
+        };
+        recs.push(recKilled);
+    }
+
+    return recs;
+}
+
+
 /* ==========================================================================
  * 暗影夏威夷果（MurkadamiaNut）—— 暗影状态下本体隐身
  *  需求（已与用户确认）：
@@ -7219,6 +7687,14 @@ export default {
     _pepperDeps: () => gpnPepperDeps,           // 上面那个函数需要的引擎依赖（setup 时填好）
     // 流星花索敌（P0~）—— 工厂本体 + 纯函数，自检直接单测
     _meteorAimPatch: makeMeteorFlowerAimPatch,  // 流星花：索敌补丁工厂
+    // 孢子菇（亡语 + 数值 + 图鉴）
+    _sporePatch: makeSporeShroomPatch,          // 孢子菇：补丁工厂
+    _sporeZombieGate: makeSporeShroomZombieGate,// 孢子菇：僵尸侧门禁工厂
+    _sporeCommonShotHook: makeSporeShroomCommonShotHook, // 孢子菇：特效父节点观测钩子
+    _sporeDeathDamage: gpnSporeDeathDamage,     // ★ 亡语伤害取值（按 CabbageType 查弹道 Damage）
+    _sporeFxDrop: gpnSporeFxDrop,               // 特效缓存清理（自检核对"换场景要丢缓存"）
+    _sporeFindProp: gpnSporeFindProp,           // prefab 属性挖掘（照抄本 MOD 的 findPropInNode）
+    _sporeCfg: () => CFG.sporeshroom,           // 孢子菇配置（自检核对数值）
     _meteorIsRealZombie: gpnMeteorIsRealZombie, // 真僵尸判定（排除护盾/被魅惑/非场内）
     _meteorCollectZombies: gpnMeteorCollectZombies,
     _meteorFirstTarget: gpnMeteorFirstTarget,   // ★ 第 1 颗索敌（本行最靠左 → 全场最靠左 → 障碍/护盾 → 兜底）
@@ -7323,6 +7799,7 @@ export default {
             'chunks:///_virtual/DarkJesterZombie.ts',  // 35（弄臣僵尸：反弹甜椒弹时打"来源=弄臣"标记）
             'chunks:///_virtual/Abbot3SectionStaffZombie.ts', // 36（三节棍僵尸：只打"来源=三节棍"标记，行为不变）
             'chunks:///_virtual/MeteorFlower.ts',      // 37（流星花：索敌策略重写 —— 第1颗本行优先/可索障碍与护盾、第2颗不再打歪）
+            'chunks:///_virtual/SporeShroom.ts',       // 38（孢子菇：亡语 1×3 伤害+感染+眩晕 / 阳光200 / 血量150 / 图鉴两条特点）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -7345,7 +7822,7 @@ export default {
                 redStingerMod = mods[30], murkadamiaMod = mods[31], splitPeaMod = mods[32],
                 zombiesMod = mods[33], perfumeShroomMod = mods[34],
             darkJesterMod = mods[35], abbot3Mod = mods[36],
-                meteorMod = mods[37];
+                meteorMod = mods[37], sporeMod = mods[38];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -7441,6 +7918,7 @@ export default {
                     { key: 'murkadamia', label: '暗影夏威夷果' },
                     { key: 'splitpea', label: '裂荚射手' },
                     { key: 'meteorflowerAim', label: '流星花' },     // ★ 2026/10/15 补：曾经漏登记 ⇒ 界面上看不到、也切不了
+                    { key: 'sporeshroom', label: '孢子菇' },          // ★ 2026/10/16 新增：亡语 + 数值 + 图鉴两条特点
                     //   （顺序与 FEATURES 略有不同是**有意的**：玩家视角下「推植物修复」更适合排在末尾）
                     { key: 'pushPlantFix', label: '推植物修复' },
                     { key: 'verboseLog', label: '诊断日志' },
@@ -8044,6 +8522,33 @@ let ticks = 0;
                     SquareType: squareMod && squareMod.SquareType,
                 });
                 if (mf) recs.push(...mf);
+            }
+            // ---- 22c. 孢子菇：亡语（1×3 伤害 + 感染标记 + 0.75s 眩晕）+ 亡语特效 ----
+            //  ⚠️【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
+            {
+                // 特效播放要用的实例化入口（模块级注入；与心蕊/魔音甜菜用的是同一个）
+                try { gpnSporeInstantiateRef = (nodePoolsMod && nodePoolsMod.instantiatePooly) || null; } catch (e) { /* 忽略 */ }
+                const sp = makeSporeShroomPatch(sporeMod && sporeMod.SporeShroomPlant, {
+                    Square: squareMod && squareMod.Square,
+                    Rectangle: charMgrMod && charMgrMod.Rectangle,
+                    Vec2: ccMod && ccMod.Vec2,
+                    // ★★ 这两个都在 **CharacterManager.ts**（不是 Zombie.ts）—— 踩过的坑
+                    ZombieDamageDetails: charMgrMod && charMgrMod.ZombieDamageDetails,
+                    ZombieDamageType: charMgrMod && charMgrMod.ZombieDamageType,
+                    ZombiePool: charMgrMod && charMgrMod.ZombiePool,
+                    jsonMod: jsonMod,
+                });
+                if (sp) recs.push(...sp);
+                // 弹道钩子：缓存「引擎自己用的特效父节点」（只读观测）
+                const sph = makeSporeShroomCommonShotHook(shotMod && shotMod.commonShot, {
+                    Square: squareMod && squareMod.Square,
+                });
+                if (sph) recs.push(...sph);
+                // 僵尸侧门禁：关掉开关 ⇒ 不生成孢子菇（开 ⇒ 走引擎原版逻辑）
+                const spg = makeSporeShroomZombieGate(zombieMod && zombieMod.Zombie, {});
+                if (spg) recs.push(...spg);
+                // 亡语特效资源：**提前**加载好（首次进关卡时就绪，避免第一次亡语来不及）
+                try { gpnSporeFxEnsure(null); } catch (e) { /* 忽略 */ }
             }
             // ---- 23. 红针花：左键循环切换形态 ----
             {
