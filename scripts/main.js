@@ -387,7 +387,7 @@ const CFG = {
     sporeshroom: {
         plantType: 'sporeshroom',
         // ---- 数值（用户指定）----
-        sunCost: 200,          // 阳光消耗（原版 150）
+        sunCost: 175,          // 阳光消耗（原版 150；用户 2026/10/16：200 → **175**）
         toughness: 100,        // 血量上限（原版 300；用户 2026/10/16：150 → 100）
         // ---- 亡语（被击败时触发；用户指定）----
         //   伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查对应弹道的 Damage）
@@ -9578,7 +9578,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l48 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l49 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
