@@ -561,6 +561,21 @@ const CFG = {
         plantfoodFlyingStun: 5,        //   大招弹对飞行僵尸的眩晕（秒）
         bossDamageScale: 2,            //   指定 BOSS 的伤害倍率（不给眩晕）
         bossTypes: ['zombossmech_lostcity', 'zombossmech_lostcity2', 'zombossmech_sky'],
+        // ---- ⑨ 大招驱离运兵艇（`sky_dropship`，云端堡垒）—— 用户 2026/10/16 指定：等同电离红掌 ----
+        //   引擎事实（逐字核对，见设计稿 §1.2）：
+        //     · 红掌大招 `foodStrike` = `PlantfoodDamage **1200**` ×（最多）`PlantfoodLightningCount **3**` 的**电伤**，
+        //       直接对 `cm.zombiePool` 里的僵尸 `dealDamage`；
+        //     · `Zombie.defaultDealDamage` **没有** `isRealZombie` 早退（只挡 invincible）⇒ 运兵艇会掉血；
+        //     · 运兵艇 `Toughness` **恰好 1200** ⇒ **一发致死** ⇒ 死亡即"离场"（它掉完小鬼也走 playDie）
+        //       ⇒ **剩余小鬼不再掉**（= 用户实机看到的效果）。
+        //   ⇒ 我们走**同一条**「伤害→死亡」路（含击杀结算），并保留 'leave'（纯离场）作保险。
+        //   ⚠️ 绝不用 `ray` 伤害类型：`defaultDealDamage` 里 `damageType==ray && canPlayAshNow()` ⇒ 化灰，
+        //      化灰**不走**常规离场 ⇒ 观感会变。统一用 `physicle`。
+        pbDriveDropShip: true,         //   大招是否驱离运兵艇（全屏所有）
+        pbDriveMode: 'kill',           //   'kill' = 致死伤害（= 红掌同款，含击杀结算）；'leave' = 只调它自己的 playDie
+        pbDriveDelay: 1,               // ★ 延时秒数（用户 2026/10/16：**1 秒**；最初定 1.5，随即改回 1）—— 让空投动画先落地，再把运兵艇赶走；
+                                       //   0 = 一开大就立刻驱离（旧行为）
+        pbDriveLog: false,             //   每次驱离打一条日志（排查用）
         debugLog: false,
     },
     pushPlant: { skipBlockers: true },   // 被「不可推」的植物挡住时，跳过它继续找空位
@@ -589,7 +604,14 @@ const CFG = {
         plantType: 'phatbeet',
         sunCost: 150,                  //   阳光消耗（已改回原版 150）
         // ---- ① 普攻眩晕 ----
-        normalStun: 0.1,               //   普攻使命中的僵尸眩晕几秒
+        normalStun: 0.15,              //   普攻使命中的僵尸眩晕几秒（用户 2026/10/16：0.1 -> 0.15）
+        // ---- ①b 普攻也施加「音乐免疫」（用户 2026/10/16 新增）----
+        //   与下面 ②③⑤ 是**同一套机制**（gpnJamMask + __gpnJamClearCD）：
+        //   普攻命中后，这只僵尸在 N 秒内不吃「魔音舞台（jam）」的任何效果。
+        //   ⚠️ 用 Math.max 合并 ⇒ 普攻**绝不会缩短**大招给的 25 秒。
+        normalJamClearSeconds: 1.25,   //   普攻命中后的音乐免疫秒数（0 = 关掉这条）
+        normalJamFx: true,             // ★ 普攻这 1.25 秒**也铺**⑧命中特效（用户 2026/10/16 要求；纯视觉、零伤害）
+                                       //   false = 只给机制、不铺特效（旧行为）
         // ---- ④ 大招眩晕 + 原地向上击起 ----
         plantfoodStun: 5,              //   大招使命中的僵尸眩晕几秒（本次 3 -> 5）
         liftDuration: 0.5,             //   滞空总时长（上抛 + 落回）；必须明显小于 plantfoodStun
@@ -1624,16 +1646,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ---- 魔音甜菜（Phat Beet）----
         if (featOn('phatbeet')) {
-            const PB_N = CFG.phatbeet.normalStun;
-            const PB_F = CFG.phatbeet.plantfoodStun;
-            const PB_J = CFG.phatbeet.jamClearSeconds;
-            addSpecial('phatbeet', '普通攻击使命中的僵尸眩晕 ' + PB_N + ' 秒',
-                'Its normal attack stuns the zombies it hits for ' + PB_N + ' second(s).');
+            // ⚠️ 这两条文案由用户 2026/10/16 亲自给定，**不再带数字** ⇒ 之后调
+            //    `normalStun` / `jamClearSeconds` / `normalJamClearSeconds` 时**图鉴不会跟着变**
+            //    （这是刻意的，不是漏同步 —— 别当 BUG 修）。
+            addSpecial('phatbeet', '攻击可以停顿僵尸，同时干扰僵尸，使音乐暂时无法对其生效',
+                'Its attacks can halt zombies and disrupt them, temporarily preventing the Jam Stage effect from affecting them.');
             addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
                 'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
-            addSpecial('phatbeet', '大招使命中的僵尸眩晕 ' + PB_F + ' 秒并向上击起，并令命中僵尸不受魔音舞台效果影响，持续 ' + PB_J + ' 秒',
-                'Its Plant Food stuns the zombies it hits for ' + PB_F + ' second(s) and knocks them'
-                + ' upward, and frees the hit zombies from the current Jam Stage Effect for ' + PB_J + ' second(s).');
+            addSpecial('phatbeet', '大招可以将僵尸震起',
+                'Its Plant Food can knock zombies upward.');
         }
         // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
         if (featOn('snowpea')) {
@@ -3471,7 +3492,7 @@ function gpnDandelionHitInfo(z, kind) {
     return null;
 }
 
-function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
+function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
     if (!DandelionPlant || !DandelionPlant.prototype) { warn('跳过蒲公英：拿不到 DandelionPlant'); return null; }
     if (typeof DandelionPlant.prototype.animationListener !== 'function') {
         warn('跳过蒲公英：没有 animationListener');
@@ -3577,7 +3598,121 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot) {
         warn('跳过蒲公英加成：commonShot 上没有 dealDamageToZombie');
     }
 
+    // ---- ⑨ 大招：驱离运兵艇（`sky_dropship`，云端堡垒）—— 用户 2026/10/16 指定：等同电离红掌 ----
+    //   挂 `specialPlantFood`（**每次大招只调一次**）；不挂 `animationListener` 的 `foodShoot`
+    //   （那个事件一次大招触发 3+ 次，会重复执行还要额外去重）。
+    if (typeof DandelionPlant.prototype.specialPlantFood === 'function') {
+        const recFood = methodRecord(DandelionPlant, 'specialPlantFood');
+        DandelionPlant.prototype.specialPlantFood = function () {
+            const r = recFood.original.apply(this, arguments);     // ★ 先原样调用（播 Food / 归零计数器）
+            if (!featOn('dandelion') || !CFG.dandelion.pbDriveDropShip) return r;   // 【运行期开关】
+            const run = function () {
+                // 到点时再检查一次：万一这期间模组被卸载/重载，或者开关被关掉 ⇒ 不动手
+                try {
+                    if (typeof gpnDisposed !== 'undefined' && gpnDisposed) return;
+                    if (!featOn('dandelion') || !CFG.dandelion.pbDriveDropShip) return;
+                    gpnDandelionDriveDropShips(deps || {});
+                } catch (e) { warn('蒲公英：大招驱离运兵艇出错（已忽略）', e); }
+            };
+            // ★ 延时（用户 2026/10/16：1.5 秒）—— 让"空投落地"的动画先演完，再把运兵艇赶走。
+            //   用植物自己的 `scheduleOnce`（引擎原生调度；植物被销毁时它会自动取消）。
+            const delay = Number(CFG.dandelion.pbDriveDelay) || 0;
+            if (delay > 0) {
+                let scheduled = false;
+                try {
+                    if (typeof this.scheduleOnce === 'function') { this.scheduleOnce(run, delay); scheduled = true; }
+                } catch (e) { /* 退化到 setTimeout */ }
+                if (!scheduled) { try { setTimeout(run, delay * 1000); } catch (e2) { run(); } }
+            } else {
+                run();
+            }
+            return r;
+        };
+        out.push(recFood);
+    } else {
+        warn('跳过蒲公英：没有 specialPlantFood（大招驱离运兵艇会失效）');
+    }
+
     return out;
+}
+
+/* ==========================================================================
+ * 蒲公英大招「驱离运兵艇」(`sky_dropship`) —— 用户 2026/10/16 指定「等同电离红掌」
+ *
+ *  ★ 红掌的效果在引擎里是什么（逐字核对，见设计稿 §1.2）：
+ *      闪电 = `PlantfoodDamage **1200**`（electricity）×（最多）`PlantfoodLightningCount **3**`，
+ *      直接对 `cm.zombiePool` 的僵尸 `dealDamage`；而运兵艇 `Toughness **1200**` ⇒ **一发致死**
+ *      ⇒ 死亡即"离场"（它掉完小鬼也走 `playDie`）⇒ **剩余小鬼不再掉** = 用户实机看到的现象。
+ *    ⇒ 我们走**同一条**「伤害→死亡」路（`pbDriveMode:'kill'`，含击杀结算）；
+ *      `pbDriveMode:'leave'` 保留"纯离场"作保险（若实机发现击杀结算影响波次，一行切换）。
+ *
+ *  ⚠️ 三条硬约束：
+ *    · 运兵艇 `bodyRecReal` 是**退化框**（-1e4）⇒ 普通弹道打不到它，**不能靠"打中"触发**；
+ *    · 它的 `setStun/setChill/setFreeze/setPoison/setPerfume/dealHurrikale/knockBack*` **全是空函数** ⇒ 绝不碰；
+ *    · `damageType` 必须 `physicle`：`ray` + `canPlayAshNow()` ⇒ **化灰**，而化灰不走常规离场 ⇒ 观感会变。
+ *
+ *  识别：主判据 `Zombie_Type === 'sky_dropship'`（引擎里 `Zombie_Type = objdata.CODENAME`），
+ *        次判据 `instanceof SkyDropShipZombie`（模块有导出；导入失败自动跳过）。
+ * ========================================================================== */
+
+/** 是不是运兵艇（`sky_dropship`） */
+function gpnIsDropShip(z, deps) {
+    if (!z || z.dead) return false;
+    try {
+        const Cls = deps && deps.SkyDropShipZombie;
+        if (typeof Cls === 'function' && z instanceof Cls) return true;
+    } catch (e) { /* 忽略 */ }
+    try { return String(z.Zombie_Type || '') === 'sky_dropship'; } catch (e) { return false; }
+}
+
+/** 扫**全场**找运兵艇（不按行 / 不按 x 段过滤），逐只驱离。返回成功次数。 */
+function gpnDandelionDriveDropShips(deps) {
+    const C = CFG.dandelion;
+    const Sq = deps && deps.Square;
+    if (!Sq || typeof Sq.getAllLane !== 'function') return 0;
+    const lanes = Sq.getAllLane() || [];
+    const mode = (C.pbDriveMode === 'leave') ? 'leave' : 'kill';
+    const ZDD = deps.ZombieDamageDetails, ZDT = deps.ZombieDamageType;
+    const seen = new Set();
+    let n = 0;
+    for (const lane of lanes) {
+        if (!lane) continue;
+        const pools = [];
+        if (typeof lane.zombiePool === 'function') pools.push(lane.zombiePool());
+        if (typeof lane.hypnoZombiePool === 'function') pools.push(lane.hypnoZombiePool());
+        for (const pool of pools) {
+            for (const z of (pool || [])) {
+                if (!z || seen.has(z) || z.__gpnDrivenAway || !gpnIsDropShip(z, deps)) continue;
+                seen.add(z);
+                z.__gpnDrivenAway = true;
+                // ① 先断掉"还会继续掉小鬼"：LeftImp 归 0 后即便再走到 spawn 分支也不会掉
+                try { z.LeftImp = 0; } catch (e) { /* 忽略 */ }
+                let done = false;
+                // ② 'kill'（默认）：走引擎的伤害→死亡 = 红掌同一条路
+                if (mode === 'kill' && typeof ZDD === 'function' && typeof z.dealDamage === 'function') {
+                    try {
+                        const hp = (typeof z.totalHealth === 'function')
+                            ? (Number(z.totalHealth()) || 0) : (Number(z.health) || 0);
+                        const dt = (ZDT && ZDT.physicle != null) ? ZDT.physicle : undefined;
+                        // armorProtection=false ⇒ 不让护甲分流（运兵艇本来没护甲）；physicle ⇒ 不化灰
+                        z.dealDamage(new ZDD(hp + 1, false, false, false, null, dt));
+                        done = !!z.dead;
+                    } catch (e) { /* 退化到 ③ */ }
+                }
+                // ③ 'leave' 或 kill 没成功：调它自己的离场（引擎"掉完小鬼"那句，实参逐字一致）
+                if (!done) {
+                    try {
+                        const dt = (ZDT && ZDT.physicle != null) ? ZDT.physicle : undefined;
+                        z.playDie(false, null, false, dt, false, true, false);
+                        done = true;
+                    } catch (e2) { warn('蒲公英：运兵艇离场调用出错（已忽略）', e2); }
+                }
+                if (done) n++;
+            }
+        }
+    }
+    if (n && (C.pbDriveLog || C.debugLog)) log('蒲公英大招：驱离运兵艇 ' + n + ' 艘（模式=' + mode + '）');
+    return n;
 }
 
 /* =========================================================================
@@ -5152,6 +5287,7 @@ function gpnScanPlants(plant, deps, big, inspect) {
 function gpnTickJamClear(Square, dt, fx, deps) {
     if (!(dt > 0) || !Square || typeof Square.getAllLane !== 'function') return;
     const C = CFG.phatbeet;
+    // ★ ⑧ 持续特效只给"大招那 25 秒"，普攻的 1.25 秒**不铺**（__gpnJamFxOn 只在大招路径点亮）
     const wantFx = !!(C.jamFx && fx && deps && typeof deps.instantiatePooly === 'function');
     const iv = wantFx ? gpnJamFxInterval(fx) : 0;
     for (const lane of (Square.getAllLane() || [])) {
@@ -5161,17 +5297,17 @@ function gpnTickJamClear(Square, dt, fx, deps) {
         if (typeof lane.hypnoZombiePool === 'function') pools.push(lane.hypnoZombiePool());
         for (const pool of pools) {
             for (const z of (pool || [])) {
-                if (!z || !(z.__gpnJamClearCD > 0)) { if (z) z.__gpnJamFxAcc = 0; continue; }
+                if (!z || !(z.__gpnJamClearCD > 0)) { if (z) { z.__gpnJamFxAcc = 0; z.__gpnJamFxOn = false; } continue; }
                 z.__gpnJamClearCD -= dt;
-                if (z.dead) { z.__gpnJamClearCD = 0; z.__gpnJamFxAcc = 0; continue; }
-                if (wantFx) {
+                if (z.dead) { z.__gpnJamClearCD = 0; z.__gpnJamFxAcc = 0; z.__gpnJamFxOn = false; continue; }
+                if (wantFx && z.__gpnJamFxOn) {
                     z.__gpnJamFxAcc = (z.__gpnJamFxAcc || 0) + dt;
                     if (z.__gpnJamFxAcc >= iv) {
                         z.__gpnJamFxAcc = 0;
                         gpnHitFxSpawn(fx, z, deps, !C.jamFxLiftFollow);   // 纯特效：只放节点，不碰伤害
                     }
                 }
-                if (z.__gpnJamClearCD <= 0) { z.__gpnJamClearCD = 0; z.__gpnJamFxAcc = 0; }
+                if (z.__gpnJamClearCD <= 0) { z.__gpnJamClearCD = 0; z.__gpnJamFxAcc = 0; z.__gpnJamFxOn = false; }
             }
         }
     }
@@ -5430,12 +5566,21 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
                             gpnJamMask(target);
                             target.__gpnJamClearCD = Math.max(target.__gpnJamClearCD || 0, C.jamClearSeconds);
                             target.__gpnJamFxAcc = 0;   // ⑧ 持续特效从这一发之后重新计时（这一发引擎自己已经放过了）
+                            target.__gpnJamFxOn = !!C.jamFx;   // ★ 只有大招点亮"铺持续特效"（普攻默认不铺）
                             // 立刻关掉专属状态：写入会经转发访问器走到【引擎自己的 setter】
                             //   -> 贴图/动画当场回退（闪耀僵尸的彩虹立刻消散），不用等下一帧
                             try { if ('dancing' in target) target.dancing = false; } catch (e) {}
                         }
                     } else if (!invin && !target.isBoss && C.normalStun > 0) {   // ---- 普攻命中 ----
                         target.setStun(C.normalStun);
+                        // ★ ①b 用户 2026/10/16：**普攻也让目标暂时不受魔音舞台效果影响**（1.25 秒）
+                        //   复用同一套屏蔽（gpnJamMask 幂等）＋ 剩余秒数取 max（**不会缩短**大招的 25 秒）
+                        if (C.normalJamClearSeconds > 0) {
+                            gpnJamMask(target);
+                            target.__gpnJamClearCD = Math.max(target.__gpnJamClearCD || 0, C.normalJamClearSeconds);
+                            if (C.normalJamFx) target.__gpnJamFxOn = true;   // 默认 false ⇒ 普攻不铺特效
+                            try { if ('dancing' in target) target.dancing = false; } catch (e) {}
+                        }
                     }
                 }
             } catch (e) { warn('魔音甜菜：命中效果出错', e); }
@@ -5540,7 +5685,9 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             const r = rec.original.apply(this, arguments);
             this.__gpnJamClearCD = 0;
             this.__gpnJamFxAcc = 0;
+            this.__gpnJamFxOn = false;
             this.__gpnDancingRaw = undefined;
+            this.__gpnDrivenAway = false;   // 池化复用：运兵艇的"已驱离"标记也要清
             return r;
         };
         recs.push(rec);
@@ -8306,6 +8453,9 @@ export default {
     _sporeFxGetParent: gpnSporeFxGetParent,     // ★ 特效父节点（自检核对"优先本行 prjLayer、key 为空不认缓存"）
     _sporeFxSetParent: gpnSporeFxSetParent,     // 埋缓存（自检用）
     _sporeFxChain: gpnSporeFxChain,             // 节点层链（诊断；自检保证不抛错）
+    // ---- 蒲公英大招「驱离运兵艇」（§3.74）----
+    _isDropShip: gpnIsDropShip,                 // 运兵艇判定（Zombie_Type 主判据 / instanceof 次判据）
+    _dandelionDrive: gpnDandelionDriveDropShips,// 全屏扫池 + 逐只驱离（返回成功次数）
     _sporeFindProp: gpnSporeFindProp,           // prefab 属性挖掘（照抄本 MOD 的 findPropInNode）
     _sporeCfg: () => CFG.sporeshroom,           // 孢子菇配置（自检核对数值）
     // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
@@ -8440,6 +8590,9 @@ export default {
                                                        //     ⚠️ 不要改挂 `MariGoldPurple.ts`：那个模块**没有对外导出类**（实机 F12 证过））
             'chunks:///_virtual/goopeaFoodPrj.ts',     // 48（毒液豌豆·**大招弹**：detectEnemy 里直伤 + Poison{50,5}）
             'chunks:///_virtual/GooTileLiquid.ts',     // 49（上面那发大招留下的"黏液地面"：PoisonDPS 50 / goo）
+            'chunks:///_virtual/SkyDropShipZombie.ts', // 50（运兵艇 `sky_dropship`：蒲公英大招「驱离」要按类精确判定；
+                                                       //     ⚠️ 它是"非真僵尸"：判定框退化、眩晕/冰冻/毒/击退全是空函数，
+                                                       //     唯一干净的出口就是它自己的 `playDie`（离场））
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -8466,7 +8619,8 @@ export default {
                 peashooterMod = mods[39], scaredyMod = mods[40], cabbagePultMod = mods[41],
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
-                gooFoodMod = mods[48], gooTileMod = mods[49];
+                gooFoodMod = mods[48], gooTileMod = mods[49],
+                skyShipMod = mods[50];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -9382,7 +9536,12 @@ let ticks = 0;
 
             // ---- 15. 蒲公英：额外一颗子弹 ----
             {
-                const dan = makeDandelionPatch(dandelionMod.DandelionPlant, squareMod.Square, shotMod.commonShot);
+                const dan = makeDandelionPatch(dandelionMod.DandelionPlant, squareMod.Square, shotMod.commonShot, {
+                    Square: squareMod.Square,
+                    ZombieDamageDetails: charMgrMod && charMgrMod.ZombieDamageDetails,
+                    ZombieDamageType: charMgrMod && charMgrMod.ZombieDamageType,
+                    SkyDropShipZombie: skyShipMod && skyShipMod.SkyDropShipZombie,
+                });
                 if (dan) recs.push(...dan);
             }
 
@@ -9419,7 +9578,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l43 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l48 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -9468,13 +9627,16 @@ let ticks = 0;
                 + '腐尸豆荚(召唤权重)、'
                 + '蒲公英(每次+' + CFG.dandelion.extraShots + '颗/延迟' + CFG.dandelion.extraDelay + '秒/阳光'
                 + CFG.dandelion.sunCost + '/对飞行×' + CFG.dandelion.flyingDamageScale + '·眩晕'
-                + CFG.dandelion.flyingStun + '/' + CFG.dandelion.plantfoodFlyingStun + '秒)、'
+                + CFG.dandelion.flyingStun + '/' + CFG.dandelion.plantfoodFlyingStun + '秒'
+                + (CFG.dandelion.pbDriveDropShip ? '/大招驱离运兵艇(' + CFG.dandelion.pbDriveMode + ')' : '') + ')、'
                 + '飓风甘蓝(其他行推力' + Math.round(CFG.hurrikale.otherLanePushScale * 100) + '%'
                 + '/全屏吹飞/特效同行)、'
                 + '甜椒投手(阳光' + CFG.pepperpult.sunCost + '/冷却' + CFG.pepperpult.packetCooldown
                 + '秒/落点3x3灼烧' + CFG.pepperpult.burnSeconds + '秒/'
                 + (CFG.pepperpult.burnArmorProtection ? '不穿甲' : '穿甲') + ')、'
-                + '魔音甜菜(普攻眩晕' + CFG.phatbeet.normalStun + '秒/大招眩晕' + CFG.phatbeet.plantfoodStun
+                + '魔音甜菜(普攻眩晕' + CFG.phatbeet.normalStun + '秒'
+                + '/普攻免疫音乐' + CFG.phatbeet.normalJamClearSeconds + '秒'
+                + '/大招眩晕' + CFG.phatbeet.plantfoodStun
                 + '秒+原地击起/解除安抚/音乐免疫' + CFG.phatbeet.jamClearSeconds + '秒'
                 + ((CFG.phatbeet.clearFx || CFG.phatbeet.jamFx) ? '/命中特效' : '') + ')、'
                 + '大蒜(啃食' + CFG.garlic.eatDamage + '/阳光' + CFG.garlic.sunCost
@@ -9489,6 +9651,17 @@ let ticks = 0;
                 + '·冷却' + CFG.murkadamia.jellyCooldown + '秒'
                 + (CFG.murkadamia.hideWhenJellyDown ? '/打光后真隐身' : '') + ')、'
                 + '裂荚射手(左键左右翻转/前后豌豆对调/阳光' + CFG.splitpea.sunCost + ')、'
+                // ↓ 2026/10/16 补：这两项上线时漏进了启动摘要（F12 里没法一眼核对），现在补上。
+                //   顺序与 FEATURES 表一致（splitpea → meteorflowerAim → sporeshroom）。
+                + '流星花(索敌：本行僵尸→全场僵尸→本行障碍/护盾→全场障碍/护盾；第2颗不打歪；纯墓碑场面也开火)、'
+                + '孢子菇(阳光' + CFG.sporeshroom.sunCost + '/血量' + CFG.sporeshroom.toughness
+                + '/亡语' + (CFG.sporeshroom.deathRadiusTiles > 0 ? CFG.sporeshroom.deathRadiusTiles : 3)
+                + '格·伤害=普攻×' + CFG.sporeshroom.deathDamageScale
+                + '(' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore * CFG.sporeshroom.deathDamageScale)
+                + '·' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore1 * CFG.sporeshroom.deathDamageScale)
+                + '·' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore2 * CFG.sporeshroom.deathDamageScale) + ')'
+                + '/眩晕' + CFG.sporeshroom.deathStun + '秒/感染/毒性家族×' + CFG.sporeshroom.poisonBonus
+                + '/特效)、'
                 + '推植物跳过挡路者(' + (CFG.pushPlant.skipBlockers ? '开' : '关') + ')');
 
             return function cleanup() {
