@@ -388,7 +388,7 @@ const CFG = {
         plantType: 'sporeshroom',
         // ---- 数值（用户指定）----
         sunCost: 200,          // 阳光消耗（原版 150）
-        toughness: 150,        // 血量上限（原版 300）
+        toughness: 100,        // 血量上限（原版 300；用户 2026/10/16：150 → 100）
         // ---- 亡语（被击败时触发；用户指定）----
         //   伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查对应弹道的 Damage）
         //     sporeshroom_spore  -> 50   （1 级普攻）
@@ -401,8 +401,20 @@ const CFG = {
             sporeshroom_spore2: 250,
         },
         deathDamageFallback: 50,   // 读不到弹道数据时的兜底（= 1 级普攻）
-        deathStun: 0.75,           // 亡语附带眩晕秒数（用户指定）
+        //   ⚠️ 上面两张表存的是**普攻攻击力本身**（数据实测 50 / 150 / 250）；
+        //      亡语**实际**伤害 = 它 × `deathDamageScale`（用户 2026/10/16 指定 ×1.25）。
+        deathDamageScale: 1.25,    // ★ 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 62.5 / 187.5 / 312.5
+        deathStun: 1.5,            // 亡语附带眩晕秒数（用户指定 2026/10/16：0.75 → 1.5）
         deathRadiusTiles: 3,       // 亡语横向格数（1 行 × 3 列，以自身格为中心）
+        // ---- 毒性家族 ×1.5（R6/R7，用户指定；直伤 + Dot 都算）----
+        //   判定口径 = `PlantProps[Plant_Type].objdata.Family === 'Poison'`
+        //     （数据实测 Poison 家族共 13 株：poisonpeashooter / poisonpeashooter_mgp /
+        //       bloominghearts / scaredyshroom / fumeshroom / ailmint / puffshroom /
+        //       vamporcini / **chilibean** / marigold_purple / seashroom / **garlic** / sporeshroom）
+        //     **减去** garlic / chilibean（用户指定排除；它们**本来就是** Poison 家族）
+        //     **加上** gloomshroom / shadowshroom（Family 是 Shadow，靠数据判不出来 ⇒ 显式白名单）
+        //   多段叠加 Dot：该帧全部家族 Dot **合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
+        poisonBonus: 1.5,          // 倍率（图鉴第 2 条特点的文案也从这里现算）
         // ---- 亡语特效（用户指定：暗影豌豆·初档大招子弹的**命中特效**）----
         //   资源取自 resources bundle 的 `projectiles/PeaShadowPF0PRJ`，
         //   读它 `commonShot` 组件上的 `PopParticle`（实机实测值 = "ShadowPeaPF0PAR"）。
@@ -1655,11 +1667,13 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // ---- 孢子菇：新增两条特点（用户指定文案，中英）----
         //   ⚠️ 第 2 条文案按用户口径**只提"毒性家族"** —— 但忧郁菇/毒影菇实际也吃加成，
         //      那是用户**特意安排**的，文案保持原样、不要"补全"。
+        //   ⚠️ 倍率**从 CFG 现算**（本 MOD 的统一约定：调参 ⇒ 图鉴自动跟着变）。
         if (featOn('sporeshroom')) {
             addSpecial('sporeshroom', '被击败后，伤害并感染附近的僵尸',
                 'When defeated, it damages and infects nearby zombies.');
-            addSpecial('sporeshroom', '被孢子菇感染的僵尸受到毒性家族伤害×1.5',
-                'Zombies infected by Spore-shroom take 1.5x damage from the Poison family.');
+            addSpecial('sporeshroom', '被孢子菇感染的僵尸受到毒性家族伤害×' + CFG.sporeshroom.poisonBonus,
+                'Zombies infected by Spore-shroom take ' + CFG.sporeshroom.poisonBonus
+                + 'x damage from the Poison family.');
         }
     }
     };
@@ -6653,18 +6667,25 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
  *     用户口径：**免疫僵尸照吃伤害、只是不标记**。
  *   · 命中特效：`commonShot.prototype.playParticle` 里的 `n.parent = this.node.parent`
  *     ⇒ 实机观测到父节点 = 车道的 **prjLayer**（`New Node` 通用名，链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）
- *     ⇒ 这里**从活体弹道身上缓存**同一个父节点，保证特效落在**和原版一模一样**的层。
+ *     ⇒ 现在**亡语显式传"自己那条车道"**（`gpnSporeFxGetParent(null, D, lane)`），特效永远落在本行 prjLayer；
+ *       弹道观测到的那个缓存**只作兜底**（§3.71：曾经因为它退化成了唯一来源 ⇒ 偶发一次层不对）。
  *   · 僵尸侧亡语（R5）：照抄 `Zombie.turnIntoSporeShroom`，**在 `playDie` 里加分支**（S3）。
  * =======================================================================*/
 
 /** 特性表里的开关名（同时是图鉴里"我们改过"的开关名） */
 const GPN_SPORE_FEAT = 'sporeshroom';
 
-/** 亡语伤害：按孢子菇的 `CabbageType` 查对应弹道的真实 Damage。
- *  · 正常路径：运行期从 `ProjectileProps` 里读（不硬编码，改数据也跟着变）
- *  · 拿不到数据 ⇒ 用 CFG 里的兜底表（50/150/250） */
+/** 亡语伤害 = **本株普攻攻击力 × `CFG.sporeshroom.deathDamageScale`**。
+ *  · 正常路径：运行期从 `ProjectileProps` 里读那 3 条弹道的真实 `Damage`（**不硬编码**，改数据也跟着变）
+ *  · 拿不到数据 ⇒ 用 CFG 的兜底表（表里存的是**普攻攻击力** 50/150/250）
+ *  · 最后**统一乘倍率**（用户 2026/10/16 指定 ×1.25 ⇒ **62.5 / 187.5 / 312.5**）
+ *    ⚠️ 倍率**只在这里乘一次**，各调用点（僵尸 / 障碍物 / 日志）都直接用这个返回值
+ *       —— 这样"跟随本株普攻"这条口径就只有一个实现处，不会两处算错。
+ *  ⚠️ 记：mark 先于伤害 ⇒ 僵尸那一发还会被 ×1.5 的毒性家族加成再乘一次（= 93.75 / 281.25 / 468.75）；
+ *     障碍物没有标记 ⇒ 只吃这里的基础值。 */
 function gpnSporeDeathDamage(plant, jsonMod) {
     const C = CFG.sporeshroom;
+    const sc = (function () { const v = Number(C.deathDamageScale); return (isFinite(v) && v > 0) ? v : 1; })();
     // ① 本株实际在用的弹药名（`objdataOwn.CabbageType`；拿不到就用原版默认）
     let pea = null;
     try {
@@ -6684,12 +6705,12 @@ function gpnSporeDeathDamage(plant, jsonMod) {
                 if (!it || !Array.isArray(it.aliases) || it.aliases.indexOf(pea) === -1) continue;
                 const od = it.objdata || {};
                 const d = Number(od.Damage);
-                if (isFinite(d) && d > 0) return d;
+                if (isFinite(d) && d > 0) return d * sc;      // ★ 真实普攻 × 倍率
                 break;
             }
         }
     } catch (e) { /* 忽略 */ }
-    return fb;
+    return fb * sc;                                          // ★ 兜底普攻 × 倍率
 }
 
 /** 取一个"僵尸池"（按类别的通用取法，与流星花改造里用的是同一套判据） */
@@ -6745,16 +6766,38 @@ function gpnSporeFxSetParent(parent, deps) {
     S.parentSceneKey = key;
 }
 
-/** 取父节点：优先"本株所在车道的 prjLayer"（最准），其次弹道钩子回填的缓存 */
-function gpnSporeFxGetParent(plant, deps) {
+/** 取父节点：**优先「本株 / 本行所在车道的 prjLayer」**（最准、确定），其次弹道钩子回填的缓存。
+ *
+ *  ⚠️⚠️ **历史坑（2026/10/16 用户实测：偶发一次"特效被植物贴图盖住"）**：
+ *    · 亡语那条路原来是 `gpnSporeFxGetParent(null, D)` —— 传 `plant = null`
+ *      ⇒ **"车道 prjLayer"这个分支永远走不到**，只剩"缓存"分支；
+ *    · 缓存 = 上一次**弹道命中**时观察到的 `shot.node.parent`。若那一刻的缓存还是**上一关 / 旧帧**的节点，
+ *      特效就会落进一个**层不对**的父节点（症状正是"被孢子菇自己的贴图盖住"）；
+ *      而**下一发弹道命中会把缓存改回 prjLayer** ⇒ 所以**只偶发一次**、之后又正常 ✓ 与实测完全吻合。
+ *    · 缓存校验原本是 `S.parentSceneKey === key`：**两支都是 `null` 时会误判为"同一个场景"**
+ *      （`gpnFxSceneKey` 在车道还没就绪时返回 null）⇒ 这里改成 **key 必须非空**才认缓存。
+ *
+ *  ⇒ 现在：**调用方显式把车道传进来**（`laneOverride`），彻底不依赖缓存；缓存只作为兜底。 */
+function gpnSporeFxGetParent(plant, deps, laneOverride) {
     try {
-        const lane = (plant && plant.inLane) || null;
+        const lane = laneOverride || (plant && plant.inLane) || null;
         if (lane && lane.prjLayer) return lane.prjLayer;
     } catch (e) { /* 忽略 */ }
     const key = (typeof gpnFxSceneKey === 'function') ? gpnFxSceneKey(deps) : null;
     const S = GPN_SPORE_FX;
-    if (S.parent && S.parentSceneKey === key) return S.parent;
+    // ★ `key` 必须非空 —— 否则"新旧两支都是 null"会被当成同一场景，把上一关的旧父节点认下来
+    if (key && S.parent && S.parentSceneKey === key) return S.parent;
     return null;
+}
+
+/** 节点层链（诊断用）：`名字 < 父 < 祖父 …` */
+function gpnSporeFxChain(node) {
+    const out = [];
+    try {
+        let n = node, d = 0;
+        while (n && d < 4) { out.push(n.name || n._name || '?'); n = n.parent; d++; }
+    } catch (e) { /* 忽略 */ }
+    return out.join(' < ');
 }
 
 /** 把 `Prefab.data` 树里第一个带 `prop` 的组件的该属性挖出来（照抄本 MOD 的 findPropInNode） */
@@ -6845,6 +6888,23 @@ function gpnSporeFxSpawn(parent, pos) {
         node = inst(S.prefab);
         if (!node) return null;
         node.parent = parent;
+        // ★ 保险：把它放到该父节点的**最后一个孩子**（= 同层最上面）。
+        //   为什么需要：`instantiatePooly` 从池里取回的节点可能带着**旧的 siblingIndex**；
+        //   池化复用 + 同层频繁增删时，会出现"新特效被同层旧元素盖住"（用户 2026/10/16 报过一次偶发）。
+        try {
+            const kids = parent.children || parent._children;
+            if (kids && typeof node.setSiblingIndex === 'function') node.setSiblingIndex(kids.length - 1);
+        } catch (e2) { /* 忽略 */ }
+        // 诊断（verboseLog 打开时；限流）：把"落进哪个父节点、层链长什么样"记下来，
+        // 万一以后再出现"层不对"，这一行就能直接定位（本轮就是缺了它才只能靠推理）。
+        try {
+            if (typeof gpnPoisonDiag === 'function') {
+                gpnPoisonDiag('fx.spawn', (n) => '[孢子菇·特效] 已放：父节点=' + (parent.name || parent._name || '?')
+                    + ' ｜ 层链=' + gpnSporeFxChain(parent)
+                    + ' ｜ 同层孩子=' + ((parent.children || parent._children || []).length)
+                    + ' ｜ 位置=(' + Math.round(pos.x) + ',' + Math.round(pos.y) + ')（第 ' + n + ' 次）');
+            }
+        } catch (e3) { /* 忽略 */ }
         if (ccg && ccg.v3) node.worldPosition = new ccg.v3(pos.x, pos.y, 0);
         else if (node.worldPosition) { node.worldPosition.x = pos.x; node.worldPosition.y = pos.y; }
         return node;
@@ -6934,6 +6994,511 @@ function makeSporeShroomZombieGate(Zombie, deps) {
 }
 
 
+/* =========================================================================
+ * 孢子菇 ×1.5（R6/R7）—— 「带孢子标记的僵尸，受到毒性家族伤害 ×1.5」
+ *  （= 设计稿 §5「第二步」：**直伤 + Dot 一起做完**）
+ *
+ *  用户需求（2026-10-16 定稿，见 `CTM\设计稿-孢子菇.md` §0 / §6 Q2）：
+ *    R6 带 `CarriedSporeShroom` 标记的僵尸，受**毒性家族**伤害 ×1.5（**直击与持续伤害都算**）
+ *    R7 孢子菇**自己**的伤害也吃这一份（亡语**先标记、再伤害** ⇒ 天生满足）
+ *    多段叠加 Dot：**该帧全部 Dot 合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
+ *    忧郁菇 gloomshroom / 毒影菇 shadowshroom **额外计入**（Family 是 Shadow，数据判不出来）
+ *    大蒜 garlic / 巴豆 chilibean **排除**（⚠️ 它们**本来就是** Poison 家族！）
+ *    心蕊 bloominghearts **只算子弹直击**（它的"减防 debuff"本身不结算伤害）
+ *
+ *  === 引擎事实（逐字核对 1.5.5 bundle；@ = 字符偏移）===
+ *   · `Zombie.defaultDealDamage(details)`（@3600436）是**所有僵尸伤害的最终落点**：
+ *     它自己只读 `t.damage`；僵尸子类里那些 `dealDamage` 覆写（共 6 处）最后也都调它
+ *     ⇒ **在这一点乘倍率 = 一处覆盖「直击 + 溅射 + 非弹道直伤 + Dot」**。
+ *   · 乘倍率要**造替身**：用引擎自己的 `ZombieDamageDetails.replaceDamage(newDamage)`
+ *     （@486803，它 `new` 一个新对象并带上 armorProtection / damageType / shockRGB 等全部字段）
+ *     ⇒ **绝不改原对象**（同一份 details 会被多只僵尸共用，改了会连坐 + 变成 ×1.5^N）。
+ *   · `Zombie.dealPoison(dt)`（@3594834）是**所有 Dot 的唯一结算点**：
+ *       主毒   = `dealDamage(new ZDD(dt * this.poison.DPS, …))`
+ *       叠加毒 = `_poison_stacked` 逐条 `dealDamage(s.replaceDamage(dt * e.DPS))`
+ *     ⇒ 进 dealPoison 之前把"属于毒性家族"的那几份毒的 `DPS` 临时 ×1.5，
+ *       就等价于"该帧家族 Dot 合计 ×1.5、且**只乘一次**"（线性；绝不会 ×1.5^N）。
+ *       `ZombiePoison.DPS` 是**可写数据字段**（@3580907 描述符 `writable:!0`）。
+ *   · `Zombie.setPoison(DPS,dur,infect)`（@3594499）**只收数字**、内部 `new ZombiePoison`
+ *     ⇒ 来源没法从参数带进来；而 `pushPoisonStacked(obj)`（同处）推的是**同一个对象**
+ *     ⇒ 用一个"当前来源算不算毒性家族"的**瞬时标记**给毒对象盖章 `__gpnPoisonFam`，
+ *       Dot 结算时按章决定乘不乘（**没盖章 = 不算** ⇒ 巴豆的薄荷毒天然被排除在外）。
+ *   · 弹道侧：`commonShot.dealDamageToZombie(e,t,i,o)`（@576376）在**一次同步调用**里做完
+ *     "直击 + 溅射 + 上毒（setPoison / pushPoisonStacked）"；`dealSplashDamage`（@565552）
+ *     是它的溅射入口，也会被 `onTombHit` 等路径单独调用 ⇒ **两处都要开"来源窗口"**。
+ *     `this.carriedSporeShroom = e.CarriesSporeShroom`（@560858）⇒ **孢子菇自己的弹道天然可认**；
+ *     其它植物靠**发射时打在弹道上的标记** `shot.__gpnPoisonFam`。
+ *   · ⚠️ **S4-1 教训（实机探针）**：绝不能在"弹道命中"处反查"谁打的" —— 实测
+ *     `shot.master/owner/plant/srcPlant` 全空、`PrjFunctions.shootOnePea` 的 `this` 是
+ *     `PrjFunctions` 自己 ⇒ **标记必须在植物自己的发射入口打**。
+ *   · 发射入口的三种形态（逐个实测，**别想当然**）：
+ *       ① `PeashooterPlant._shoot`（@2312816）**return 弹道**（`t.abrupt("return",y)`）
+ *          ⇒ 直接拿返回值打标。实测继承它且**没有覆盖** `_shoot` 的只有：
+ *          `GooPeashooterPlant`（毒液豌豆）/ `PuffShroomPlant`（小喷菇）/
+ *          `SeaShroomPlant`（海蘑菇，经 PuffShroom）/ 以及普通豌豆系。
+ *       ② `ScaredyShroomPlant._shoot`（@2666366）**不 return 弹道**（`return t.stop()`）
+ *          ⇒ 靠"发射期间置 pending + 包 `PrjFunctions.shootOnePea` 读 pending"。
+ *       ③ **心蕊 `BloomingHeartPlant` 继承的是 `CabbagePultPlant`（抛投系，不是豌豆系！）**
+ *          ⇒ 它的弹道来自 `_lobToZombie` / `_lobToTomb` / `_lobToPos`
+ *            （@361288 / @362861 / @362204），同样**不 return** ⇒ 同样走 pending +
+ *            `PrjFunctions.lobOneCabbageOnZombie / OnTomb / OnPos`。
+ *      pending 之所以成立（已逐个核对）：这三个入口都在**生成器第一步**里同步调用
+ *      `PrjFunctions.*`（原文形如 `t.next=6, w.lobOneCabbageOnZombie(…)`），
+ *      而我们的包装器是在**被调用的那一瞬间**读 pending ⇒ 不会跨越 await。
+ *   · `Plant_Type`（@1930114 `N.Plant_Type = c || I.CODENAME`）是植物实例上的**别名字符串**
+ *     ⇒ 家族判定 = `PlantProps[Plant_Type].objdata.Family`。
+ *   · ★ **`setPoison(` 在 1.5.5 bundle 里共 16 个调用点** —— 逐条清点过（这是最容易漏 Dot 的地方）：
+ *       本 MOD **算**（= 家族来源，要 ×1.5）：
+ *         AilMint.specialMintAnimationListener(boost_begin) ｜ commonShot.dealDamageToZombie（弹道自带的毒）
+ *         GloomShroom.detectEnemies ｜ goopeaFoodPrj.detectEnemy（**毒液豌豆大招弹**）
+ *         GooTileLiquid.specialTileLiquidUpdate（那发大招留下的**黏液地面**；数据 `TileLiquidType="goo"`）
+ *         MariGoldPurple._turn ｜ ShadowShroom.specialPlantOnEaten ｜ ShadowShroom.animationListener(foodExplode)
+ *         Zombie.dealPoison（传染给邻居）｜ Zombie.copyBuff（把毒复制给另一只）
+ *       本 MOD **不算**（每条都有明确理由）：
+ *         ChiliBean → Zombie.chilibeanFart（**用户指定：巴豆排除**）
+ *         Stunion.animationListener（薄荷毒；眩晕洋葱**不在** Poison 家族）
+ *         Dragonbruit._shoot / _shootOnTomb（不在 Poison 家族）
+ *         duskSplat.dealSplashDamage（**暗影菇·黄昏投手**系弹道，不在用户名单内）
+ *         commonShot.ts @563875 那个 `setPoison(DPS,duration)`（那是**弹道自己的载荷对象**，
+ *           不是僵尸侧的 setPoison，名字相同、语义不同）
+ * =======================================================================*/
+
+/** 额外白名单：Family 是 Shadow、但用户特意要求也吃 ×1.5（含 `_mgp` 前缀变体） */
+const GPN_SPORE_FAM_EXTRA = ['gloomshroom', 'shadowshroom'];
+/** 排除表：它们**本来就是** Poison 家族，但用户指定不算 */
+const GPN_SPORE_FAM_EXCLUDE = ['garlic', 'chilibean'];
+
+/** 倍率（唯一来源 = CFG；图鉴文案也从它现算） */
+function gpnSporeMult() {
+    try {
+        const v = Number(CFG.sporeshroom.poisonBonus);
+        if (isFinite(v) && v > 0) return v;
+    } catch (e) { /* 忽略 */ }
+    return 1.5;
+}
+
+/** 纯函数：别名 + 它的数据 Family ⇒ 算不算"吃 ×1.5 的毒性家族"（自检直接单测） */
+function gpnSporeIsPoisonFam(type, family) {
+    const t = (type == null) ? '' : String(type);
+    if (!t) return family === 'Poison';                    // 拿不到别名就只看数据
+    if (GPN_SPORE_FAM_EXCLUDE.indexOf(t) !== -1) return false;
+    for (let i = 0; i < GPN_SPORE_FAM_EXTRA.length; i++) {
+        const x = GPN_SPORE_FAM_EXTRA[i];
+        if (t === x || t.indexOf(x + '_') === 0) return true;
+    }
+    return family === 'Poison';
+}
+
+/** 取植物实例的数据 Family（优先 Plant_Type → PlantProps；再退实例自己的 objdata） */
+function gpnSporeFamilyOf(plant) {
+    if (!plant) return null;
+    try {
+        const t = plant.Plant_Type;
+        if (typeof t === 'string' && t) {
+            const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
+            const list = Box && Box.PlantProps;
+            if (Array.isArray(list)) {
+                for (let i = 0; i < list.length; i++) {
+                    const e = list[i];
+                    if (!e || !Array.isArray(e.aliases) || e.aliases.indexOf(t) === -1) continue;
+                    if (e.objdata && e.objdata.Family != null) return e.objdata.Family;
+                    break;
+                }
+            }
+        }
+    } catch (e) { /* 忽略 */ }
+    try {
+        const od = plant.objdataOwn || plant.objdata;
+        if (od && od.Family != null) return od.Family;
+    } catch (e) { /* 忽略 */ }
+    return null;
+}
+
+/** 植物实例算不算"吃 ×1.5 的毒性家族" */
+function gpnSporePlantQualifies(plant) {
+    let t = '';
+    try { t = (plant && typeof plant.Plant_Type === 'string') ? plant.Plant_Type : ''; } catch (e) { t = ''; }
+    if (t) {
+        if (GPN_SPORE_FAM_EXCLUDE.indexOf(t) !== -1) return false;
+        for (let i = 0; i < GPN_SPORE_FAM_EXTRA.length; i++) {
+            const x = GPN_SPORE_FAM_EXTRA[i];
+            if (t === x || t.indexOf(x + '_') === 0) return true;
+        }
+    }
+    return gpnSporeFamilyOf(plant) === 'Poison';
+}
+
+/* 「当前正在结算毒性家族来源」的瞬时窗口 —— 用**计数**而不是布尔（天然的嵌套安全：
+ *   dealDamageToZombie 内部还会再调 dealSplashDamage；异常也必须能正确退栈）。 */
+let gpnPoisonDmgDepth = 0;      // >0 ⇒ 这期间的伤害算"毒性家族"
+let gpnPoisonStampDepth = 0;    // >0 ⇒ 这期间上的毒盖"家族章"
+function gpnPoisonCtxEnter(who) {
+    gpnPoisonDmgDepth++;
+    gpnPoisonStampDepth++;
+    gpnPoisonWhoStack.push(gpnPoisonCtxWho);
+    if (who) gpnPoisonCtxWho = who;      // 只为诊断：日志里能看出"这份毒是谁上的"
+}
+function gpnPoisonCtxExit() {
+    if (gpnPoisonDmgDepth > 0) gpnPoisonDmgDepth--;
+    if (gpnPoisonStampDepth > 0) gpnPoisonStampDepth--;
+    if (gpnPoisonWhoStack.length) gpnPoisonCtxWho = gpnPoisonWhoStack.pop();
+}
+function gpnPoisonDmgActive() { return gpnPoisonDmgDepth > 0; }
+function gpnPoisonStampActive() { return gpnPoisonStampDepth > 0; }
+
+/** 当前窗口的"来源标签"（**仅诊断用**；verboseLog 打开时盖章/×1.5 的日志会带上它） */
+let gpnPoisonCtxWho = '—';
+const gpnPoisonWhoStack = [];
+
+/** 诊断限流：每个 key **前 3 条 + 之后每 50 条一条**（照本 MOD 香水火/护栏的老做法，绝不刷屏） */
+const gpnPoisonDiagCount = new Map();
+function gpnPoisonDiag(key, makeMsg) {
+    if (typeof verboseOn === 'function' && !verboseOn()) return;
+    const n = (gpnPoisonDiagCount.get(key) || 0) + 1;
+    gpnPoisonDiagCount.set(key, n);
+    if (n > 3 && n % 50 !== 0) return;
+    try { log(makeMsg(n)); } catch (e) { /* 忽略 */ }
+}
+
+/** "发射期间待盖章"的家族标记（null = 当前不在发射窗口；true/false = 这一发算/不算） */
+let gpnPoisonShotPending = null;
+
+/** 给"普通对象上的方法"打补丁（methodRecord 只支持类原型；restore 认 `static:true`） */
+function objectMethodRecord(obj, name) {
+    return {
+        Cls: obj, name,
+        original: obj[name],
+        own: Object.prototype.hasOwnProperty.call(obj, name),
+        static: true,
+    };
+}
+
+/**
+ * 孢子菇 ×1.5 补丁工厂（R6/R7）
+ * @param {Object} mods 引擎类/对象：Zombie / CommonShot / PrjFunctions / Peashooter /
+ *                      ScaredyShroom / CabbagePult / FumeShroom / Vamporcini /
+ *                      GloomShroom / ShadowShroom / AilMint / **MariGold（基类）** /
+ *                      GooFoodPrj / GooTileLiquid
+ *                      ⚠️ **不要**传 `MariGoldPurple`：那个模块**没有导出类**（实测）。
+ * @returns {Array} recs（交给上层还原/清理）
+ */
+function makeSporePoisonBonusPatch(mods) {
+    const recs = [];
+    const M = mods || {};
+    const Zombie = M.Zombie;
+    const P = (Cls, name) => (Cls && Cls.prototype && typeof Cls.prototype[name] === 'function');
+    /** 安装情况汇总（verboseLog 打开时打一行 —— 实机排查"哪一项没挂上"最快的手段） */
+    const installed = [];
+    const mark = (label, ok) => { installed.push(label + (ok ? '✓' : '✗')); };
+
+    /* ---------- ① 伤害落点：带标记的僵尸 ×1.5（直击 / 溅射 / 非弹道直伤 / Dot 全覆盖） ---------- */
+    if (P(Zombie, 'defaultDealDamage')) {
+        const rec = methodRecord(Zombie, 'defaultDealDamage');
+        Zombie.prototype.defaultDealDamage = function (d) {
+            // 【运行期开关】关掉 ⇒ 逐字回原版
+            if (!featOn(GPN_SPORE_FEAT) || !gpnPoisonDmgActive()) return rec.original.apply(this, arguments);
+            try {
+                if (this && this.CarriedSporeShroom === true && d
+                    && typeof d.damage === 'number' && d.damage > 0
+                    && typeof d.replaceDamage === 'function') {
+                    // ★ 用引擎自己的 replaceDamage 造替身：**不改原对象**（它可能被多只僵尸共用）
+                    return rec.original.call(this, d.replaceDamage(d.damage * gpnSporeMult()));
+                }
+            } catch (e) { /* 出错就退回原逻辑，绝不因此吞伤害或加倍 */ }
+            return rec.original.apply(this, arguments);
+        };
+        recs.push(rec);
+        mark('伤害落点', true);
+    } else if (Zombie) {
+        mark('伤害落点', false);
+        warn('跳过孢子菇加成：拿不到 Zombie.defaultDealDamage');
+    }
+
+    /* ---------- ② Dot：dealPoison（按"来源章"临时乘 DPS ⇒ 合计一次、绝不 ×1.5^N） ---------- */
+    if (P(Zombie, 'dealPoison')) {
+        const rec = methodRecord(Zombie, 'dealPoison');
+        Zombie.prototype.dealPoison = function () {
+            if (!featOn(GPN_SPORE_FEAT) || this.CarriedSporeShroom !== true) return rec.original.apply(this, arguments);
+            const saved = [];
+            let spread = false;
+            let scaledMain = 0, scaledStack = 0, unscaledMain = 0;
+            try {
+                const p = this.poison;
+                if (p && p.DPS > 0) {
+                    if (p.__gpnPoisonFam === true) {
+                        const before = p.DPS;
+                        saved.push([p, before]);
+                        p.DPS = before * gpnSporeMult();
+                        scaledMain = 1;
+                        spread = (p.infective === true);     // 这份毒会传染 ⇒ 邻居那份也该带家族章
+                        // ⚠️ 万一 `ZombiePoison.DPS` 在真机上是**只读访问器**，上面那句会**静默失败**
+                        //    ⇒ 症状恰好是"毒整帧不加成"、极难查 ⇒ 这里当场验一次（只报一条）。
+                        if (!(p.DPS > before)) {
+                            gpnPoisonDiag('dot.mutate-fail', () => '[孢子菇·Dot] ⚠️⚠️ 改写 ZombiePoison.DPS **没有生效**'
+                                + '（真机上它可能是只读访问器）⇒ Dot 的 ×1.5 会失效；请把这一行发给作者');
+                        }
+                    } else {
+                        unscaledMain = 1;                    // 带标记、但这份毒**没有家族章**（诊断用）
+                    }
+                }
+                const st = this._poison_stacked;
+                if (Array.isArray(st)) {
+                    for (let i = 0; i < st.length; i++) {
+                        const q = st[i];
+                        if (q && q.__gpnPoisonFam === true && q.DPS > 0) {
+                            const beforeQ = q.DPS;
+                            saved.push([q, beforeQ]);
+                            q.DPS = beforeQ * gpnSporeMult();
+                            scaledStack++;
+                            if (!(q.DPS > beforeQ)) {
+                                gpnPoisonDiag('dot.mutate-fail-stack', () => '[孢子菇·Dot] ⚠️⚠️ 叠加毒的 DPS 改写**没有生效**'
+                                    + '（同上：可能是只读访问器）⇒ 叠加毒不吃 ×1.5');
+                            }
+                        }
+                    }
+                }
+                // ---- 诊断（verboseLog 打开时；每个 key 前 3 条 + 之后每 50 条）----
+                if (scaledMain || scaledStack) {
+                    gpnPoisonDiag('dot.ok', (n) => '[孢子菇·Dot] ×1.5 生效：主毒=' + (scaledMain ? '乘' : '—')
+                        + ' 叠加=' + scaledStack + ' 份 ｜ 僵尸=' + (this.Zombie_Type || '?') + '（第 ' + n + ' 次）');
+                } else if (unscaledMain) {
+                    gpnPoisonDiag('dot.no-stamp', (n) => '[孢子菇·Dot] ⚠️ 僵尸带标记、但主毒**没有家族章**：dps='
+                        + p.DPS + ' dur=' + p.duration + ' ｜ 僵尸=' + (this.Zombie_Type || '?')
+                        + '（= 上毒那一刻不在"家族窗口"里 ⇒ 那条来源没挂钩子/没开窗口）（第 ' + n + ' 次）');
+                }
+                if (spread) {
+                    // ⚠️ 只开"盖章"窗口、**不开"伤害"窗口** —— 否则 Dot 会被乘两次
+                    gpnPoisonStampDepth++;
+                    try { return rec.original.apply(this, arguments); } finally { gpnPoisonStampDepth--; }
+                }
+                return rec.original.apply(this, arguments);
+            } finally {
+                for (let i = 0; i < saved.length; i++) {
+                    try { saved[i][0].DPS = saved[i][1]; } catch (e) { /* 忽略 */ }
+                }
+            }
+        };
+        recs.push(rec);
+        mark('Dot结算', true);
+    } else if (Zombie) {
+        mark('Dot结算', false);
+        warn('跳过孢子菇 Dot 加成：拿不到 Zombie.dealPoison');
+    }
+
+    /* ---------- ③ Dot 来源记账：给毒对象盖章（没盖章 = 不算家族） ---------- */
+    if (P(Zombie, 'setPoison')) {
+        const rec = methodRecord(Zombie, 'setPoison');
+        Zombie.prototype.setPoison = function () {
+            const r = rec.original.apply(this, arguments);   // 引擎内部 new 出新的 ZombiePoison
+            try {
+                if (this.poison) {
+                    const on = gpnPoisonStampActive();
+                    this.poison.__gpnPoisonFam = on;
+                    if (on) {
+                        gpnPoisonDiag('stamp.on', (n) => '[孢子菇·毒章] 来源=' + gpnPoisonCtxWho
+                            + ' dps=' + this.poison.DPS + ' dur=' + this.poison.duration
+                            + ' ｜ 僵尸=' + (this.Zombie_Type || '?') + '（第 ' + n + ' 次）');
+                    }
+                }
+            } catch (e) { /* 忽略 */ }
+            return r;
+        };
+        recs.push(rec);
+        mark('毒章set', true);
+    } else if (Zombie) {
+        mark('毒章set', false);
+        warn('跳过孢子菇毒章：拿不到 Zombie.setPoison（Dot 将全部不加成）');
+    }
+    if (P(Zombie, 'pushPoisonStacked')) {
+        const rec = methodRecord(Zombie, 'pushPoisonStacked');
+        Zombie.prototype.pushPoisonStacked = function (t) {
+            // 推的是**同一个毒对象**（引擎原文 `this._poison_stacked.push(t)`）⇒ 章会长期留在它身上
+            try {
+                if (t) {
+                    const on = gpnPoisonStampActive();
+                    t.__gpnPoisonFam = on;
+                    if (on) {
+                        gpnPoisonDiag('stamp.stack', (n) => '[孢子菇·毒章·叠加] 来源=' + gpnPoisonCtxWho
+                            + ' dps=' + t.DPS + ' dur=' + t.duration + '（第 ' + n + ' 次）');
+                    }
+                }
+            } catch (e) { /* 忽略 */ }
+            return rec.original.apply(this, arguments);
+        };
+        recs.push(rec);
+        mark('毒章叠加', true);
+    } else if (Zombie) {
+        mark('毒章叠加', false);
+    }
+
+    /* ---------- ④ 弹道命中/溅射：开"来源窗口"（上毒 + 直伤都在这个同步窗口里） ---------- */
+    const CommonShot = M.CommonShot;
+    const shotIsFam = function (shot) {
+        try {
+            return !!(shot && (shot.__gpnPoisonFam === true || shot.carriedSporeShroom === true));
+        } catch (e) { return false; }
+    };
+    if (CommonShot && CommonShot.prototype) {
+        const names = ['dealDamageToZombie', 'dealSplashDamage'];
+        for (let i = 0; i < names.length; i++) {
+            const nm = names[i];
+            if (!P(CommonShot, nm)) continue;
+            const rec = methodRecord(CommonShot, nm);
+            CommonShot.prototype[nm] = function () {
+                if (!featOn(GPN_SPORE_FEAT) || !shotIsFam(this)) return rec.original.apply(this, arguments);
+                gpnPoisonCtxEnter('弹道·' + (this.carriedSporeShroom === true ? '孢子菇弹' : '家族弹'));
+                try { return rec.original.apply(this, arguments); } finally { gpnPoisonCtxExit(); }
+            };
+            recs.push(rec);
+            mark(nm, true);
+        }
+    }
+
+    /* ---------- ⑤ 发射时打标：植物入口置 pending，PrjFunctions 那一瞬读走 ---------- */
+    //  ⚠️ S4-1 教训：绝不能"命中时反查来源"（弹道上没有主人信息）⇒ 必须在植物入口打标。
+    const Prj = M.PrjFunctions;
+    const wrapShotEntry = function (Cls, name, label) {
+        if (!P(Cls, name)) {
+            if (label) warn('跳过孢子菇加成标记：拿不到 ' + label);
+            return null;
+        }
+        const rec = methodRecord(Cls, name);
+        const tagPending = function () {
+            if (!featOn(GPN_SPORE_FEAT)) return rec.original.apply(this, arguments);
+            let fam = false;
+            try { fam = gpnSporePlantQualifies(this); } catch (e) { fam = false; }
+            gpnPoisonShotPending = fam;
+            try { return rec.original.apply(this, arguments); }
+            finally { gpnPoisonShotPending = null; }
+        };
+        Cls.prototype[name] = tagPending;
+        return rec;
+    };
+    // ① 豌豆系（含**毒液豌豆** / 小喷菇 / 海蘑菇）：`_shoot` 会 return 弹道 ⇒ 也可直接用它打标
+    if (P(M.Peashooter, '_shoot')) {
+        const rec = methodRecord(M.Peashooter, '_shoot');
+        M.Peashooter.prototype._shoot = function () {
+            if (!featOn(GPN_SPORE_FEAT)) return rec.original.apply(this, arguments);
+            let fam = false;
+            try { fam = gpnSporePlantQualifies(this); } catch (e) { fam = false; }
+            gpnPoisonShotPending = fam;
+            let r;
+            try { r = rec.original.apply(this, arguments); }
+            finally { gpnPoisonShotPending = null; }
+            // 引擎自己的返回值就是弹道 ⇒ 顺手打一次标（PrjFunctions 那条路是给"不 return"的植物兜底）
+            try {
+                if (r && typeof r.then === 'function') {
+                    return r.then((shot) => { try { if (shot) shot.__gpnPoisonFam = fam; } catch (e) { /* 忽略 */ } return shot; });
+                }
+                if (r) r.__gpnPoisonFam = fam;
+            } catch (e) { /* 忽略 */ }
+            return r;
+        };
+        recs.push(rec);
+        mark('豌豆系_shoot', true);
+    } else if (M.Peashooter) {
+        mark('豌豆系_shoot', false);
+    }
+    // ② 胆小菇（自己的 `_shoot`、**不 return 弹道**）
+    const recScaredy = wrapShotEntry(M.ScaredyShroom, '_shoot', 'ScaredyShroom._shoot');
+    if (recScaredy) recs.push(recScaredy);
+    mark('胆小菇_shoot', !!recScaredy);
+    // ③ 心蕊（抛投系）：三个抛投入口（同样不 return 弹道）
+    let nLob = 0;
+    for (const nm of ['_lobToZombie', '_lobToTomb', '_lobToPos']) {
+        const r3 = wrapShotEntry(M.CabbagePult, nm, 'CabbagePult.' + nm);
+        if (r3) { recs.push(r3); nLob++; }
+    }
+    mark('抛投系_lobTo(3)', nLob === 3);
+    // ④ pending 的读者：`PrjFunctions.*`（**进入时就读** —— 不能放进 .then，那里已经跨过 await 了）
+    if (Prj) {
+        const tagCb = function (tag) {
+            return function (shot) {
+                try { if (shot) shot.__gpnPoisonFam = tag; } catch (e) { /* 忽略 */ }
+                return shot;
+            };
+        };
+        for (const nm of ['shootOnePea', 'lobOneCabbageOnZombie', 'lobOneCabbageOnTomb', 'lobOneCabbageOnPos']) {
+            if (typeof Prj[nm] !== 'function') continue;
+            const rec = objectMethodRecord(Prj, nm);
+            Prj[nm] = function () {
+                const tag = gpnPoisonShotPending;               // ★ 必须在这一瞬读
+                const r = rec.original.apply(this, arguments);
+                if (tag == null || !r || typeof r.then !== 'function') return r;
+                return r.then(tagCb(tag));
+            };
+            recs.push(rec);
+            mark('Prj.' + nm, true);
+        }
+    } else {
+        warn('跳过孢子菇加成标记：拿不到 PrjFunctions（豌豆系仍可用返回值打标）');
+    }
+
+    /* ---------- ⑥ 非弹道直伤 / 纯 Dot 的来源窗口 ---------- */
+    const ctxWrap = function (Cls, name, label) {
+        if (!P(Cls, name)) {
+            if (label) warn('跳过孢子菇加成：拿不到 ' + label);
+            return null;
+        }
+        const rec = methodRecord(Cls, name);
+        Cls.prototype[name] = function () {
+            if (!featOn(GPN_SPORE_FEAT)) return rec.original.apply(this, arguments);
+            gpnPoisonCtxEnter(label || name);
+            try { return rec.original.apply(this, arguments); } finally { gpnPoisonCtxExit(); }
+        };
+        return rec;
+    };
+    const ctxList = [
+        [M.FumeShroom, '_shoot', 'FumeShroom._shoot'],                    // 大喷菇：直伤 40（就地 dealDamage）
+        [M.Vamporcini, 'absorb', 'Vamporcini.absorb'],                    // 吸血菇：啃咬直伤（就地 dealDamage）
+        [M.GloomShroom, 'detectEnemies', 'GloomShroom.detectEnemies'],    // 忧郁菇：3×3 直伤 + setPoison(60,0.1)
+        [M.ShadowShroom, 'specialPlantOnEaten', 'ShadowShroom.specialPlantOnEaten'],  // 毒影菇：纯 Dot
+        [M.ShadowShroom, 'animationListener', 'ShadowShroom.animationListener'],      // 毒影菇·大招 foodExplode：全场上毒 + 一段毒伤
+        [M.AilMint, 'specialMintAnimationListener', 'AilMint.specialMintAnimationListener'], // 毒薄荷：boost_begin 上毒
+        // ⚠️ 紫色万寿菊**不能挂它自己的 `_turn`** —— 实测（用户 F12）：`MariGoldPurple.ts` 这个模块
+        //    **没有对外导出类**（只做了 `ccclass("MariGoldPurplePlant")` 注册）⇒ 拿不到那个类。
+        //    改挂**基类 `MariGoldPlant.specialSunflowerAnimationListener`**（模块 MariGold.ts 有导出 ✓）：
+        //    引擎原文 `if("turn"==n.name){ … this._turn(t,e) }` —— 子类**没有覆盖**这个回调，
+        //    而 `this._turn` 是**虚调用**，会落到紫色万寿菊自己那份 `_turn` ⇒ 窗口正好罩住它。
+        //    （顺带对所有颜色的万寿菊开窗；其它颜色不上毒 ⇒ 无副作用）
+        [M.MariGold, 'specialSunflowerAnimationListener', 'MariGold.specialSunflowerAnimationListener'],
+        [M.GooFoodPrj, 'detectEnemy', 'goopeaFoodPrj.detectEnemy'],       // 毒液豌豆·大招弹：直伤 + Poison{50,5}
+        [M.GooTileLiquid, 'specialTileLiquidUpdate', 'GooTileLiquid.specialTileLiquidUpdate'], // 上面那发大招留下的"黏液地面"（PoisonDPS 50）
+    ];
+    for (let i = 0; i < ctxList.length; i++) {
+        const r6 = ctxWrap(ctxList[i][0], ctxList[i][1], ctxList[i][2]);
+        if (r6) recs.push(r6);
+        mark(ctxList[i][2], !!r6);
+    }
+
+    /* ---------- ⑦ 传染 / 复制增益：让"毒的家族章"跟着走 ---------- */
+    //  · `Zombie.copyBuff(src)`（@3618850）会把 src 的毒原样复制给另一只僵尸（`setPoison(t.poison.DPS, …)`）
+    //    ⇒ 按 src 那份毒的章决定要不要盖章（否则"被复制的家族毒"会掉章）。
+    if (P(Zombie, 'copyBuff')) {
+        const rec = methodRecord(Zombie, 'copyBuff');
+        Zombie.prototype.copyBuff = function (src) {
+            let fam = false;
+            try { fam = !!(src && src.poison && src.poison.__gpnPoisonFam === true); } catch (e) { fam = false; }
+            if (!fam) return rec.original.apply(this, arguments);
+            gpnPoisonStampDepth++;
+            try { return rec.original.apply(this, arguments); } finally { gpnPoisonStampDepth--; }
+        };
+        recs.push(rec);
+        mark('copyBuff', true);
+    }
+
+    // ★ 安装情况一行汇总（**verboseLog 打开时才有**）—— 实机排查"哪一项没挂上"最快的手段。
+    //   本轮就是靠 F12 里那句「跳过孢子菇加成：拿不到 MariGoldPurple._turn」定位到万寿菊的。
+    try {
+        if (typeof verboseOn === 'function' && verboseOn()) {
+            log('[孢子菇×1.5] 钩子安装：' + installed.join(' ｜ '));
+        }
+    } catch (e) { /* 忽略 */ }
+
+    return recs;
+}
+
+
 /**
  * 孢子菇补丁工厂
  * @param {Function} SporeShroomPlant 引擎的孢子菇植物类
@@ -6971,6 +7536,12 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
 
             // 把"这一帧的受害者"先算出来（用 Rectangle 判交集；照引擎 explodeCherry3x3 的取框方式）
             const hit = [];
+            // ★ 障碍物（墓碑 / 功夫货架 / 冲浪板 / 背包 / 帐篷 / 街机柜 / 音箱 / 冰砖 / 生日礼物 /
+            //   冰川块 / 章鱼 ……）—— **用户 2026/10/16 追加**：亡语也要能打障碍物。
+            //   口径与流星花**完全同一份白名单**（`gpnMeteorTombIsBlacklisted`：只排除 `kongfu_TNT`=17）。
+            //   ⚠️ 障碍物**绝不施加 `CarriedSporeShroom`**（按原版口径）⇒ 它自然也**不吃 ×1.5**
+            //      （我们的伤害落点要求"带标记"，天然满足）。
+            const tombs = [];
             try {
                 const Rect = D.Rectangle;
                 const Sq = D.Square;
@@ -6987,11 +7558,24 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                             if (br && rect.judgeCrossRec(br)) hit.push(z);
                         } catch (e) { /* 单只失败忽略 */ }
                     }
+                    // 障碍物：`tombPool(0)` = 非魅惑（僵尸方）的墓碑/障碍物；拿不到就退回无参
+                    let tp = null;
+                    try { if (lane && typeof lane.tombPool === 'function') tp = lane.tombPool(0); } catch (e) { tp = null; }
+                    if (!tp && lane && typeof lane.tombPool === 'function') { try { tp = lane.tombPool(); } catch (e2) { tp = null; } }
+                    for (const tb of (tp || [])) {
+                        try {
+                            if (!tb || tb.ignored) continue;
+                            if (typeof tb.isAlive === 'function' && !tb.isAlive()) continue;
+                            if (gpnMeteorTombIsBlacklisted(tb.ID)) continue;   // 只排除 kongfu_TNT(17)
+                            const br = tb.bodyRec || tb.bodyRecReal;           // 障碍物：bodyRec（与 A1 穿透一致）
+                            if (br && rect.judgeCrossRec(br)) tombs.push(tb);
+                        } catch (e) { /* 单个障碍物失败忽略 */ }
+                    }
                 }
-            } catch (e) { warn('孢子菇亡语：取范围内僵尸出错', e); }
+            } catch (e) { warn('孢子菇亡语：取范围内僵尸/障碍物出错', e); }
 
             if (dbgOn(C.debugLog)) {
-                log('孢子菇【亡语】伤害=' + dmg + ' 命中僵尸=' + hit.length
+                log('孢子菇【亡语】伤害=' + dmg + ' 命中僵尸=' + hit.length + ' 障碍物=' + tombs.length
                     + ' 格=' + (cell ? (cell.lIndex + ',' + cell.cIndex) : '?')
                     + ' 位置=' + (wp ? ('(' + Math.round(wp.x) + ',' + Math.round(wp.y) + ')') : '?'));
             }
@@ -7008,21 +7592,47 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                     } catch (e) { /* 单只失败忽略 */ }
                 }
                 // ---- ② 再造成伤害（不穿甲 + 普通物理）⇒ 吃到 ×1.5（R2/R7）----
-                for (const z of hit) {
-                    try {
-                        if (!z || typeof z.dealDamage !== 'function') continue;
-                        const ZDT = D.ZombieDamageType;
-                        const details = (typeof D.ZombieDamageDetails === 'function')
-                            ? new D.ZombieDamageDetails(dmg, true, false, false, null, ZDT)
-                            : null;
-                        if (details) z.dealDamage(details);
-                        else z.dealDamage(dmg, 0);            // 兜底：老式两参调用（不穿甲由调用方保证不了，仅应急）
-                    } catch (e) { /* 单只失败忽略 */ }
-                }
+                //   ⚠️ 顺序是硬要求：① 先把上面的 `CarriedSporeShroom` 打上，② 这里再开
+                //      "来源 = 毒性家族"的窗口 ⇒ 这一发**自己**吃 ×1.5（实测 50/150/250 ⇒ 75/225/375）。
+                //      `×1.5` 本身由 `makeSporePoisonBonusPatch` 的 `Zombie.defaultDealDamage` 钩子做，
+                //      这里**不要**自己乘（否则会变成 ×2.25）。
+                gpnPoisonCtxEnter('孢子菇亡语');
+                try {
+                    for (const z of hit) {
+                        try {
+                            if (!z || typeof z.dealDamage !== 'function') continue;
+                            const ZDT = D.ZombieDamageType;
+                            const details = (typeof D.ZombieDamageDetails === 'function')
+                                ? new D.ZombieDamageDetails(dmg, true, false, false, null, ZDT)
+                                : null;
+                            if (details) z.dealDamage(details);
+                            else z.dealDamage(dmg, 0);            // 兜底：老式两参调用（不穿甲由调用方保证不了，仅应急）
+                        } catch (e) { /* 单只失败忽略 */ }
+                    }
+                    // ---- ②b 障碍物（用户 2026/10/16 追加）----
+                    //   · **不施加标记、不眩晕**（障碍物按原版口径）⇒ 也因此不吃 ×1.5
+                    //   · 伤害走 `tb.dealDamage(details)`：引擎 `Tomb.dealDamage(t)` 读的是
+                    //     `t.damage * this.damageScale(t)`（`damageType` 只影响可融化的冰砖），
+                    //     与本 MOD 在 A1 穿透里打墓碑**完全同一套**（main.js 的 `e.dealDamage(dmg)`）。
+                    for (const tb of tombs) {
+                        try {
+                            if (!tb || typeof tb.dealDamage !== 'function') continue;
+                            const ZDT2 = D.ZombieDamageType;
+                            const det2 = (typeof D.ZombieDamageDetails === 'function')
+                                ? new D.ZombieDamageDetails(dmg, true, false, false, null, ZDT2)
+                                : null;
+                            if (det2) tb.dealDamage(det2);
+                            else tb.dealDamage(dmg);
+                        } catch (e) { /* 单个障碍物失败忽略 */ }
+                    }
+                } finally { gpnPoisonCtxExit(); }
                 // ---- ③ 特效（R10；纯视觉）----
                 try {
                     if (C.fxEnable && gpnSporeFxReady) {
-                        const parent = gpnSporeFxGetParent(null, D);
+                        // ★ 显式把自己那条车道传进去 —— 特效必须落在**本行的 prjLayer**（= 引擎给该行弹道
+                        //   命中特效用的同一个层）。**不再依赖"上一次弹道观察到的父节点"缓存**（那个缓存可能
+                        //   还是上一关/旧帧的 ⇒ 曾经偶发一次"层不对、被植物贴图盖住"，见 gpnSporeFxGetParent 注释）
+                        const parent = gpnSporeFxGetParent(null, D, lane);
                         if (parent) gpnSporeFxReady(parent, wp, D);
                         else if (dbgOn(C.debugLog)) log('孢子菇亡语特效：暂时拿不到父节点（车道 prjLayer / 缓存都没有），本次跳过');
                     }
@@ -7693,8 +8303,23 @@ export default {
     _sporeCommonShotHook: makeSporeShroomCommonShotHook, // 孢子菇：特效父节点观测钩子
     _sporeDeathDamage: gpnSporeDeathDamage,     // ★ 亡语伤害取值（按 CabbageType 查弹道 Damage）
     _sporeFxDrop: gpnSporeFxDrop,               // 特效缓存清理（自检核对"换场景要丢缓存"）
+    _sporeFxGetParent: gpnSporeFxGetParent,     // ★ 特效父节点（自检核对"优先本行 prjLayer、key 为空不认缓存"）
+    _sporeFxSetParent: gpnSporeFxSetParent,     // 埋缓存（自检用）
+    _sporeFxChain: gpnSporeFxChain,             // 节点层链（诊断；自检保证不抛错）
     _sporeFindProp: gpnSporeFindProp,           // prefab 属性挖掘（照抄本 MOD 的 findPropInNode）
     _sporeCfg: () => CFG.sporeshroom,           // 孢子菇配置（自检核对数值）
+    // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
+    _sporePoisonPatch: makeSporePoisonBonusPatch,   // ×1.5 补丁工厂
+    _sporeMult: gpnSporeMult,                       // 倍率（从 CFG 现算）
+    _sporeIsPoisonFam: gpnSporeIsPoisonFam,         // 别名 + Family ⇒ 算不算（纯函数）
+    _sporeFamilyOf: gpnSporeFamilyOf,               // Plant_Type → PlantProps.Family
+    _sporePlantQualifies: gpnSporePlantQualifies,   // 植物实例 ⇒ 算不算
+    _sporeFamExtra: GPN_SPORE_FAM_EXTRA,            // 额外白名单（忧郁菇 / 毒影菇）
+    _sporeFamExclude: GPN_SPORE_FAM_EXCLUDE,        // 排除表（大蒜 / 巴豆）
+    _sporePoisonCtxEnter: gpnPoisonCtxEnter,        // "来源 = 毒性家族"窗口（自检用）
+    _sporePoisonCtxExit: gpnPoisonCtxExit,
+    _sporePoisonDmgActive: gpnPoisonDmgActive,
+    _sporePoisonStampActive: gpnPoisonStampActive,
     _meteorIsRealZombie: gpnMeteorIsRealZombie, // 真僵尸判定（排除护盾/被魅惑/非场内）
     _meteorCollectZombies: gpnMeteorCollectZombies,
     _meteorFirstTarget: gpnMeteorFirstTarget,   // ★ 第 1 颗索敌（本行最靠左 → 全场最靠左 → 障碍/护盾 → 兜底）
@@ -7800,6 +8425,21 @@ export default {
             'chunks:///_virtual/Abbot3SectionStaffZombie.ts', // 36（三节棍僵尸：只打"来源=三节棍"标记，行为不变）
             'chunks:///_virtual/MeteorFlower.ts',      // 37（流星花：索敌策略重写 —— 第1颗本行优先/可索障碍与护盾、第2颗不再打歪）
             'chunks:///_virtual/SporeShroom.ts',       // 38（孢子菇：亡语 1×3 伤害+感染+眩晕 / 阳光200 / 血量150 / 图鉴两条特点）
+            // ↓ 39~47：孢子菇 ×1.5（R6/R7）—— 毒性家族伤害加成要在**植物自己的发射/伤害入口**
+            //   打标或开窗口（S4-1 实测：命中时无法反查来源）。这些模块**追加在末尾、不动旧索引**。
+            'chunks:///_virtual/Peashooter.ts',        // 39（豌豆系 _shoot：毒液豌豆/小喷菇/海蘑菇共用；它 return 弹道）
+            'chunks:///_virtual/ScaredyShroom.ts',     // 40（胆小菇：自己的 _shoot，**不** return 弹道 ⇒ 走 pending）
+            'chunks:///_virtual/CabbagePult.ts',       // 41（⚠️ 心蕊继承的是抛投系！_lobToZombie/_lobToTomb/_lobToPos）
+            'chunks:///_virtual/FumeShroom.ts',        // 42（大喷菇：_shoot 里就地 3×1 直伤）
+            'chunks:///_virtual/Vamporcini.ts',        // 43（吸血菇：absorb 就地直伤 + 回血）
+            'chunks:///_virtual/GloomShroom.ts',       // 44（忧郁菇：detectEnemies 3×3 直伤 + 暗影强化时的 setPoison）
+            'chunks:///_virtual/ShadowShroom.ts',      // 45（毒影菇：specialPlantOnEaten 上纯 Dot）
+            'chunks:///_virtual/AilMint.ts',           // 46（毒薄荷：specialMintAnimationListener 的 boost_begin 上毒）
+            'chunks:///_virtual/MariGold.ts',          // 47（万寿菊**基类**：`specialSunflowerAnimationListener` 里虚调 `this._turn`
+                                                       //     ⇒ 紫色万寿菊的子类没覆盖这个回调，窗口正好罩住它自己那份 `_turn`。
+                                                       //     ⚠️ 不要改挂 `MariGoldPurple.ts`：那个模块**没有对外导出类**（实机 F12 证过））
+            'chunks:///_virtual/goopeaFoodPrj.ts',     // 48（毒液豌豆·**大招弹**：detectEnemy 里直伤 + Poison{50,5}）
+            'chunks:///_virtual/GooTileLiquid.ts',     // 49（上面那发大招留下的"黏液地面"：PoisonDPS 50 / goo）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -7822,7 +8462,11 @@ export default {
                 redStingerMod = mods[30], murkadamiaMod = mods[31], splitPeaMod = mods[32],
                 zombiesMod = mods[33], perfumeShroomMod = mods[34],
             darkJesterMod = mods[35], abbot3Mod = mods[36],
-                meteorMod = mods[37], sporeMod = mods[38];
+                meteorMod = mods[37], sporeMod = mods[38],
+                peashooterMod = mods[39], scaredyMod = mods[40], cabbagePultMod = mods[41],
+                fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
+                shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
+                gooFoodMod = mods[48], gooTileMod = mods[49];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -8550,6 +9194,31 @@ let ticks = 0;
                 // 亡语特效资源：**提前**加载好（首次进关卡时就绪，避免第一次亡语来不及）
                 try { gpnSporeFxEnsure(null); } catch (e) { /* 忽略 */ }
             }
+            // ---- 22d. 孢子菇 ×1.5（R6/R7）：带孢子标记的僵尸受**毒性家族**伤害 ×1.5（直伤 + Dot）----
+            //  口径（用户定）：Poison 家族（数据判定）**减去** garlic / chilibean，
+            //                 **加上** gloomshroom / shadowshroom（Shadow 家族，仅显式白名单）；
+            //                 心蕊只算"子弹直击"（它的减防 debuff 本身不结算伤害）；
+            //                 多段叠加 Dot = 该帧家族 Dot 合计只 ×1.5 一次。
+            //  ⚠️【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
+            {
+                const sb = makeSporePoisonBonusPatch({
+                    Zombie: zombieMod && zombieMod.Zombie,
+                    CommonShot: shotMod && shotMod.commonShot,
+                    PrjFunctions: prjMod && prjMod.PrjFunctions,
+                    Peashooter: peashooterMod && peashooterMod.PeashooterPlant,
+                    ScaredyShroom: scaredyMod && scaredyMod.ScaredyShroomPlant,
+                    CabbagePult: cabbagePultMod && cabbagePultMod.CabbagePultPlant,
+                    FumeShroom: fumeShroomMod && fumeShroomMod.FumeShroomPlant,
+                    Vamporcini: vamporciniMod && vamporciniMod.VamporciniPlant,
+                    GloomShroom: gloomShroomMod && gloomShroomMod.GloomShroomPlant,
+                    ShadowShroom: shadowShroomMod && shadowShroomMod.ShadowShroomPlant,
+                    AilMint: ailMintMod && ailMintMod.AilMintPlant,
+                    MariGold: mariGoldMod && mariGoldMod.MariGoldPlant,
+                    GooFoodPrj: gooFoodMod && gooFoodMod.goopeaFoodPrj,
+                    GooTileLiquid: gooTileMod && gooTileMod.GooTileLiquid,
+                });
+                if (sb) recs.push(...sb);
+            }
             // ---- 23. 红针花：左键循环切换形态 ----
             {
                 const rs = makeRedStingerPatch(redStingerMod && redStingerMod.RedStingerPlant, {
@@ -8750,7 +9419,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l39 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l43 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
