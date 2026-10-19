@@ -402,8 +402,8 @@ const CFG = {
         },
         deathDamageFallback: 50,   // 读不到弹道数据时的兜底（= 1 级普攻）
         //   ⚠️ 上面两张表存的是**普攻攻击力本身**（数据实测 50 / 150 / 250）；
-        //      亡语**实际**伤害 = 它 × `deathDamageScale`（用户 2026/10/16 指定 ×1.25）。
-        deathDamageScale: 1.25,    // ★ 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 62.5 / 187.5 / 312.5
+        //      亡语**实际**伤害 = 它 × `deathDamageScale`（用户 2026/10/16 指定：先 1.25，随后改 **1.35**）。
+        deathDamageScale: 1.35,    // ★ 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 67.5 / 202.5 / 337.5
         deathStun: 1.5,            // 亡语附带眩晕秒数（用户指定 2026/10/16：0.75 → 1.5）
         deathRadiusTiles: 3,       // 亡语横向格数（1 行 × 3 列，以自身格为中心）
         // ---- 毒性家族 ×1.5（R6/R7，用户指定；直伤 + Dot 都算）----
@@ -6825,10 +6825,10 @@ const GPN_SPORE_FEAT = 'sporeshroom';
 /** 亡语伤害 = **本株普攻攻击力 × `CFG.sporeshroom.deathDamageScale`**。
  *  · 正常路径：运行期从 `ProjectileProps` 里读那 3 条弹道的真实 `Damage`（**不硬编码**，改数据也跟着变）
  *  · 拿不到数据 ⇒ 用 CFG 的兜底表（表里存的是**普攻攻击力** 50/150/250）
- *  · 最后**统一乘倍率**（用户 2026/10/16 指定 ×1.25 ⇒ **62.5 / 187.5 / 312.5**）
+ *  · 最后**统一乘倍率**（用户 2026/10/16 指定：先 1.25、随后改 **1.35** ⇒ **67.5 / 202.5 / 337.5**）
  *    ⚠️ 倍率**只在这里乘一次**，各调用点（僵尸 / 障碍物 / 日志）都直接用这个返回值
  *       —— 这样"跟随本株普攻"这条口径就只有一个实现处，不会两处算错。
- *  ⚠️ 记：mark 先于伤害 ⇒ 僵尸那一发还会被 ×1.5 的毒性家族加成再乘一次（= 93.75 / 281.25 / 468.75）；
+ *  ⚠️ 记：mark 先于伤害 ⇒ 僵尸那一发还会被 ×1.5 的毒性家族加成再乘一次（= 101.25 / 303.75 / 506.25）；
  *     障碍物没有标记 ⇒ 只吃这里的基础值。 */
 function gpnSporeDeathDamage(plant, jsonMod) {
     const C = CFG.sporeshroom;
@@ -9578,7 +9578,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l49 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l50 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
