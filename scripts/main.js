@@ -419,6 +419,18 @@ const CFG = {
         //   资源取自 resources bundle 的 `projectiles/PeaShadowPF0PRJ`，
         //   读它 `commonShot` 组件上的 `PopParticle`（实机实测值 = "ShadowPeaPF0PAR"）。
         //   ⚠️ 绝不引用用户给的 PTX 贴图；这里只用引擎自己的 prefab。
+        // ---- 巴豆屁联动（§3.80，用户 2026-10-20）----
+        //   S1 阶段只做**只读探针**：verboseLog 打开时打印气体节点结构/轴向/音效计数，不改任何行为。
+        //   S2 做完主体后可以把它设 false（或保留作长期诊断，代价是每只巴豆屁多几行日志）。
+        fartRows: 3,           // ★ 眩晕气体覆盖几行（1 = 原版单行，不放大也不下移；以尸体所在行为中心，实际覆盖 = 2×floor(rows/2)+1 ⇒ 偶数也按奇数算）
+        fartRowScale: 3,       // ★ 气体节点沿 **Y（行高方向）** 放大的倍数（实机探针：行间位移=(0,-81)、节点 angle=0）
+        fartYOffset: -40,      // ★ 气体位置下移量（px）。引擎把气体挂在**僵尸高度**上 ⇒ 原版偏高（像脑袋放屁）；-40 ≈ 半行（81/2）
+        fartDelaySec: 2,       // ★ 与原版同拍：chilibeanFart 后多少秒触发扩行（≈ tween 的 2 秒）
+        // ⚠️ **改色已放弃**（2026-10-20 用户决定）：DragonBones 节点色是乘算、槽色是包装对象且会被动画写回，
+        //    自绘紫气观感不还原 ⇒ 保持原版**绿色**；音量加强也一并放弃（维持原版音量）。
+        //    所以这里**没有** fartColor* / fartVolume 这些项，别再试着加回来。
+        fartDebugLog: false,   // 每次联动打一条日志（不看探针时也能确认生效）
+        probeFart: false,      // 只读探针（诊断用；正式使用保持 false，排查时再开）
         fxPrjPath: 'projectiles/PeaShadowPF0PRJ',
         fxPropName: 'PopParticle',
         fxEnable: true,
@@ -2137,18 +2149,21 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         if (this.__gpnQuiet) { quietKill(this); return; }
         return originals.fart.call(this, stunDuration, poison);
     };
-    // 包装后的函数存成变量：下面 isImmune 用「是否重写过 chilibeanFart」判天然免疫，
-    // 必须与挂在原型上的那个函数是同一个引用（否则所有僵尸都会被判成免疫）。
+    // 包装后的函数存成变量：下面 isImmune 用「是否重写过 chilibeanFart」判天然免疫。
+    // ⚠️ 2026/10/20 改：不再用"函数引用相等"判断，改用 `__gpnGated` 标记 —— 因为
+    //    孢子菇那边（§3.80 巴豆屁联动）会在这一层**再包一层**，引用比较会把所有僵尸误判成免疫。
+    //    任何"我们装上去的包装"都必须带 `__gpnGated`（gpnGatedBody 会写 featKey 字符串，真值即可）。
     const gatedFart = gpnGatedBody(originals.fart, 'chilibean', patchedFart);
-    Zombie.prototype.chilibeanFart = gatedFart;
+    Zombie.prototype.chilibeanFart = gatedFart;   // （gpnGatedBody 已给它打上 __gpnGated = 'chilibean'）
     recs.push({ Cls: Zombie, name: 'chilibeanFart', original: originals.fart });
 
-    /** 对巴豆免疫吗？判据一：重写过 chilibeanFart（引擎的原生免疫机制）；判据二：补漏名单 */
+    /** 对巴豆免疫吗？判据一：**类里自己重写过** chilibeanFart（引擎的原生免疫机制）；判据二：补漏名单 */
     const extraMechRe = /^(kongfu_bronze_strong|kongfu_bronze_chi|kongfu_bronze_chi_without_torch|kongfu_bronze_hook)$/;
     const arbiterRe = /arbiter/i;
     const isImmune = (z) => {
         if (!z || typeof z.chilibeanFart !== 'function') return true;
-        if (z.chilibeanFart !== gatedFart) return true;
+        if (!z.chilibeanFart.__gpnGated) return true;   // 没被我们包过 ⇒ 类里自己重写 ⇒ 原生免疫
+                                                        // （我们包的都带 __gpnGated = featKey 字符串，见 gpnGatedBody）
         const code = z.Zombie_Type || '';
         return extraMechRe.test(code) || arbiterRe.test(code);
     };
@@ -2327,6 +2342,310 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
     return recs;
 }
 
+/* ==========================================================================
+ * §3.80 巴豆 × 孢子菇 联动 —— **S1 只读探针**（`probeFart` + `verboseLog` 都开才打印）
+ *
+ *   目的：实机拿 3 组证据，再决定主体怎么写：
+ *     P1 **气体节点结构**：是 `ParticleSystem` 还是 `Sprite`？颜色字段在哪（startColor/endColor/color）？
+ *     P2 **轴向**：节点 `scale` 的哪个分量对应"屏幕竖直 = 行高方向"（决定放大 3 行时改哪个轴）？
+ *     P3 **钩子可靠性**：`chilibeanFart` 调用次数 : `playZombieFart` 调用次数 : 气体节点数 是否 1:1:1
+ *
+ *   ⚠️ **只打印，绝不改行为**：不碰 scale / color / 音量 / 伤害 / 标记。
+ *   ⚠️ 包装 `Zombie.chilibeanFart` 时必须带 `__gpnGated` 标记（featKey 字符串）—— 巴豆补丁里
+ *      `z.chilibeanFart !== gatedFart ⇒ 原生免疫` 的判定见 §3 末尾的"身份守卫"；
+ *      现在改成 `__gpnGated` 标记（否则多包一层会把所有僵尸误判成巴豆免疫）。
+ * ========================================================================== */
+
+/** 颜色对象 → "(r,g,b,a)" */
+function gpnProbeColorStr(c) {
+    if (!c) return 'null';
+    if (typeof c.r === 'number') return '(' + c.r + ',' + c.g + ',' + c.b + ',' + (c.a === undefined ? 255 : c.a) + ')';
+    return String(c);
+}
+
+/** 组件 → "类名 字段=值 …"（只印我们关心的字段） */
+function gpnProbeCompStr(c) {
+    if (!c) return '?';
+    const nm = c.__classname__ || (c.constructor && c.constructor.name) || '?';
+    const parts = [nm];
+    for (const k of ['startColor', 'endColor', 'color', 'startSize', 'endSize', 'lifetime',
+        'duration', 'emissionRate', 'rateOverTime', 'totalParticles', 'spriteFrame', 'material', 'type']) {
+        try {
+            if (!(k in c)) continue;
+            const v = c[k];
+            let s;
+            if (k === 'startColor' || k === 'endColor' || k === 'color') s = gpnProbeColorStr(v);
+            else if (v && typeof v === 'object') s = (v.name || v._name || v.id || String(v)).slice(0, 32);
+            else s = String(v);
+            parts.push(k + '=' + s);
+        } catch (e) { /* 忽略单项 */ }
+    }
+    return parts.join(' ');
+}
+
+/** 打印一个节点树（最多 3 层、每层最多 6 个孩子） */
+function gpnProbeDumpNode(n, depth) {
+    try {
+        if (!n || depth > 3) return;
+        const pad = depth === 0 ? '' : ('    '.repeat(depth - 1) + '└ ');
+        const sc = n.scale || {};
+        const comps = (n.components || n._components) || [];
+        log('[巴豆屁·探针] ' + pad + 'node="' + (n.name || n._name || '?') + '"'
+            + ' scale=(' + (sc.x === undefined ? '?' : sc.x) + ',' + (sc.y === undefined ? '?' : sc.y) + ',' + (sc.z === undefined ? '?' : sc.z) + ')'
+            + ' angle=' + (n.angle === undefined ? '?' : n.angle)
+            + (n.width !== undefined ? (' size=(' + n.width + ',' + n.height + ')') : '')
+            + ' comps=' + comps.length);
+        for (const c of comps) log('[巴豆屁·探针] ' + pad + '  · ' + gpnProbeCompStr(c));
+        const kids = (n.children || n._children) || [];
+        for (let i = 0; i < kids.length && i < 6; i++) gpnProbeDumpNode(kids[i], depth + 1);
+        if (kids.length > 6) log('[巴豆屁·探针] ' + pad + '  … 还有 ' + (kids.length - 6) + ' 个孩子');
+    } catch (e) { warn('巴豆屁·探针·打印节点出错', e); }
+}
+
+/** P2：行高方向 = 相邻两行同列格子的世界坐标差（配合节点的 scale/angle 判断该放哪个轴） */
+function gpnProbeDumpAxis(Square) {
+    try {
+        if (!Square) return;
+        let s = '[巴豆屁·探针·轴] SquareWidth=' + Square.SquareWidth + ' SquareHeight=' + Square.SquareHeight;
+        if (typeof Square.getLnC === 'function') {
+            const p0 = Square.getLnC(0, 4).plantPoint.worldPosition;
+            const p1 = Square.getLnC(1, 4).plantPoint.worldPosition;
+            s += ' ｜ 行0=(' + Math.round(p0.x) + ',' + Math.round(p0.y) + ')';
+            s += ' 行1=(' + Math.round(p1.x) + ',' + Math.round(p1.y) + ')';
+            s += ' ⇒ 行间位移=(' + Math.round(p1.x - p0.x) + ',' + Math.round(p1.y - p0.y) + ')';
+        }
+        log(s);
+    } catch (e) { warn('巴豆屁·探针·轴向出错', e); }
+}
+
+/** 放屁 2.4 秒后扫描"僵尸父节点新增的孩子"（= 气体粒子），打印结构；然后清空一次计数 */
+function gpnProbeScanLater(z, state) {
+    try {
+        if (!z || typeof z.scheduleOnce !== 'function') return;
+        const parent = z.node && z.node.parent;
+        if (!parent) return;
+        const before = ((parent.children || parent._children) || []).slice();
+        z.scheduleOnce(function () {
+            try {
+                const now = ((parent.children || parent._children) || []);
+                const added = [];
+                for (const n of now) { if (before.indexOf(n) === -1) added.push(n); }
+                state.fartNodes += added.length;
+                log('[巴豆屁·探针] +2.4s 父节点新增 ' + added.length + ' 个（累计 ' + state.fartNodes
+                    + '）｜ 父="' + (parent.name || parent._name || '?') + '"'
+                    + ' ｜ chilibeanFart=' + state.calls + ' playZombieFart=' + state.sounds);
+                for (const n of added) gpnProbeDumpNode(n, 0);
+            } catch (e) { warn('巴豆屁·探针·扫描出错', e); }
+        }, 2.4);
+    } catch (e) { warn('巴豆屁·探针·调度出错', e); }
+}
+
+/* ---- §3.80 跨行补扫 + 视觉改造（S2 主体用；探针与功能共用） ---- */
+
+/** 跨行补扫：对"尸体所在行的上下各 (rows-1)/2 行"用**与原版相同的方向条件**再扫一遍。
+ *  · 邻行：`setChiliStun(t)`（有薄荷毒再 `setPoison`）+ 打 `CarriedSporeShroom`
+ *  · 本行：引擎已经眩晕/中毒过了，这里**只补标记**（否则"三行里中间行不感染"很怪）
+ *  返回被"邻行新增"处理的数量（探针/日志用）。 */
+function gpnFartCrossRows(it, Square, C) {
+    let n = 0;
+    try {
+        const z = it.z, lane = it.lane;
+        if (!z || !lane) return n;   // ⚠️ 不要求尸体自己有 setChiliStun（只对【目标】调用）
+        const SW = (Square && Square.SquareWidth) ? Square.SquareWidth : 68;
+        const o = (z._bodyRec && typeof z._bodyRec.prjX === 'function') ? z._bodyRec.prjX() : null;
+        if (!o) return n;
+        const rows = Math.max(1, Math.floor(Number(C.fartRows) || 1));
+        const half = Math.floor(rows / 2);
+        const dir = it.reversed === true;
+        const inRange = function (t) {
+            try {
+                const p = t.bodyRecReal.prjX();
+                return dir ? (p.x <= o.y + SW / 2) : (p.y >= o.x - SW / 2);
+            } catch (e) { return false; }
+        };
+        const mark = function (t) { if (t && t.ImmuneToSporeShroom !== true) t.CarriedSporeShroom = true; };
+        // ① 本行：只补标记（引擎已眩晕）
+        for (const t of ((lane.zombiePool && lane.zombiePool()) || [])) {
+            if (t && t !== z && !t.dead && inRange(t)) mark(t);
+        }
+        // ② 邻行：眩晕 + 毒 + 标记
+        const lanes = [];
+        let l = lane;
+        for (let i = 0; i < half; i++) { l = l && l.UpperLane; if (l) lanes.push(l); }
+        l = lane;
+        for (let i = 0; i < half; i++) { l = l && l.LowerLane; if (l) lanes.push(l); }
+        for (const ln of lanes) {
+            for (const t of ((ln && ln.zombiePool && ln.zombiePool()) || [])) {
+                if (!t || t === z || t.dead || !inRange(t)) continue;
+                try { t.setChiliStun(it.t); } catch (e) { /* 忽略单只 */ }
+                try { if (it.p && typeof it.p.isValid === 'function' && it.p.isValid()) t.setPoison(it.p.DPS, it.p.duration); } catch (e) { /* 忽略 */ }
+                mark(t); n++;
+            }
+        }
+    } catch (e) { warn('巴豆屁：跨行补扫出错', e); }
+    return n;
+}
+
+/** 视觉：等引擎把气体节点生成出来（音效之后紧跟着 instantiate）→ 只改 **Y 轴**放大 + 淡紫 tint。
+ *  · 探针实测：行间位移 = (0,-81)（纯 Y），节点 `angle=0` ⇒ **Y 就是行高方向** ✓
+ *  · ⚠️ 颜色/缩放**不能**依赖全局 `cc`（实机里它是 SystemJS 模块）⇒ 这里：
+ *      缩放优先 `node.setScale(x,y,z)`；颜色优先**克隆组件自己的 Color**，其次 `deps.cc.Color`，最后普通对象。
+ *  · 全流程打诊断（verboseLog 时），用来判断"没变化"到底卡在哪一步。 */
+function gpnFartScheduleVisual(it, C, probeOn, deps) {
+    try {
+        const parent = it.parent;
+        if (!parent) return;
+        const ccg = (deps && deps.cc) || ((typeof cc !== 'undefined') ? cc : null);
+        const rows = Math.max(1, Math.floor(Number(C.fartRows) || 1));
+        /* `fartRows <= 1` ⇒ 就是原版（1 行、不放大、不下移）；放大/下移只对多行生效 */
+        const k = (rows > 1) ? (Number(C.fartRowScale) > 0 ? Number(C.fartRowScale) : 3) : 1;
+        const off = (rows > 1) ? ((typeof C.fartYOffset === 'number') ? C.fartYOffset : -40) : 0;
+        if (k === 1 && off === 0) {
+            if (probeOn()) log('[巴豆屁] fartRows=1 ⇒ 保持原版（不放大、不下移）');
+            return;
+        }
+        setTimeout(function () {
+            try {
+                // 按"引擎挂点锚点"挑气体节点（多只同时放屁也不会挑错）；跳过刚被处理过的
+                const now = (new Date()).getTime();
+                let node = null, best = 1e18;
+                const kids = (parent.children || parent._children) || [];
+                for (const n2 of kids) {
+                    if (!/fart/i.test(n2.name || '')) continue;
+                    if (n2.__gpnFartTouchedAt && (now - n2.__gpnFartTouchedAt) < 800) continue;
+                    let d = 0;
+                    try {
+                        const p = n2.worldPosition || n2.position || {};
+                        const dx = (p.x || 0) - (it.hx === null ? 0 : it.hx);
+                        const dy = (p.y || 0) - (it.hy === null ? 0 : it.hy);
+                        d = dx * dx + dy * dy;
+                    } catch (e) { d = 0; }
+                    if (d < best) { best = d; node = n2; }
+                }
+                if (!node) { if (probeOn()) log('[巴豆屁] ⚠️ 30ms 内没找到气体节点（本次跳过视觉改造）'); return; }
+                try { node.__gpnFartTouchedAt = now; } catch (e) { /* 忽略 */ }
+                /* ③ 层级置顶：引擎挂点时 `setSiblingIndex(僵尸的索引)` ⇒ 同行后生成的僵尸会**盖住气体**
+                 *    （用户反馈"气体被僵尸挡住"）。放到该层最上层 ⇒ 气体盖住僵尸。
+                 *    池化安全：引擎每次 spawn 都会重设 siblingIndex ⇒ 不会残留。 */
+                let zHow = 'none';
+                try {
+                    if (typeof node.setSiblingIndex === 'function') {
+                        const cnt = ((parent.children || parent._children) || []).length;
+                        if (cnt > 0) { node.setSiblingIndex(cnt - 1); zHow = 'top(' + (cnt - 1) + ')'; }
+                    }
+                } catch (e) { warn('巴豆屁：置顶出错', e); }
+                /* ① 只沿 Y 放大（让绿色气体铺满 N 行） */
+                const sc = node.scale || {};
+                const sx = (typeof sc.x === 'number') ? sc.x : 1;
+                const sy = (typeof sc.y === 'number') ? sc.y : 1;
+                const sz = (typeof sc.z === 'number') ? sc.z : 1;
+                let scaleHow = 'none';
+                try {
+                    if (typeof node.setScale === 'function') { node.setScale(sx, sy * k, sz); scaleHow = 'setScale'; }
+                    else if (ccg && ccg.Vec3) { node.scale = new ccg.Vec3(sx, sy * k, sz); scaleHow = 'Vec3'; }
+                    else { sc.y = sy * k; node.scale = sc; scaleHow = 'mutate'; }
+                } catch (e) { warn('巴豆屁：放大出错', e); }
+                /* ② 位置下移：引擎把气体挂在"僵尸高度"上（所以看着像脑袋放屁）⇒ 默认下移半行 */
+                let posHow = 'none';
+                try {
+                    if (typeof node.setPosition === 'function') {
+                        const p0 = node.position || {};
+                        node.setPosition(p0.x || 0, (p0.y || 0) + off, p0.z || 0);
+                        posHow = 'setPosition';
+                    }
+                } catch (e) { warn('巴豆屁：下移出错', e); }
+                if (probeOn()) {
+                    const after = node.scale || {};
+                    log('[巴豆屁·诊断] 节点="' + (node.name || '?') + '"'
+                        + ' ｜ 放大=' + scaleHow + ' ×' + k
+                        + ' ｜ 读回 scale=(' + (Math.round((after.x || 0) * 100) / 100) + ',' + (Math.round((after.y || 0) * 100) / 100) + ')'
+                        + ' ｜ 下移=' + posHow + ' ' + off + 'px ｜ 层级=' + zHow
+                        + ' ｜ 颜色=原版（不处理） ｜ 音量=原版');
+                }
+            } catch (e) { warn('巴豆屁：视觉改造出错', e); }
+        }, 30);
+    } catch (e) { warn('巴豆屁：视觉调度出错', e); }
+}
+function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
+    const recs = [];
+    const C = CFG && CFG.sporeshroom;
+    const probeOn = () => !!(C && C.probeFart) && verboseOn();
+    const feat = () => { try { return featOn('sporeshroom'); } catch (e) { return false; } };
+    const st = { calls: 0, sounds: 0 };
+
+    // ---- ① 放屁入口：原样调用引擎；若"带标记 + 开关开" ⇒ **本只自己**安排 2 秒后扩行 ----
+    if (Zombie && Zombie.prototype && typeof Zombie.prototype.chilibeanFart === 'function') {
+        const rec = methodRecord(Zombie, 'chilibeanFart');
+        const patched = function (stunDuration, poison) {
+            try {
+                const marked = this && this.CarriedSporeShroom === true;
+                const on = feat() && marked;
+                if (probeOn()) {
+                    st.calls++;
+                    log('[巴豆屁·探针] chilibeanFart #' + st.calls
+                        + ' ｜ 带标记=' + marked
+                        + ' ｜ 行=' + ((this.inLane && this.inLane.LaneIndex !== undefined) ? this.inLane.LaneIndex : '?')
+                        + ' ｜ reversed=' + (this.reversed === true)
+                        + ' ｜ 眩晕=' + stunDuration + ' ｜ 有毒=' + !!poison
+                        + ' ｜ 联动=' + (on ? '是（' + C.fartRows + ' 行·绿屁·打标记）' : '否'));
+                }
+                if (on) gpnFartScheduleLink(this, stunDuration, poison, Square, C, probeOn);
+            } catch (e) { warn('巴豆屁：入口出错', e); }
+            return rec.original.apply(this, arguments);
+        };
+        patched.__gpnGated = 'sporeshroom';   // ★ 身份守卫（见 chilibean 的 isImmune）
+        Zombie.prototype.chilibeanFart = patched;
+        recs.push(rec);
+    }
+
+    // ---- ② 音效：只留探针计数（不接管音量）----
+    if (SoundRescourses && SoundRescourses.prototype && typeof SoundRescourses.prototype.playZombieFart === 'function') {
+        const rec2 = methodRecord(SoundRescourses, 'playZombieFart');
+        SoundRescourses.prototype.playZombieFart = function () {
+            try {
+                if (probeOn()) {
+                    st.sounds++;
+                    const clip = this && this.zombieFart;
+                    log('[巴豆屁·探针·音效] playZombieFart #' + st.sounds
+                        + ' ｜ clip=' + (clip && (clip.name || clip._name) ? (clip.name || clip._name) : String(clip))
+                        + ' ｜ 音量=原版');
+                }
+            } catch (e) { warn('巴豆屁：音效钩子出错', e); }
+            return rec2.original.apply(this, arguments);
+        };
+        recs.push(rec2);
+    }
+    return recs;
+}
+/** 给"这一只"带标记的尸体排一个 2 秒后的扩行 + 视觉改造（每只独立，互不覆盖）。 */
+function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn) {
+    try {
+        const it = {
+            z: z, t: stunDuration, p: poison,
+            lane: z.inLane || null, reversed: z.reversed === true,
+            parent: (z.node && z.node.parent) || null,
+            // 引擎挂点用的锚点 = (worldPositionX, worldPositionY + height)：按它找气体节点最准
+            hx: (typeof z._worldPositionX === 'number') ? z._worldPositionX : null,
+            hy: (typeof z._worldPositionY === 'number') ? (z._worldPositionY + ((typeof z.height === 'number') ? z.height : 0)) : null,
+        };
+        const delay = (typeof C.fartDelaySec === 'number' && C.fartDelaySec >= 0) ? C.fartDelaySec : 2;
+        const fire = function () {
+            try {
+                if (!it.z || it.z.dead) return;
+                // ★ 触发时**复查**：这 2 秒里开关可能被关掉 / MOD 可能被卸载 ⇒ 不能再扩行
+                if (typeof gpnDisposed !== 'undefined' && gpnDisposed) return;
+                if (typeof featOn === 'function' && !featOn('sporeshroom')) return;
+                const added = gpnFartCrossRows(it, Square, C);
+                if (probeOn() || (C && C.fartDebugLog)) {
+                    log('[巴豆屁] 带标记的屁：邻行新增 ' + added + ' 只（眩晕+标记），共覆盖 ' + C.fartRows + ' 行');
+                }
+                gpnFartScheduleVisual(it, C, probeOn, null);
+            } catch (e) { warn('巴豆屁：定时触发出错', e); }
+        };
+        if (typeof z.scheduleOnce === 'function') z.scheduleOnce(fire, delay);
+        else setTimeout(fire, Math.round(delay * 1000));
+    } catch (e) { warn('巴豆屁：安排联动出错', e); }
+}
 /* =========================================================================
  * 5. 暗影龙葵
  *   5a. _shoot：抄自 0.14.0 的 NightShade._shoot，逻辑等价，额外给弹道打「暗影态」标记
@@ -8593,6 +8912,8 @@ export default {
             'chunks:///_virtual/SkyDropShipZombie.ts', // 50（运兵艇 `sky_dropship`：蒲公英大招「驱离」要按类精确判定；
                                                        //     ⚠️ 它是"非真僵尸"：判定框退化、眩晕/冰冻/毒/击退全是空函数，
                                                        //     唯一干净的出口就是它自己的 `playDie`（离场））
+            'chunks:///_virtual/SoundRescourses.ts',   // 51（音效资源：巴豆屁的 `playZombieFart` 在这里；
+                                                       //     音量 = `play(clip, volume)` 的第 2 个参数 ⇒ 150% 就是传 1.5）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -8620,7 +8941,7 @@ export default {
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
-                skyShipMod = mods[50];
+                skyShipMod = mods[50], soundMod = mods[51];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -9240,6 +9561,13 @@ let ticks = 0;
                 recs.push(...chili.recs);
             }
 
+            // ---- 2b. 巴豆屁联动（§3.80）：**S1 只读探针**（probeFart + verboseLog 都开才打印）----
+            {
+                const fp = makeFartLinkPatch(zombieMod.Zombie, soundMod && soundMod.SoundRescourses,
+                    squareMod.Square, { Square: squareMod.Square, cc: ccMod });
+                if (fp) recs.push(...fp);
+            }
+
             // ---- 3. 钢地刺 ----
             {
                 const spy = makeSpikerockPatch(spikerockMod.SpikerockPlant);
@@ -9578,7 +9906,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l50 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l62 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
