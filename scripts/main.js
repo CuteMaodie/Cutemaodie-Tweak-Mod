@@ -735,6 +735,10 @@ function restore(rec) {
 }
 
 /** 植物 codename 标准化：小写 + 去掉非字母数字（心蕊是 bloominghearts 复数，容错用） */
+/** ★★ 硬规则（2026/10/21）：**任何按 Plant_Type 判定植物的代码都必须走这里**。
+ *  实机日志证明部分关卡把 `Plant_Type` 设成 `RTID(tallnut@PlantTypes)` 形式（不是裸 codename），
+ *  裸 `===` 比较会**静默失效**（高坚果扛砸 / 甜薯治疗·自回血 / 白萝卜闸门 / 心蕊减伤 / 孢子菇毒性家族都踩过）。
+ *  新写判定时请：`normalizeType(this.Plant_Type) === normalizeType(CFG.x.plantType)`，并补一条 RTID 形式的自检。 */
 function normalizeType(t) {
     if (typeof t !== 'string') return '';
     let s = t.trim();
