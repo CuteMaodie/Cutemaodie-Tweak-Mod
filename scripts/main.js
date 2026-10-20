@@ -3437,9 +3437,11 @@ function makeSweetPotatoPatch(Plant) {
     // ---- A. 受到的治疗 ×N ----
     // Plant.heal 是所有治疗的唯一入口（芦荟的 aloeHealingParticle、仙桃的 heal3x3 都走它）。
     // 挂在基类上 + 用 Plant_Type 判定，所以不管甜薯的预制体实际挂哪个类都会命中。
+    const KEY_N = normalizeType(KEY);
     Plant.prototype.heal = function (amount) {
         if (!featOn('sweetpotato')) return recHeal.original.apply(this, arguments);   // 【运行期开关】
-        if (this.Plant_Type === KEY) {
+        /* ★ 用 normalizeType：部分关卡 `Plant_Type` 是 `RTID(sweetpotato@PlantTypes)`（实机日志证过） */
+        if (normalizeType(this.Plant_Type) === KEY_N) {
             const mult = CFG.sweetpotato.healReceivedMultiplier;
             if (mult > 0 && mult !== 1 && typeof amount === 'number') amount *= mult;
             if (dbgOn(CFG.sweetpotato.debugLog)) log('甜薯 heal → ' + amount);
@@ -3451,7 +3453,7 @@ function makeSweetPotatoPatch(Plant) {
     Plant.prototype.characterUpdate = function (dt) {
         if (!featOn('sweetpotato')) return recUpdate.original.apply(this, arguments);   // 【运行期开关】
         const r = recUpdate.original.call(this, dt);
-        if (this.Plant_Type === KEY && !this.dead) {
+        if (normalizeType(this.Plant_Type) === KEY_N && !this.dead) {
             const rate = CFG.sweetpotato.selfHealPerSecond;
             if (rate > 0) {
                 // 满血时顺手清零累计（也让对象池复用后的新植物从 0 开始）
@@ -3496,9 +3498,10 @@ function makeTurnipPatch(Plant) {
     const rec = methodRecord(Plant, 'defaultDealNormalDamage');
     if (typeof rec.original !== 'function') { warn('跳过白萝卜：Plant 上没有 defaultDealNormalDamage'); return null; }
 
+    const KEY_N = normalizeType(KEY);
     Plant.prototype.defaultDealNormalDamage = function (dmg, type) {
         if (!featOn('turnip')) return rec.original.apply(this, arguments);   // 【运行期开关】
-        if (this.Plant_Type === KEY) {
+        if (normalizeType(this.Plant_Type) === KEY_N) {   // ★ 兼容 RTID(...) 形式
             if (this.__gpnHitLocked) return this.health;      // 锁没解开：这次伤害整体作废
             this.__gpnHitLocked = true;
             const self = this;
@@ -7791,12 +7794,20 @@ function gpnSporeFamilyOf(plant) {
     try {
         const t = plant.Plant_Type;
         if (typeof t === 'string' && t) {
+            /* ★ 兼容 `RTID(xxx@PlantTypes)` 形式：用 normalizeType 比别名 */
+            const tKey = normalizeType(t);
             const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
             const list = Box && Box.PlantProps;
             if (Array.isArray(list)) {
                 for (let i = 0; i < list.length; i++) {
                     const e = list[i];
-                    if (!e || !Array.isArray(e.aliases) || e.aliases.indexOf(t) === -1) continue;
+                    if (!e || !Array.isArray(e.aliases)) continue;
+                    let hit = false;
+                    for (let j = 0; j < e.aliases.length; j++) {
+                        const a = e.aliases[j];
+                        if (a === t || normalizeType(a) === tKey) { hit = true; break; }
+                    }
+                    if (!hit) continue;
                     if (e.objdata && e.objdata.Family != null) return e.objdata.Family;
                     break;
                 }
@@ -7814,11 +7825,13 @@ function gpnSporeFamilyOf(plant) {
 function gpnSporePlantQualifies(plant) {
     let t = '';
     try { t = (plant && typeof plant.Plant_Type === 'string') ? plant.Plant_Type : ''; } catch (e) { t = ''; }
-    if (t) {
-        if (GPN_SPORE_FAM_EXCLUDE.indexOf(t) !== -1) return false;
+    const tKey = normalizeType(t);
+    if (tKey) {
+        const EX = GPN_SPORE_FAM_EXCLUDE.map(normalizeType);
+        if (EX.indexOf(tKey) !== -1) return false;
         for (let i = 0; i < GPN_SPORE_FAM_EXTRA.length; i++) {
-            const x = GPN_SPORE_FAM_EXTRA[i];
-            if (t === x || t.indexOf(x + '_') === 0) return true;
+            const x = normalizeType(GPN_SPORE_FAM_EXTRA[i]);
+            if (tKey === x || tKey.indexOf(x) === 0) return true;
         }
     }
     return gpnSporeFamilyOf(plant) === 'Poison';
@@ -10140,7 +10153,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l77 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l78 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
