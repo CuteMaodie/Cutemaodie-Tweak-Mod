@@ -459,6 +459,7 @@ const CFG = {
         // ⇒ 满血能扛住 3 次巨人砸击，第 4 次死
         smashHpFraction: 0.25,
         cooldown: 30,                  // v2.8.2 新增：种植冷却 20 -> 30 秒（引擎字段是 Cooldown）
+        debugLog: false,               // 砸击/死亡诊断日志（排查用；正式使用保持 false）
     },
     nightshade: {
         sunCost: 125,             // 原 75
@@ -735,7 +736,13 @@ function restore(rec) {
 
 /** 植物 codename 标准化：小写 + 去掉非字母数字（心蕊是 bloominghearts 复数，容错用） */
 function normalizeType(t) {
-    return (typeof t === 'string') ? t.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    if (typeof t !== 'string') return '';
+    let s = t.trim();
+    /* ★ 引擎在**部分关卡**把 `Plant_Type` 设成 RTID 形式（实机日志证过：`RTID(tallnut@PlantTypes)`）
+     *   ⇒ 先把里面的 codename 取出来，再做小写/去符号。否则所有按 `Plant_Type` 判定的功能都会静默失效。 */
+    const m = /^rtid\(([^@)]+)@/i.exec(s) || /^rtid\(([^@)]+)\)/i.exec(s);
+    if (m) s = m[1];
+    return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /** 打补丁前先登记原方法 + 它是不是自有属性 */
@@ -3745,7 +3752,7 @@ function loadBloomingHeartBuffPrefab(cc, buff) {
  *     原始坚果 PrimalWallNut 就是靠重写 normalSmash 实现「扛 3 次」，直接复用它的逻辑。
  *     挂在 WallNut 基类 + Plant_Type 判定，不会波及坚果/全息坚果/花生等。
  * =======================================================================*/
-function makeTallnutPatch(WallNut, PrimalWallNut) {
+function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
     if (!WallNut || !WallNut.prototype) { warn('跳过高坚果：拿不到 WallnutPlant'); return null; }
     if (typeof WallNut.prototype.normalSmash !== 'function') {
         warn('跳过高坚果：WallnutPlant 上没有 normalSmash');
@@ -3756,9 +3763,32 @@ function makeTallnutPatch(WallNut, PrimalWallNut) {
     const primal = (PrimalWallNut && PrimalWallNut.prototype
         && typeof PrimalWallNut.prototype.normalSmash === 'function')
         ? PrimalWallNut.prototype.normalSmash : null;
+    const dbg = () => !!(CFG.tallnut && CFG.tallnut.debugLog);
+    /* ★ 按【类】匹配（`instanceof TallNutPlant`）为主、`Plant_Type` 字符串为辅：
+     *   用户反馈"镜面坚果挑战第 4 关高坚果扛砸失效、其他关正常" ⇒ 关卡内可能给的不是 'tallnut' 字符串。 */
+    const isTall = function (p) {
+        if (!p) return false;
+        try { if (TallNutClass && (p instanceof TallNutClass)) return true; } catch (e) { /* 忽略 */ }
+        try { return normalizeType(p.Plant_Type) === KEY; } catch (e) { return false; }
+    };
+    log('[高坚果] 已装 ｜ KEY=' + KEY + ' ｜ primal=' + (primal ? '有' : '无') + ' ｜ TallNut 类=' + (TallNutClass ? '有' : '无'));
 
     WallNut.prototype.normalSmash = function (attacker) {
-        if (normalizeType(this.Plant_Type) !== KEY) return rec.original.call(this, attacker);
+        const tall = isTall(this);
+        if (dbg()) {
+            try {
+                const ctor = (this && this.constructor && this.constructor.name) || '?';
+                log('[高坚果·砸] type=' + String(this && this.Plant_Type)
+                    + ' ｜ cls=' + ctor
+                    + ' ｜ 判定=' + (tall ? '高坚果' : '非高坚果')
+                    + ' ｜ hp=' + (this && this.health) + '/' + (this && this.toughness)
+                    + ' ｜ armor=' + (this && this.armorHealth) + '/' + (this && this.armorToughness)
+                    + ' ｜ hurtStage=' + (this && this.hurtStage)
+                    + ' ｜ fooding=' + !!(this && this.fooding) + ' ｜ inv=' + !!(this && this.invincible)
+                    + ' ｜ 攻击者=' + String(attacker && attacker.Zombie_Type));
+            } catch (e) { /* 忽略 */ }
+        }
+        if (!tall) return rec.original.call(this, attacker);
         if (!featOn('tallnut')) return rec.original.call(this, attacker);   // 【运行期开关】关掉 ⇒ 原版砸击
         if (primal) return primal.call(this, attacker);
         // 兜底内联（PrimalWallNut 没导入成功时）
@@ -3769,9 +3799,24 @@ function makeTallnutPatch(WallNut, PrimalWallNut) {
         while (hp - q > 0) hp -= q;
         this.dealNormalDamage(hp);
     };
+
+    /* 诊断：高坚果真的死亡时打一行（看是不是"砸"这条路杀的） */
+    if (typeof WallNut.prototype.die === 'function') {
+        const recDie = methodRecord(WallNut, 'die');
+        WallNut.prototype.die = function () {
+            if (dbg() && isTall(this)) {
+                try {
+                    log('[高坚果·死] type=' + String(this.Plant_Type) + ' ｜ hp=' + this.health
+                        + ' ｜ hp/最大=' + (this.health / this.toughness).toFixed(3)
+                        + ' ｜ hurtStage=' + this.hurtStage + ' ｜ armor=' + this.armorHealth);
+                } catch (e) { /* 忽略 */ }
+            }
+            return recDie.original.apply(this, arguments);
+        };
+        return [rec, recDie];
+    }
     return rec;
 }
-
 /* =========================================================================
  * 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5
  *     这几个值在 props 类的【构造函数】里（不是 JSON 数据），所以要在实例上重写。
@@ -9101,6 +9146,8 @@ export default {
                                                        //     音量 = `play(clip, volume)` 的第 2 个参数 ⇒ 150% 就是传 1.5）
             'chunks:///_virtual/levelController.ts',   // 52（`LevelPlay.shakeScreen(duration)`：**屏幕震动**的原版入口，
                                                        //     流星花的流星子弹 / 黑暗巨人攻击都是调它；幅度固定 ±5px、0.2s 一轮）
+            'chunks:///_virtual/TallNut.ts',           // 53（高坚果类 `TallNutPlant`：**按类匹配**比按 `Plant_Type` 字符串稳；
+                                                       //     ⚠️ `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -9128,7 +9175,7 @@ export default {
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
-                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52];
+                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -10074,8 +10121,8 @@ let ticks = 0;
                 if (!wallNutMod.WallNutPlant && wallNutMod.WallnutPlant) {
                     warn('WallNut.ts 用的是备用导出名 WallnutPlant，请检查是否版本变动');
                 }
-                const tall = makeTallnutPatch(wallNutCls, primalMod.PrimalWallNutPlant);
-                if (tall) recs.push(tall);
+                const tall = makeTallnutPatch(wallNutCls, primalMod.PrimalWallNutPlant, tallnutMod && tallnutMod.TallNutPlant);
+                if (tall) { if (Array.isArray(tall)) recs.push.apply(recs, tall); else recs.push(tall); }
             }
 
             {
@@ -10093,7 +10140,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l75 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l77 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
