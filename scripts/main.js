@@ -429,6 +429,9 @@ const CFG = {
         // ⚠️ **改色已放弃**（2026-10-20 用户决定）：DragonBones 节点色是乘算、槽色是包装对象且会被动画写回，
         //    自绘紫气观感不还原 ⇒ 保持原版**绿色**；音量加强也一并放弃（维持原版音量）。
         //    所以这里**没有** fartColor* / fartVolume 这些项，别再试着加回来。
+        fartShake: 1,          // ★ 放屁时**屏幕震动**时长：**1 秒**（照抄侏罗纪霸王龙 roar 的 LevelPlay.shakeScreen(1)；
+                               //   引擎每 0.2s 一轮递归 ⇒ 1 = 连续抖 5 轮；0 = 关；0.2 = 一轮（流星花流星子弹的默认值））
+        fartShakeCD: 0.15,     // ★ 同帧多只屁时只抖一次（秒）
         fartDebugLog: false,   // 每次联动打一条日志（不看探针时也能确认生效）
         probeFart: false,      // 只读探针（诊断用；正式使用保持 false，排查时再开）
         fxPrjPath: 'projectiles/PeaShadowPF0PRJ',
@@ -2442,6 +2445,26 @@ function gpnProbeScanLater(z, state) {
 
 /* ---- §3.80 跨行补扫 + 视觉改造（S2 主体用；探针与功能共用） ---- */
 
+/** 屏幕震动：调原版 `LevelPlay.shakeScreen(duration)`（流星花/黑暗巨人同款）。
+ *  ⚠️ 它依赖"关卡组件单例"（`LevelPlay.component`）⇒ 不在关卡里调用会抛异常，必须 try/catch + 判空。
+ *  ⚠️ 同一帧多只屁只抖一次（`CFG.fartShakeCD`），否则连抖会像抽搐。 */
+let gpnFartLastShakeAt = 0;
+function gpnFartShake(C, levelPlay) {
+    try {
+        const dur = (typeof C.fartShake === 'number') ? C.fartShake : 1;
+        if (!(dur > 0)) return 'off';
+        if (!levelPlay || typeof levelPlay.shakeScreen !== 'function') return 'no LevelPlay';
+        const cd = (typeof C.fartShakeCD === 'number') ? C.fartShakeCD : 0.15;
+        const now = (new Date()).getTime();
+        if (now - gpnFartLastShakeAt < cd * 1000) return 'cd';
+        let hasComponent = true;
+        try { hasComponent = !!levelPlay.component; } catch (e) { hasComponent = false; }
+        if (!hasComponent) return 'no component';
+        gpnFartLastShakeAt = now;
+        levelPlay.shakeScreen(dur);
+        return 'ok(' + dur + ')';
+    } catch (e) { warn('巴豆屁：屏幕震动出错', e); return 'err'; }
+}
 /** 跨行补扫：对"尸体所在行的上下各 (rows-1)/2 行"用**与原版相同的方向条件**再扫一遍。
  *  · 邻行：`setChiliStun(t)`（有薄荷毒再 `setPoison`）+ 打 `CarriedSporeShroom`
  *  · 本行：引擎已经眩晕/中毒过了，这里**只补标记**（否则"三行里中间行不感染"很怪）
@@ -2589,7 +2612,7 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
                         + ' ｜ 眩晕=' + stunDuration + ' ｜ 有毒=' + !!poison
                         + ' ｜ 联动=' + (on ? '是（' + C.fartRows + ' 行·绿屁·打标记）' : '否'));
                 }
-                if (on) gpnFartScheduleLink(this, stunDuration, poison, Square, C, probeOn);
+                if (on) gpnFartScheduleLink(this, stunDuration, poison, Square, C, probeOn, deps);
             } catch (e) { warn('巴豆屁：入口出错', e); }
             return rec.original.apply(this, arguments);
         };
@@ -2602,13 +2625,15 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
     if (SoundRescourses && SoundRescourses.prototype && typeof SoundRescourses.prototype.playZombieFart === 'function') {
         const rec2 = methodRecord(SoundRescourses, 'playZombieFart');
         SoundRescourses.prototype.playZombieFart = function () {
+            /* ⚠️ 只做探针计数：**不再接管音量**（2026-10-20 用户实测 1.5 倍无变化 ⇒ 放弃）。
+             *    原因猜测：引擎 `play()` 对同一 clip 有冷却/去重，我们另起一次 1.5 播放会被吞掉。 */
             try {
                 if (probeOn()) {
                     st.sounds++;
                     const clip = this && this.zombieFart;
                     log('[巴豆屁·探针·音效] playZombieFart #' + st.sounds
                         + ' ｜ clip=' + (clip && (clip.name || clip._name) ? (clip.name || clip._name) : String(clip))
-                        + ' ｜ 音量=原版');
+                        + ' ｜ 音量=原版（已放弃接管）');
                 }
             } catch (e) { warn('巴豆屁：音效钩子出错', e); }
             return rec2.original.apply(this, arguments);
@@ -2618,7 +2643,7 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
     return recs;
 }
 /** 给"这一只"带标记的尸体排一个 2 秒后的扩行 + 视觉改造（每只独立，互不覆盖）。 */
-function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn) {
+function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn, deps) {
     try {
         const it = {
             z: z, t: stunDuration, p: poison,
@@ -2639,7 +2664,10 @@ function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn) {
                 if (probeOn() || (C && C.fartDebugLog)) {
                     log('[巴豆屁] 带标记的屁：邻行新增 ' + added + ' 只（眩晕+标记），共覆盖 ' + C.fartRows + ' 行');
                 }
-                gpnFartScheduleVisual(it, C, probeOn, null);
+                /* 屏幕震动（只对带标记的三行屁；同帧多只只抖一次） */
+                const shake = gpnFartShake(C, deps && deps.LevelPlay);
+                if (probeOn() || (C && C.fartDebugLog)) log('[巴豆屁] 震动=' + shake);
+                gpnFartScheduleVisual(it, C, probeOn, deps);
             } catch (e) { warn('巴豆屁：定时触发出错', e); }
         };
         if (typeof z.scheduleOnce === 'function') z.scheduleOnce(fire, delay);
@@ -8914,6 +8942,8 @@ export default {
                                                        //     唯一干净的出口就是它自己的 `playDie`（离场））
             'chunks:///_virtual/SoundRescourses.ts',   // 51（音效资源：巴豆屁的 `playZombieFart` 在这里；
                                                        //     音量 = `play(clip, volume)` 的第 2 个参数 ⇒ 150% 就是传 1.5）
+            'chunks:///_virtual/levelController.ts',   // 52（`LevelPlay.shakeScreen(duration)`：**屏幕震动**的原版入口，
+                                                       //     流星花的流星子弹 / 黑暗巨人攻击都是调它；幅度固定 ±5px、0.2s 一轮）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -8941,7 +8971,7 @@ export default {
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
-                skyShipMod = mods[50], soundMod = mods[51];
+                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -9564,7 +9594,7 @@ let ticks = 0;
             // ---- 2b. 巴豆屁联动（§3.80）：**S1 只读探针**（probeFart + verboseLog 都开才打印）----
             {
                 const fp = makeFartLinkPatch(zombieMod.Zombie, soundMod && soundMod.SoundRescourses,
-                    squareMod.Square, { Square: squareMod.Square, cc: ccMod });
+                    squareMod.Square, { Square: squareMod.Square, cc: ccMod, LevelPlay: levelMod && levelMod.LevelPlay });
                 if (fp) recs.push(...fp);
             }
 
@@ -9906,7 +9936,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l62 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l67 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
