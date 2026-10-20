@@ -432,7 +432,13 @@ const CFG = {
         fartShake: 1,          // ★ 放屁时**屏幕震动**时长：**1 秒**（照抄侏罗纪霸王龙 roar 的 LevelPlay.shakeScreen(1)；
                                //   引擎每 0.2s 一轮递归 ⇒ 1 = 连续抖 5 轮；0 = 关；0.2 = 一轮（流星花流星子弹的默认值））
         fartShakeCD: 0.15,     // ★ 同帧多只屁时只抖一次（秒）
-        fartDebugLog: false,   // 每次联动打一条日志（不看探针时也能确认生效）
+        // ---- 吹退（用户 2026-10-20 定：**沿屁的方向**、1 秒 1 格；飞行僵尸 1 秒 2 格；可叠加；不减速）----
+        fartPushTiles: 1,      //   普通僵尸：共吹退几格（1 秒内推完）
+        fartPushFlyingTiles: 2,//   飞行僵尸（flying===true，与飓风甘蓝同口径）：共吹退几格
+        fartPushDuration: 1,   //   吹退的**总时长**（**固定 1 秒**；叠加不延长时间、只叠加速度）
+        fartPushMaxTiles: 8,   //   叠加**总格数上限**（用户 2026-10-20：最多 8 格）
+        fartPushBlowStacks: 3, //   ★ 正向屁 + 单次吹退内**命中次数≥3** + 飞行僵尸 ⇒ **吹飞**（出场击杀，0 = 关）
+        fartDebugLog: false,   // 每次联动打一条日志（排查用；正式使用保持 false）
         probeFart: false,      // 只读探针（诊断用；正式使用保持 false，排查时再开）
         fxPrjPath: 'projectiles/PeaShadowPF0PRJ',
         fxPropName: 'PopParticle',
@@ -2465,6 +2471,115 @@ function gpnFartShake(C, levelPlay) {
         return 'ok(' + dur + ')';
     } catch (e) { warn('巴豆屁：屏幕震动出错', e); return 'err'; }
 }
+/** 给一只"被气体命中"的僵尸**加**吹退距离（可叠加）。
+ *  dir：+1 = 沿屁向右推，-1 = 沿屁向左推（反向僵尸的屁朝左）。 */
+function gpnFartAddPush(t, dir, SW, C) {
+    try {
+        if (!t || typeof t.worldPositionX !== 'number') return;
+        const flying = (t.flying === true);   // 与飓风甘蓝同口径：瞬时 flying（跳起/坠落也算）
+        const tiles = flying
+            ? ((typeof C.fartPushFlyingTiles === 'number') ? C.fartPushFlyingTiles : 2)
+            : ((typeof C.fartPushTiles === 'number') ? C.fartPushTiles : 1);
+        if (!(tiles > 0)) return;
+        const sign = (dir < 0 ? -1 : 1);
+        /* ★ 用户 2026-10-20 追加：**正向屁 + 单次吹退内命中次数 ≥ fartPushBlowStacks(3) + 飞行僵尸** ⇒ 吹飞。
+         *   · 只对 `flying === true`（跳起/坠落也算，同飓风口径）；
+         *   · 反向屁永远不吹飞（只推）；
+         *   · 吹飞**不要求在场中格**（引擎 blowAway 自己拉 2000px 出场）；
+         *   · 尊重引擎的 `specialUnblowable` 豁免（BOSS 等免疫，不硬绕）。 */
+        const stacks = ((typeof t.__gpnFartStacks === 'number') ? t.__gpnFartStacks : 0) + 1;
+        t.__gpnFartStacks = stacks;
+        const needStacks = (typeof C.fartPushBlowStacks === 'number' && C.fartPushBlowStacks > 0) ? C.fartPushBlowStacks : 3;
+        if (sign > 0 && flying && stacks >= needStacks && !t.blew && typeof t.blowAway === 'function') {
+            /* 吹飞后这只已出场 ⇒ 把推退相关的临时字段清干净（不给池化复用留脏数据） */
+            try { t.__gpnFartPush = 0; t.__gpnFartPushTiles = 0; t.__gpnFartStacks = 0; } catch (e) { /* 忽略 */ }
+            try { t.blowAway(); } catch (e) { warn('巴豆屁：吹飞出错', e); }
+            return;   // 吹飞后不再推退
+        }
+        /* ★ 叠加的是【速度】不是时间：总格数累加（带上限），但**总时长永远是 `fartPushDuration`(1 秒)**，
+         *   速度 = 总格数 / 1 秒 ⇒ 叠得越多推得越快，但都在 1 秒内推完。 */
+        const maxT = (typeof C.fartPushMaxTiles === 'number' && C.fartPushMaxTiles > 0) ? C.fartPushMaxTiles : 8;
+        let sum = (typeof t.__gpnFartPushTiles === 'number') ? t.__gpnFartPushTiles : 0;
+        sum = sum + sign * tiles;
+        if (sum > maxT) sum = maxT;
+        if (sum < -maxT) sum = -maxT;
+        t.__gpnFartPushTiles = sum;
+        t.__gpnFartPush = sum * SW;   // 剩余距离（px，带符号）
+    } catch (e) { warn('巴豆屁：加吹退距离出错', e); }
+}
+
+/** 草坪左右边界（"最左格最左边 / 最右格最右边"）。
+ *  ⚠️ 实机反馈"到了最右格右侧还在被推" ⇒ 说明 `FrontYard.lawnRec` 可能取不到(nil)，
+ *     所以这里**优先 lawnRec（引擎飓风甘蓝同款），取不到就用格子节点兜底**：
+ *     最左格中心 − SW/2、最右格中心 + SW/2。 */
+function gpnFartLawnBounds(deps, Square) {
+    let cells = null, lawn = null;
+    // ① 用格子节点算（**第一优先**）：「最左格中心 − SW/2」「最右格中心 + SW/2」
+    try {
+        const sq = (deps && deps.Square) || Square;
+        const SW = (sq && typeof sq.SquareWidth === 'number') ? sq.SquareWidth : 68;
+        if (sq && typeof sq.getSquare === 'function') {
+            const c0 = sq.getSquare(0, 0);
+            const c8 = sq.getSquare(0, 8);
+            const x0 = c0 && c0.worldPosition ? c0.worldPosition.x : null;
+            const x8 = c8 && c8.worldPosition ? c8.worldPosition.x : null;
+            if (typeof x0 === 'number' && typeof x8 === 'number' && x8 > x0) {
+                cells = { x: x0 - SW / 2, y: x8 + SW / 2, src: 'cells' };
+            }
+        }
+    } catch (e) { /* 忽略 */ }
+    // ② 引擎同款：FrontYard.lawnRec.prjX()（兜底）
+    try {
+        const FY = deps && deps.FrontYard;
+        const lr = FY && FY.lawnRec;
+        if (lr && typeof lr.prjX === 'function') {
+            const r = lr.prjX();
+            if (r && isFinite(r.x) && isFinite(r.y) && r.y > r.x) lawn = { x: r.x, y: r.y, src: 'lawnRec' };
+        }
+    } catch (e) { /* 忽略 */ }
+    if (cells) { cells.alt = lawn; return cells; }
+    if (lawn) { lawn.alt = null; return lawn; }
+    return null;
+}
+let gpnFartBoundsLogged = false;
+function gpnFartPushTick(z, dt, C, deps) {
+    try {
+        const left = z.__gpnFartPush;
+        if (!left) return false;
+        const SW = (deps && deps.Square && deps.Square.SquareWidth) ? deps.Square.SquareWidth : 68;
+        const dur = (typeof C.fartPushDuration === 'number' && C.fartPushDuration > 0) ? C.fartPushDuration : 1;
+        const tiles = Math.abs((typeof z.__gpnFartPushTiles === 'number') ? z.__gpnFartPushTiles : (left / SW));
+        const speed = Math.max(0.01, tiles) / dur * SW;      // px/秒（叠得越多越快）
+        const dir = (left > 0) ? 1 : -1;
+        const step = Math.min(Math.abs(left), speed * (dt || 0)) * dir;
+        let target = z.worldPositionX + step;
+        const rec = gpnFartLawnBounds(deps, (deps && deps.Square));
+        if (rec && C && C.fartDebugLog && !gpnFartBoundsLogged) {
+            gpnFartBoundsLogged = true;
+            try { log('[巴豆屁·边界] 用=' + rec.src + ' ｜ 左=' + Math.round(rec.x) + ' ｜ 右=' + Math.round(rec.y) + ' ｜ lawnRec=' + (rec.alt ? (Math.round(rec.alt.x) + '~' + Math.round(rec.alt.y)) : '无') + ' ｜ 当前x=' + Math.round(z.worldPositionX)); } catch (e) { /* 忽略 */ }
+        }
+        if (rec) {
+            /* ★ 用户 2026-10-20：**只在场中格子内才能吹退**；最多推到「最右格最右边 / 最左格最左边」。
+             *   已经在边界外 ⇒ 这一帧结束推退（否则会被"夹回来"形成反向位移）。 */
+            if (dir > 0) {
+                if (z.worldPositionX >= rec.y - 0.01) { z.__gpnFartPush = 0; z.__gpnFartPushTiles = 0; z.__gpnFartStacks = 0; return true; }
+                if (target > rec.y) target = rec.y;
+            } else {
+                if (z.worldPositionX <= rec.x + 0.01) { z.__gpnFartPush = 0; z.__gpnFartPushTiles = 0; z.__gpnFartStacks = 0; return true; }
+                if (target < rec.x) target = rec.x;
+            }
+        } else {
+            /* 拿不到草坪边界（实机 lawnRec 也可能为空）⇒ **保守：直接结束推退**，宁可不推也不把僵尸推出场外 */
+            z.__gpnFartPush = 0; z.__gpnFartPushTiles = 0; z.__gpnFartStacks = 0;
+            return true;
+        }
+        const before = z.worldPositionX;
+        z.worldPositionX = target;
+        z.__gpnFartPush = left - (target - before);
+        if (Math.abs(z.__gpnFartPush) < 0.05) { z.__gpnFartPush = 0; z.__gpnFartPushTiles = 0; z.__gpnFartStacks = 0; }
+        return true;
+    } catch (e) { warn('巴豆屁：吹退出错', e); return false; }
+}
 /** 跨行补扫：对"尸体所在行的上下各 (rows-1)/2 行"用**与原版相同的方向条件**再扫一遍。
  *  · 邻行：`setChiliStun(t)`（有薄荷毒再 `setPoison`）+ 打 `CarriedSporeShroom`
  *  · 本行：引擎已经眩晕/中毒过了，这里**只补标记**（否则"三行里中间行不感染"很怪）
@@ -2486,10 +2601,20 @@ function gpnFartCrossRows(it, Square, C) {
                 return dir ? (p.x <= o.y + SW / 2) : (p.y >= o.x - SW / 2);
             } catch (e) { return false; }
         };
+        const isDying = function (t) {
+            try {
+                if (!t || t.dead) return true;
+                const at = t.__gpnFartDyingAt;
+                return !!(at && ((new Date()).getTime() - at) < 4000);   // 4 秒内视为"正在放屁/刚被巴豆杀"
+            } catch (e) { return false; }
+        };
         const mark = function (t) { if (t && t.ImmuneToSporeShroom !== true) t.CarriedSporeShroom = true; };
+        /* 吹退：沿屁的方向（正向 +X、反向 -X）给"被命中"的僵尸加距离（可叠加） */
+        const pushDir = (it.reversed === true) ? -1 : 1;
+        const push = function (t) { gpnFartAddPush(t, pushDir, SW, C); };
         // ① 本行：只补标记（引擎已眩晕）
         for (const t of ((lane.zombiePool && lane.zombiePool()) || [])) {
-            if (t && t !== z && !t.dead && inRange(t)) mark(t);
+            if (t && t !== z && !isDying(t) && inRange(t)) { mark(t); push(t); }
         }
         // ② 邻行：眩晕 + 毒 + 标记
         const lanes = [];
@@ -2499,10 +2624,10 @@ function gpnFartCrossRows(it, Square, C) {
         for (let i = 0; i < half; i++) { l = l && l.LowerLane; if (l) lanes.push(l); }
         for (const ln of lanes) {
             for (const t of ((ln && ln.zombiePool && ln.zombiePool()) || [])) {
-                if (!t || t === z || t.dead || !inRange(t)) continue;
+                if (!t || t === z || isDying(t) || !inRange(t)) continue;
                 try { t.setChiliStun(it.t); } catch (e) { /* 忽略单只 */ }
                 try { if (it.p && typeof it.p.isValid === 'function' && it.p.isValid()) t.setPoison(it.p.DPS, it.p.duration); } catch (e) { /* 忽略 */ }
-                mark(t); n++;
+                mark(t); push(t); n++;
             }
         }
     } catch (e) { warn('巴豆屁：跨行补扫出错', e); }
@@ -2602,6 +2727,9 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
         const patched = function (stunDuration, poison) {
             try {
                 const marked = this && this.CarriedSporeShroom === true;
+                /* ★ 记录"这只正在放屁/即将死亡"：跨行补扫时**跳过所有这种尸体**
+                 *   （否则反向屁的气体条件会把"被巴豆击杀的尸体"也一起吹退 —— 用户 2026-10-20 反馈） */
+                try { this.__gpnFartDyingAt = (new Date()).getTime(); } catch (e) { /* 忽略 */ }
                 const on = feat() && marked;
                 if (probeOn()) {
                     st.calls++;
@@ -2619,6 +2747,35 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
         patched.__gpnGated = 'sporeshroom';   // ★ 身份守卫（见 chilibean 的 isImmune）
         Zombie.prototype.chilibeanFart = patched;
         recs.push(rec);
+    }
+
+    // ---- ①b 吹退 tick：借 `dealHurrikale`（引擎每帧对"活着的、在行内"的僵尸都会调它）----
+    if (Zombie && Zombie.prototype && typeof Zombie.prototype.dealHurrikale === 'function') {
+        const recH = methodRecord(Zombie, 'dealHurrikale');
+        Zombie.prototype.dealHurrikale = function (dt) {
+            try {
+                if (this && this.__gpnFartPush) {
+                    if (feat()) {
+                        if (gpnFartPushTick(this, dt, C, deps)) return;   // 本帧由我们接管（不调原版）
+                    } else {
+                        this.__gpnFartPush = 0;                            // 开关被关掉 ⇒ 立即停
+                    }
+                }
+            } catch (e) { warn('巴豆屁：吹退钩子出错', e); }
+            return recH.original.apply(this, arguments);
+        };
+        recs.push(recH);
+    }
+
+    // ---- ①c 池化清理：`__gpnFartPush` 是我们自己的字段，复活/回收时必须归零 ----
+    if (Zombie && Zombie.prototype && typeof Zombie.prototype.clearBuff === 'function') {
+        const recC = methodRecord(Zombie, 'clearBuff');
+        Zombie.prototype.clearBuff = function () {
+            const r = recC.original.apply(this, arguments);
+            try { this.__gpnFartPush = 0; this.__gpnFartPushTiles = 0; this.__gpnFartStacks = 0; this.__gpnFartDyingAt = 0; } catch (e) { /* 忽略 */ }
+            return r;
+        };
+        recs.push(recC);
     }
 
     // ---- ② 音效：只留探针计数（不接管音量）----
@@ -9594,7 +9751,7 @@ let ticks = 0;
             // ---- 2b. 巴豆屁联动（§3.80）：**S1 只读探针**（probeFart + verboseLog 都开才打印）----
             {
                 const fp = makeFartLinkPatch(zombieMod.Zombie, soundMod && soundMod.SoundRescourses,
-                    squareMod.Square, { Square: squareMod.Square, cc: ccMod, LevelPlay: levelMod && levelMod.LevelPlay });
+                    squareMod.Square, { Square: squareMod.Square, cc: ccMod, LevelPlay: levelMod && levelMod.LevelPlay, FrontYard: frontYardMod && frontYardMod.FrontYard });
                 if (fp) recs.push(...fp);
             }
 
@@ -9936,7 +10093,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l67 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l75 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
