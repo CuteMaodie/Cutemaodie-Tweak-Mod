@@ -64,6 +64,7 @@ const FEATURES = {
     dandelion: true,        // 蒲公英：索敌优化 / 额外子弹 / 阳光325 / 对飞行×2+眩晕
     pepperpult: true,       // 甜椒投手：阳光225 / 冷却15秒 / 落点3x3灼烧1秒
     hurrikale: true,        // 飓风甘蓝：全屏寒风（其他行 50% 推力）+ 全屏吹飞飞行僵尸
+    kernelpult: true,       // 玉米投手：黄油**落点留下地面黄油**（与黄油毛茛同款；普通 120 秒 / 大招 150 秒）
     // ↓ 下面这几个以前【忘了登记】：features.json 里写了 false 也不会生效（featOn 找不到这个键 -> 当成开）
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
     garlic: true,           // 大蒜：每口固定伤害 37.5 / 阳光 75 / 冷却 15 秒
@@ -405,7 +406,12 @@ const CFG = {
         //      亡语**实际**伤害 = 它 × `deathDamageScale`（用户 2026/10/16 指定：先 1.25，随后改 **1.35**）。
         deathDamageScale: 1.35,    // ★ 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 67.5 / 202.5 / 337.5
         deathStun: 1.5,            // 亡语附带眩晕秒数（用户指定 2026/10/16：0.75 → 1.5）
-        deathRadiusTiles: 3,       // 亡语横向格数（1 行 × 3 列，以自身格为中心）
+        deathRadiusTiles: 3,       // 亡语**伤害/眩晕/特效/障碍物**的横向格数（1 行 × 3 列，以自身格为中心）
+        // ★ 2026/10/22 用户指定：**施加 `CarriedSporeShroom` 标记**的范围扩到 **3 行 × 3 列**；
+        //    伤害 / 眩晕 / 特效 / 障碍物伤害仍是上面的 1 行 × 3 列（**保持不变**）。
+        //    相邻两行里落在同样 3 列范围内的僵尸：**只标记**（不扣血、不眩晕）⇒ 之后吃毒性家族 ×1.5、可被巴豆屁联动识别。
+        deathMarkRows: 3,          // 标记范围：行数（以自身行为中心；1 = 原版单行）
+        deathMarkCols: 3,          // 标记范围：列数（以自身格为中心）
         // ---- 毒性家族 ×1.5（R6/R7，用户指定；直伤 + Dot 都算）----
         //   判定口径 = `PlantProps[Plant_Type].objdata.Family === 'Poison'`
         //     （数据实测 Poison 家族共 13 株：poisonpeashooter / poisonpeashooter_mgp /
@@ -451,6 +457,18 @@ const CFG = {
         fireDuration: 13.5,                            // 香水火持续时间（秒）—— 原版【硬编码 9 秒】在 PerfumeShroomPlant 的攻击载荷里
         // 心蕊普攻子弹在 resources bundle 里的路径 —— 用来取那个减防特效 prefab
         buffPrjPath: 'projectiles/BloomingHeart0PRJ',
+        debugLog: false,
+    },
+    kernelpult: {
+        plantType: 'kernelpult',
+        // ★ 2026/10/22 用户指定：玉米投手的黄油**落点留下「地面黄油」**（与黄油毛茛同款 TileLiquid `butter`）。
+        //   · 普通黄油（30% 替换的那发，弹道 `butter`）：地面黄油 **120 秒**（黄油毛茛普通同为 120）
+        //   · 大招黄油（弹道 `butter2`）：地面黄油 **150 秒**（黄油毛茛大招同为 150）
+        //   · 地面黄油行为由引擎 `ButterTileLiquid` 决定：本行**最左一只**踩到的非飞行僵尸再被定 **8 秒**，然后黄油消失；
+        //   · **伤害/眩晕数值都不改**：黄油仍是 60 伤害 / 8 秒眩晕，大招 butter2 仍是 200 伤害 / 8 秒眩晕。
+        tileLiquidType: 'butter',
+        tileLiquidDuration: 120,
+        tileLiquidDurationPlantfood: 150,
         debugLog: false,
     },
     tallnut: {
@@ -1722,8 +1740,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         //      那是用户**特意安排**的，文案保持原样、不要"补全"。
         //   ⚠️ 倍率**从 CFG 现算**（本 MOD 的统一约定：调参 ⇒ 图鉴自动跟着变）。
         if (featOn('sporeshroom')) {
-            addSpecial('sporeshroom', '被击败后，伤害并感染附近的僵尸',
-                'When defeated, it damages and infects nearby zombies.');
+            addSpecial('sporeshroom', '被击败后：对 1 行 × ' + CFG.sporeshroom.deathRadiusTiles + ' 列内的僵尸造成伤害并眩晕；给 ' + CFG.sporeshroom.deathMarkRows + ' × ' + CFG.sporeshroom.deathMarkCols + ' 范围内所有僵尸打上感染标记',
+                'When defeated: damages + stuns zombies in a 1x' + CFG.sporeshroom.deathRadiusTiles + ' area, and infects every zombie within a ' + CFG.sporeshroom.deathMarkRows + 'x' + CFG.sporeshroom.deathMarkCols + ' area.');
             addSpecial('sporeshroom', '被孢子菇感染的僵尸受到毒性家族伤害×' + CFG.sporeshroom.poisonBonus,
                 'Zombies infected by Spore-shroom take ' + CFG.sporeshroom.poisonBonus
                 + 'x damage from the Poison family.');
@@ -1761,6 +1779,23 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         if (featOn('tallnut')) setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
         else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
         setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
+        // ---- 玉米投手：黄油落点留下「地面黄油」（2026/10/22 用户指定；**数据层**补丁）----
+        //   引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
+        //     ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
+        //       ⇒ `setButter(8, true)`（播黄油音效）⇒ **黄油自身 die()**（一次性）。
+        //   engine 侧行为完全照抄黄油毛茛；我们只补数据，不改任何代码路径。
+        //   ⚠️ 必须在**第一次写值之前**登记原值：`gpnVanilla` 只认第一次读到的值。
+        gpnVanilla('ProjectileProps', 'butter', 'TileLiquid');
+        gpnVanilla('ProjectileProps', 'butter2', 'TileLiquid');
+        if (featOn('kernelpult')) {
+            setField('ProjectileProps', 'butter', 'TileLiquid',
+                { Type: CFG.kernelpult.tileLiquidType, Duration: CFG.kernelpult.tileLiquidDuration });
+            setField('ProjectileProps', 'butter2', 'TileLiquid',
+                { Type: CFG.kernelpult.tileLiquidType, Duration: CFG.kernelpult.tileLiquidDurationPlantfood });
+        } else {
+            gpnRestoreField('ProjectileProps', 'butter', 'TileLiquid');
+            gpnRestoreField('ProjectileProps', 'butter2', 'TileLiquid');
+        }
 
         // 星星果系：阳光/冷却（★两态，挪到包裹外）+ 12 条弹道的穿透/溅射（开=写、关=删）
         setField('PlantProps', 'starfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.sunCost : VANILLA.starfruit.sunCost);
@@ -8287,14 +8322,56 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                 }
             } catch (e) { warn('孢子菇亡语：取范围内僵尸/障碍物出错', e); }
 
+            /* ★ 2026/10/22 用户指定：**标记**范围 = 3 行 × 3 列（伤害/眩晕/特效/障碍物伤害仍是 1 行 × 3 列）。
+             *   做法：同一个矩形，只把高度改成 `deathMarkRows × SH`（竖着覆盖本行 + 上下各一行）；
+             *   池子取「本行 + UpperLane + LowerLane」，按僵尸对象去重（本行那些会同时出现在 hit 里）。
+             *   ⚠️ 这些僵尸**只打 `CarriedSporeShroom`**：不眩晕、不扣血（用户口径）。 */
+            const markHit = [];
+            try {
+                const Rect2 = D.Rectangle;
+                const Sq2 = D.Square;
+                const SW2 = (Sq2 && typeof Sq2.SquareWidth === 'number') ? Sq2.SquareWidth : 68;
+                const SH2 = (Sq2 && typeof Sq2.SquareHeight === 'number') ? Sq2.SquareHeight : 80.77;
+                const mRows = Math.max(1, Math.floor(Number(C.deathMarkRows) || 1));
+                const mCols = Math.max(1, Math.floor(Number(C.deathMarkCols) || 3));
+                if (wp && Rect2 && Rect2.createRectangleNodeCenter && node) {
+                    const mrect = Rect2.createRectangleNodeCenter(node, mCols * SW2, mRows * SH2);
+                    const lanes = [];
+                    lanes.push(lane);
+                    try { if (lane && lane.UpperLane) lanes.push(lane.UpperLane); } catch (e) { /* 忽略 */ }
+                    try { if (lane && lane.LowerLane) lanes.push(lane.LowerLane); } catch (e) { /* 忽略 */ }
+                    for (const ln of lanes) {
+                        const pool = (ln && typeof ln.zombiePool === 'function') ? (ln.zombiePool() || []) : [];
+                        for (const z of pool) {
+                            try {
+                                if (!z) continue;
+                                const br = z.bodyRecReal || z.bodyRec;
+                                if (!br || !mrect.judgeCrossRec(br)) continue;
+                                let dup = false;
+                                for (let k = 0; k < markHit.length; k++) { if (markHit[k] === z) { dup = true; break; } }
+                                if (!dup) markHit.push(z);
+                            } catch (e) { /* 单只失败忽略 */ }
+                        }
+                    }
+                }
+            } catch (e) { warn('孢子菇亡语：取标记范围出错', e); }
+
             if (dbgOn(C.debugLog)) {
                 log('孢子菇【亡语】伤害=' + dmg + ' 命中僵尸=' + hit.length + ' 障碍物=' + tombs.length
+                    + ' 标记范围=' + (C.deathMarkRows || 1) + '行×' + (C.deathMarkCols || 3) + '列/' + markHit.length + '只'
                     + ' 格=' + (cell ? (cell.lIndex + ',' + cell.cIndex) : '?')
                     + ' 位置=' + (wp ? ('(' + Math.round(wp.x) + ',' + Math.round(wp.y) + ')') : '?'));
             }
 
             // ★ 立刻跑（与引擎爆裂坚果一致：`inLnC.scheduleOnce(fn)`）
             const fire = function () {
+                // ---- ⓪ 只标记（3 行 × 3 列）：不眩晕、不伤害 ----
+                for (const z of markHit) {
+                    try {
+                        if (!z) continue;
+                        if (z.ImmuneToSporeShroom !== true) z.CarriedSporeShroom = true;
+                    } catch (e) { /* 单只失败忽略 */ }
+                }
                 // ---- ① 先标记 + 眩晕（R3/R4）----
                 for (const z of hit) {
                     try {
@@ -9281,6 +9358,7 @@ export default {
                     { key: 'dandelion', label: '蒲公英' },
                     { key: 'pepperpult', label: '甜椒投手' },
                     { key: 'hurrikale', label: '飓风甘蓝' },
+                    { key: 'kernelpult', label: '玉米投手' },
                     { key: 'phatbeet', label: '魔音甜菜' },
                     { key: 'garlic', label: '大蒜' },
                     { key: 'snowpea', label: '寒冰射手' },
@@ -10157,7 +10235,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l78 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l80 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -10210,6 +10288,7 @@ let ticks = 0;
                 + (CFG.dandelion.pbDriveDropShip ? '/大招驱离运兵艇(' + CFG.dandelion.pbDriveMode + ')' : '') + ')、'
                 + '飓风甘蓝(其他行推力' + Math.round(CFG.hurrikale.otherLanePushScale * 100) + '%'
                 + '/全屏吹飞/特效同行)、'
+                + '玉米投手(黄油落地留油' + CFG.kernelpult.tileLiquidDuration + '秒/大招' + CFG.kernelpult.tileLiquidDurationPlantfood + '秒)、'
                 + '甜椒投手(阳光' + CFG.pepperpult.sunCost + '/冷却' + CFG.pepperpult.packetCooldown
                 + '秒/落点3x3灼烧' + CFG.pepperpult.burnSeconds + '秒/'
                 + (CFG.pepperpult.burnArmorProtection ? '不穿甲' : '穿甲') + ')、'
@@ -10235,7 +10314,8 @@ let ticks = 0;
                 + '流星花(索敌：本行僵尸→全场僵尸→本行障碍/护盾→全场障碍/护盾；第2颗不打歪；纯墓碑场面也开火)、'
                 + '孢子菇(阳光' + CFG.sporeshroom.sunCost + '/血量' + CFG.sporeshroom.toughness
                 + '/亡语' + (CFG.sporeshroom.deathRadiusTiles > 0 ? CFG.sporeshroom.deathRadiusTiles : 3)
-                + '格·伤害=普攻×' + CFG.sporeshroom.deathDamageScale
+                + '格(标记' + (CFG.sporeshroom.deathMarkRows || 1) + '×' + (CFG.sporeshroom.deathMarkCols || 3) + ')'
+                + '·伤害=普攻×' + CFG.sporeshroom.deathDamageScale
                 + '(' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore * CFG.sporeshroom.deathDamageScale)
                 + '·' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore1 * CFG.sporeshroom.deathDamageScale)
                 + '·' + (CFG.sporeshroom.deathDamageByPea.sporeshroom_spore2 * CFG.sporeshroom.deathDamageScale) + ')'
