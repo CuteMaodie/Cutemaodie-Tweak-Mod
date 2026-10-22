@@ -66,6 +66,7 @@ const FEATURES = {
     hurrikale: true,        // 飓风甘蓝：全屏寒风（其他行 50% 推力）+ 全屏吹飞飞行僵尸
     cabbagepult: true,      // 卷心菜投手：子弹首次命中后再**弹跳 1 格**（不索敌；同伤害）+ 阳光 125
     kernelpult: true,       // 玉米投手：黄油**落点留下地面黄油**（与黄油毛茛同款；普通 120 秒 / 大招 150 秒）
+    springbean: true,       // 弹簧豆：群体击退（1×1 全弹）、距离×3、弹起 108、落地 80 穿甲+震动+3×3 眩晕 1.5s+小跳、休息 5s、冷却 15s、阳光 75
     // ↓ 下面这几个以前【忘了登记】：features.json 里写了 false 也不会生效（featOn 找不到这个键 -> 当成开）
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
     garlic: true,           // 大蒜：每口固定伤害 37.5 / 阳光 75 / 冷却 15 秒
@@ -354,6 +355,7 @@ const VANILLA = {
     tallnut: { sunCost: 125, cooldown: 20 },
     cabbagepult: { sunCost: 100 },
     kernelpult: { sunCost: 100 },
+    springbean: { sunCost: 50, cooldown: 10, restTime: 10, knockbackDistance: 1, mintFactor: 5 },
     starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
     noctarine: { sunCost: 150, cooldown: 15 },
     dandelion: { sunCost: 275, cooldown: 15 },
@@ -489,6 +491,36 @@ const CFG = {
         tileLiquidType: 'butter',
         tileLiquidDuration: 120,
         tileLiquidDurationPlantfood: 150,
+        debugLog: false,
+    },
+    springbean: {
+        plantType: 'springbean',
+        // ★ 2026/10/22 用户方案：弹簧豆
+        //   ① 单体 → **群体**：触发框 bounceDetector（1×1）内**所有**可击退僵尸一起弹；
+        //   ② 击退距离 1 → **3 格**（数据 KnockbackDistance；僵尸自身 KnockBackDistanceScale 仍生效）；
+        //      薄荷加成后 **6 格**（MintKnockBackDistanceFactor 改为 2 ⇒ 2×3=6）；
+        //   ③ 弹起高度 27 → **108**（滞空时长仍 0.5 秒 ⇒ 落地更快）；
+        //   ④ 落地：**50 点物理穿甲伤害**（固定值，不吃薄荷）+ 屏幕震动 0.2 +（3×3 眩晕 1 秒 + 原地小跳 1 格）
+        //   ⑤ 休息 10 → **5 秒**；冷却 10 → **15 秒**；阳光 50 → **75**；
+        //   ⑥ 图鉴：介绍改"所有僵尸弹飞"、恢复时间 5、范围 1×1。
+        sunCost: 75,
+        cooldown: 15,
+        restTime: 5,
+        knockbackDistance: 3,
+        mintFactor: 2,               // 薄荷后 = 2 × 3 = 6 格
+        leapHeight: 432,             // 弹起高度（px；原版 27 —— 2026/10/22 三次调整 108 → 324 → 432）
+        leapDuration: 0.9,           // 滞空时长（原版 0.5 → 0.9 秒）
+        leapStun: 0.91,              // 滞空眩晕 = duration + 0.01（引擎行为）
+        landDamage: 50,              // 落地伤害（固定值，不吃薄荷；2026/10/22 用户：80 → 50）
+        landShake: 0.2,              // 屏幕震动时长
+        landShakeCD: 0.1,            // 震动去重窗口（秒；大招全屏落地时防连抖）
+        aoeRadiusCells: 1,           // 落地眩晕半径（1 ⇒ 3×3）
+        aoeStunDuration: 1,          // 3×3 眩晕时长（秒；1.5 → 1）
+        hopCells: 1,                 // 3×3 小跳高度（格）
+        hopDuration: 0.5,            // 小跳滞空时长（0.25 → 0.5；滞空眩晕 = 0.51）
+        landSoundVolume: 1,         // 落地音效音量（0 = 静音）
+        landSoundPrefab: 'resouce_prefabs/PlantsRP',   // 窝瓜音效所在预制体（A 方案：运行时从窝瓜 prefab 取 smashSounds）
+        landSoundNode: 'squashSound',                  // 组件名：窝瓜的音频组件
         debugLog: false,
     },
     tallnut: {
@@ -1085,7 +1117,7 @@ const GPN_ALM_CHANGED = [
     ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
     ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
     ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
-    ['sporeshroom', 'sporeshroom'],
+    ['sporeshroom', 'sporeshroom'], ['springbean', 'springbean'],
 ];
 
 function gpnAlmList() {
@@ -1766,6 +1798,22 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 'Zombies infected by Spore-shroom take ' + CFG.sporeshroom.poisonBonus
                 + 'x damage from the Poison family.');
         }
+          // ---- 弹簧豆：介绍 + 恢复时间 + 范围 ----
+          if (featOn('springbean')) {
+              writeIntro('springbean', '弹簧豆会将接触的所有僵尸弹飞。当附近有水时，将他们弹进水里。',
+                  'Spring Beans bounce back all zombies that get too close. Will bounce them into water if nearby.');
+              const _eSB = findAl('springbean');
+              const _elSB = (_eSB && _eSB.objdata && Array.isArray(_eSB.objdata.Elements)) ? _eSB.objdata.Elements : null;
+              if (_elSB) {
+                  for (const _el of _elSB) {
+                      if (!_el) continue;
+                      if (_el.TYPE === 'DAMAGE') _el.VALUE = CFG.springbean.restTime;          // 「恢复时间」
+                      else if (_el.TYPE === 'AREA' && _el.SORT) { _el.SORT.zh = '本格'; _el.SORT.en = 'This tile'; }
+                  }
+              } else {
+                  warn('图鉴：springbean 的 Elements 取不到（恢复时间/范围没写进去）');
+              }
+          }
     }
     };
 
@@ -1804,6 +1852,13 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             featOn('cabbagepult') ? CFG.cabbagepult.sunCost : VANILLA.cabbagepult.sunCost);
         setField('PlantProps', 'kernelpult', 'SunCost',
             featOn('kernelpult') ? CFG.kernelpult.sunCost : VANILLA.kernelpult.sunCost);
+
+        // ★ 弹簧豆：阳光/冷却/休息/击退距离/薄荷系数（挂 springbean 开关，关掉写回原版）
+        setField('PlantProps', 'springbean', 'SunCost', featOn('springbean') ? CFG.springbean.sunCost : VANILLA.springbean.sunCost);
+        setField('PlantProps', 'springbean', 'Cooldown', featOn('springbean') ? CFG.springbean.cooldown : VANILLA.springbean.cooldown);
+        setField('PlantProps', 'springbean', 'RestTime', featOn('springbean') ? CFG.springbean.restTime : VANILLA.springbean.restTime);
+        setField('PlantProps', 'springbean', 'KnockbackDistance', featOn('springbean') ? CFG.springbean.knockbackDistance : VANILLA.springbean.knockbackDistance);
+        setField('PlantProps', 'springbean', 'MintKnockBackDistanceFactor', featOn('springbean') ? CFG.springbean.mintFactor : VANILLA.springbean.mintFactor);
         // ---- 玉米投手：黄油落点留下「地面黄油」（2026/10/22 用户指定；**数据层**补丁）----
         //   引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
         //     ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
@@ -3899,6 +3954,349 @@ function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
  *   ② 在 `CommonShot.onZombieHit/onTombHit/onPlantHit` 里查标记 ⇒ 用
  *      `lobOneCabbageOnPos` 生成"固定落点"的第二发，并打 done=true。
  * =======================================================================*/
+/* ★ 弹簧豆落地音效：窝瓜 smashSounds 的**模块级**缓存
+ *   来源二选一：① 运行时从 prefab 加载（A）；② 场上种过窝瓜后从其实例 soundRes 捕获（C）。
+ *   注：AudioClip 是运行时对象，不跨进程持久化；同一次游戏会话内有效。 */
+let GPN_SB_SMASH = null, GPN_SB_SMASH_LOADING = false, GPN_SB_SMASH_FAILED = false, GPN_SB_SMASH_FROM = '';
+function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
+    const D = deps || {};
+    const recs = [];
+    if (!SpringBeanPlant || !SpringBeanPlant.prototype
+        || typeof SpringBeanPlant.prototype.dealLeapOnZombie !== 'function'
+        || typeof SpringBeanPlant.prototype.detectBounceEnemy !== 'function') {
+        warn('跳过弹簧豆：拿不到 SpringBeanPlant.dealLeapOnZombie/detectBounceEnemy');
+        return recs;
+    }
+    const dbg = function () { try { return !!(CFG.springbean && CFG.springbean.debugLog); } catch (e) { return false; } };
+    const Vec2 = D.Vec2;
+    const Sq = D.Square;
+    const SW = (Sq && typeof Sq.SquareWidth === 'number') ? Sq.SquareWidth : 68;
+    const SH = (Sq && typeof Sq.SquareHeight === 'number') ? Sq.SquareHeight : 80.77;
+    const LevelPlay = D.LevelPlay;
+    const ZDD = D.ZombieDamageDetails;
+    const ZDT = D.ZombieDamageType;
+    const ST = D.SquareType;                 // 引擎 SquareType 枚举（sea = 3）
+    /* ---- 落地音效（A 方案）：运行时从**窝瓜** prefab 取 `squashSound.smashSounds`，不兜底 ---- */
+    const CC = D.cc;
+    const SND = D.sounds;
+
+    const findSquashComp = function (prefab, compName) {
+        const root = prefab && (prefab.data || prefab);
+        if (!root) return null;
+        const want = String(compName || 'squashSound');
+        const stack = [root];
+        let guard = 0;
+        while (stack.length && guard++ < 5000) {
+            const n = stack.pop();
+            if (!n) continue;
+            try {
+                const c = (typeof n.getComponent === 'function') ? n.getComponent(want) : null;
+                if (c && Array.isArray(c.smashSounds) && c.smashSounds.length) return c;
+            } catch (e) { /* 忽略 */ }
+            try {
+                const ch = n.children || [];
+                for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+            } catch (e) { /* 忽略 */ }
+        }
+        return null;
+    };
+    const loadSquashSounds = function () {
+        if (GPN_SB_SMASH || GPN_SB_SMASH_LOADING || GPN_SB_SMASH_FAILED) return;
+        try {
+            const C = CFG.springbean || {};
+            const res = CC && CC.resources;
+            if (!res || typeof res.load !== 'function') {
+                GPN_SB_SMASH_FAILED = true;
+                warn('弹簧豆落地音效：拿不到 cc.resources（无法加载窝瓜音效）');
+                return;
+            }
+            GPN_SB_SMASH_LOADING = true;
+            const primary = String(C.landSoundPrefab || 'resouce_prefabs/PlantsRP');
+            const paths = [primary, primary + '/Squash', primary + '/squash'];
+            const tryAt = function (idx) {
+                if (idx >= paths.length) {
+                    GPN_SB_SMASH_LOADING = false; GPN_SB_SMASH_FAILED = true;
+                    warn('弹簧豆落地音效：窝瓜音效加载失败（试过 ' + paths.join(' / ') + '；可改 CFG.springbean.landSoundPrefab）');
+                    return;
+                }
+                const p = paths[idx];
+                try {
+                    res.load(p, CC.Prefab, function (err, prefab) {
+                        if (err || !prefab) { tryAt(idx + 1); return; }
+                        const comp = findSquashComp(prefab, C.landSoundNode);
+                        if (comp) {
+                            GPN_SB_SMASH = comp.smashSounds.slice();
+                            GPN_SB_SMASH_FROM = p;
+                            GPN_SB_SMASH_LOADING = false;
+                            log('弹簧豆落地音效：已从「' + p + '」加载窝瓜 smashSounds × ' + GPN_SB_SMASH.length);
+                        } else {
+                            tryAt(idx + 1);
+                        }
+                    });
+                } catch (e) { tryAt(idx + 1); }
+            };
+            tryAt(0);
+        } catch (e) {
+            GPN_SB_SMASH_LOADING = false; GPN_SB_SMASH_FAILED = true;
+            warn('弹簧豆落地音效：加载出错', e);
+        }
+    };
+    const playLandingSound = function () {
+        try {
+            const C = CFG.springbean || {};
+            const vol = (typeof C.landSoundVolume === 'number') ? C.landSoundVolume : 1;
+            if (!(vol > 0)) return;
+            if (!GPN_SB_SMASH) { loadSquashSounds(); return; }
+            if (SND && typeof SND.playArray === 'function') SND.playArray(GPN_SB_SMASH, vol, 0.1);
+            else if (CC && CC.audioEngine && typeof CC.audioEngine.playOneShot === 'function') CC.audioEngine.playOneShot(GPN_SB_SMASH[0], vol);
+            if (dbg()) log('弹簧豆落地音效：播放 smashSounds（' + GPN_SB_SMASH.length + ' 个，音量 ' + vol + '）');
+        } catch (e) { /* 音效失败不影响玩法 */ }
+    };
+
+    /* ---- C 方案：场上种过窝瓜 ⇒ 直接抓其实例的 `soundRes.smashSounds`（最可靠） ---- */
+    const SquashPlantCls = D.SquashPlant;
+    if (SquashPlantCls && SquashPlantCls.prototype && typeof SquashPlantCls.prototype.specialPlantOnEnable === 'function') {
+        const origSquashEnable = SquashPlantCls.prototype.specialPlantOnEnable;
+        SquashPlantCls.prototype.specialPlantOnEnable = function () {
+            try {
+                const sr = this && this.soundRes;
+                if (sr && Array.isArray(sr.smashSounds) && sr.smashSounds.length) {
+                    GPN_SB_SMASH = sr.smashSounds.slice();
+                    const firstCapture = (GPN_SB_SMASH_FROM !== 'squash-instance');
+                    GPN_SB_SMASH_FROM = 'squash-instance';
+                    GPN_SB_SMASH_FAILED = false;
+                    GPN_SB_SMASH_LOADING = false;
+                    if (firstCapture) log('弹簧豆落地音效：已从场上的窝瓜取得 smashSounds × ' + GPN_SB_SMASH.length);
+                }
+            } catch (e) { /* 忽略 */ }
+            return origSquashEnable.apply(this, arguments);
+        };
+        recs.push({ restore: function () { try { SquashPlantCls.prototype.specialPlantOnEnable = origSquashEnable; } catch (e) { /* 忽略 */ } } });
+    } else {
+        warn('弹簧豆：拿不到 SquashPlant.specialPlantOnEnable（种窝瓜也抓不到落地音效）');
+    }
+    /* ---- 屏幕震动（去重窗口：大招全屏落地时防连抖） ---- */
+    let lastShakeAt = 0;
+    const shake = function () {
+        try {
+            const C = CFG.springbean || {};
+            const dur = (typeof C.landShake === 'number') ? C.landShake : 0.2;
+            if (!(dur > 0)) return 'off';
+            if (!LevelPlay || typeof LevelPlay.shakeScreen !== 'function') return 'no LevelPlay';
+            const cd = (typeof C.landShakeCD === 'number') ? C.landShakeCD : 0.1;
+            const now = Date.now();
+            if (now - lastShakeAt < cd * 1000) return 'cd';
+            let hasComp = true;
+            try { hasComp = !!LevelPlay.component; } catch (e) { hasComp = false; }
+            if (!hasComp) return 'no component';
+            lastShakeAt = now;
+            LevelPlay.shakeScreen(dur);
+            return 'ok';
+        } catch (e) { warn('弹簧豆：屏幕震动出错', e); return 'err'; }
+    };
+
+    /* ---- “同一批”击退分组（50 ms 内的击退算一组；落地小跳要排除整组） ---- */
+    let curGroup = null;
+    let lastKnockAt = 0;
+    const joinGroup = function (z) {
+        const now = Date.now();
+        if (!curGroup || now - lastKnockAt > 50) curGroup = { members: [], remain: 0 };
+        lastKnockAt = now;
+        if (curGroup.members.indexOf(z) === -1) curGroup.members.push(z);
+        curGroup.remain += 1;
+        z.__gpnSpringKnock = { group: curGroup, at: now };
+        return curGroup;
+    };
+    const leaveGroup = function (z) {
+        const rec = z && z.__gpnSpringKnock;
+        if (!rec) return;
+        z.__gpnSpringKnock = null;
+        try {
+            if (rec.group) {
+                rec.group.remain -= 1;
+                if (rec.group.remain <= 0) rec.group.members.length = 0;
+            }
+        } catch (e) { /* 忽略 */ }
+    };
+
+    const nums = function () {
+        const C = CFG.springbean || {};
+        const pick = function (k, d) { return (typeof C[k] === 'number' && C[k] > 0) ? C[k] : d; };
+        return {
+            dist: pick('knockbackDistance', 3),
+            mintFactor: pick('mintFactor', 2),
+            leapHeight: pick('leapHeight', 432),
+            leapDur: pick('leapDuration', 0.9),
+            landDamage: pick('landDamage', 50),
+            aoeRadius: pick('aoeRadiusCells', 1),
+            aoeStun: pick('aoeStunDuration', 1),
+            hopCells: pick('hopCells', 1),
+            hopDur: pick('hopDuration', 0.5),
+        };
+    };
+
+    /** 落点是否是「海面」格（海盗港湾等：僵尸被弹进海里直接淹死） */
+    const isSeaLanding = function (z) {
+        try {
+            const sq = z && z.inLnC;
+            if (!sq || typeof sq.getSquareType !== 'function') return false;
+            const tp = sq.getSquareType();
+            if (ST && typeof ST.sea === 'number') return tp === ST.sea;
+            return tp === 3;                        // SquareType: solid 0 / sky 1 / water 2 / sea 3 / deck 4
+        } catch (e) { return false; }
+    };
+
+    /* ---- 落地：50 穿甲伤害 + 屏幕震动 + 3×3 眩晕 1s +（组外）原地小跳 1 格 ---- */
+    const applyLanding = function (z, group) {
+        const N = nums();
+        /* 80 点物理穿甲（固定值，不吃薄荷/伤害倍率；armorProtection=false = 穿甲） */
+        try {
+            if (N.landDamage > 0 && ZDD && ZDT && typeof z.dealDamage === 'function') {
+                z.dealDamage(new ZDD(N.landDamage, false, false, false, null, ZDT.physicle));
+            }
+        } catch (e) { warn('弹簧豆：落地伤害出错', e); }
+        const sh = shake();
+        playLandingSound();
+        try {
+            const lane = z.inLane || null;
+            const laneIdx = (lane && typeof lane.LaneIndex === 'number') ? lane.LaneIndex : -1;
+            const cx = (typeof z.worldPositionX === 'number') ? z.worldPositionX : 0;
+            const lanes = [];
+            for (let k = laneIdx - N.aoeRadius; k <= laneIdx + N.aoeRadius; k++) {
+                let l = null;
+                try { l = (Sq && typeof Sq.getLane === 'function') ? Sq.getLane(k) : null; } catch (e) { l = null; }
+                if (l) lanes.push(l);
+            }
+            if (!lanes.length && lane) lanes.push(lane);
+            const seen = [];
+            let stunned = 0, hopped = 0, skipped = 0;
+            for (const l of lanes) {
+                let pool = [];
+                try { pool = (typeof l.zombiePool === 'function') ? l.zombiePool() : []; } catch (e) { pool = []; }
+                for (const t of pool) {
+                    if (!t || seen.indexOf(t) !== -1) continue;
+                    try { if (typeof t.isAlive === 'function' && !t.isAlive()) continue; } catch (e) { /* 忽略 */ }
+                    const tx = (typeof t.worldPositionX === 'number') ? t.worldPositionX : null;
+                    if (tx === null || Math.abs(tx - cx) > (N.aoeRadius + 0.5) * SW) continue;
+                    seen.push(t);
+                    try { if (typeof t.setStun === 'function') t.setStun(N.aoeStun); } catch (e) { /* 忽略 */ }
+                    stunned++;
+                    const inGroup = (group && group.members.indexOf(t) !== -1) || !!t.__gpnSpringKnock;
+                    if (inGroup) { skipped++; continue; }
+                    try {
+                        if (t.flying || t.changeLaneTween || t.leapHeightTween || !t.leapable) continue;
+                        if (typeof t.specialZombieLeapable === 'function' && !t.specialZombieLeapable()) continue;
+                        if (typeof t.leapBy !== 'function') continue;
+                        t.leapBy(new Vec2(0, 0), true, N.hopDur, N.hopCells * SH, true, false, false, true);
+                        hopped++;
+                    } catch (e) { /* 忽略 */ }
+                }
+            }
+            if (dbg()) {
+                log('[弹簧豆] 落地 伤害=' + N.landDamage + ' 震动=' + sh + ' 3×3 眩晕 ' + stunned + ' 只（' + N.aoeStun + 's）'
+                    + ' 小跳 ' + hopped + ' 只，组内跳过 ' + skipped + ' 只');
+            }
+        } catch (e) { warn('弹簧豆：落地 3×3 出错', e); }
+    };
+
+    /* ---- 击退（保持海水特判；距离/高度换成新值；成功击退的打组标记） ---- */
+    const origDealLeap = SpringBeanPlant.prototype.dealLeapOnZombie;
+    SpringBeanPlant.prototype.dealLeapOnZombie = function (z) {
+        if (!featOn('springbean')) return origDealLeap.apply(this, arguments);
+        try {
+            if (!z || !z.leapable) return;
+            const lane = z.inLane;
+            const laneIsSea = !!(lane && lane.isSea);
+            const cIndex = (z.inLnC && typeof z.inLnC.cIndex === 'number') ? z.inLnC.cIndex : -1;
+            const N = nums();
+            /* ★ 弹入海里：高度/时长/滞空眩晕**对齐新值**；但**不 joinGroup**
+             *   ⇒ 不结算落地伤害/3×3/震动（入海本就是秒杀，用户 2026/10/22）。 */
+            if (!laneIsSea && cIndex >= 4 && lane && lane.UpperLane && lane.UpperLane.isSea) {
+                z.leapBy(new Vec2(1, -1), true, N.leapDur, N.leapHeight, true, true);
+                if (dbg()) log('[弹簧豆] 弹入海面（上）高 ' + N.leapHeight + 'px / ' + N.leapDur + 's（不结算落地）');
+                return;
+            }
+            if (!laneIsSea && cIndex >= 4 && lane && lane.LowerLane && lane.LowerLane.isSea) {
+                z.leapBy(new Vec2(1, 1), true, N.leapDur, N.leapHeight, true, true);
+                if (dbg()) log('[弹簧豆] 弹入海面（下）高 ' + N.leapHeight + 'px / ' + N.leapDur + 's（不结算落地）');
+                return;
+            }
+            const a = this.MintBoosted ? N.mintFactor : 1;
+            joinGroup(z);
+            z.leapBy(new Vec2(a * N.dist, 0), true, N.leapDur, N.leapHeight, true, true);
+            if (dbg()) log('[弹簧豆] 击退 ' + Math.round(a * N.dist) + ' 格 / 高 ' + N.leapHeight + 'px / ' + N.leapDur + 's（滞空眩晕 ' + (N.leapDur + 0.01) + 's）');
+        } catch (e) { warn('弹簧豆：击退出错', e); }
+    };
+    recs.push({ restore: function () { try { SpringBeanPlant.prototype.dealLeapOnZombie = origDealLeap; } catch (e) { /* 忽略 */ } } });
+
+    /* ---- 群体：触发框（1×1）内的所有可击退僵尸一起弹 ---- */
+    const origDetectBounce = SpringBeanPlant.prototype.detectBounceEnemy;
+    SpringBeanPlant.prototype.detectBounceEnemy = function () {
+        if (!featOn('springbean')) return origDetectBounce.apply(this, arguments);
+        try {
+            const self = this;
+            const lane = self.inLane;
+            const detector = self.bounceDetector;
+            if (!lane || !detector || typeof detector.judgeCrossRec !== 'function') return origDetectBounce.apply(this, arguments);
+            const list = [];
+            let pool = [];
+            try { pool = (typeof lane.zombiePool === 'function') ? lane.zombiePool() : []; } catch (e) { pool = []; }
+            for (const z of pool) {
+                if (!z || z.flying || !z.leapable || z.changeLaneTween) continue;
+                try { if (z.bodyRec && z.bodyRec.judgeCrossRec(detector)) list.push(z); } catch (e) { /* 忽略 */ }
+            }
+            if (!list.length) return false;
+            for (const z of list) { try { self.dealLeapOnZombie(z); } catch (e) { /* 忽略 */ } }
+            try { self.bounce(); } catch (e) { /* 忽略 */ }
+            if (dbg()) log('[弹簧豆] 群体击退：1×1 触发框内 ' + list.length + ' 只');
+            return true;
+        } catch (e) { return origDetectBounce.apply(this, arguments); }
+    };
+    recs.push({ restore: function () { try { SpringBeanPlant.prototype.detectBounceEnemy = origDetectBounce; } catch (e) { /* 忽略 */ } } });
+
+    /* ---- 落地钩子：包 Zombie.onLeapEnd（伞叶反弹 ⇒ 本次不结算） ---- */
+    if (Zombie && Zombie.prototype && typeof Zombie.prototype.onLeapEnd === 'function') {
+        const origLeapEnd = Zombie.prototype.onLeapEnd;
+        Zombie.prototype.onLeapEnd = function (t) {
+            const rec = this ? this.__gpnSpringKnock : null;
+            const hadTween = this ? this.leapHeightTween : null;
+            const ret = origLeapEnd.apply(this, arguments);
+            if (!rec) return ret;
+            if (!featOn('springbean')) { leaveGroup(this); return ret; }
+            try {
+                /* 伞叶反弹：原 onLeapEnd 里会再 leapBy ⇒ 新的 leapHeightTween 已启动 ⇒ 这次不算落地 */
+                if (this.leapHeightTween && this.leapHeightTween !== hadTween) {
+                    leaveGroup(this);
+                    if (dbg()) log('[弹簧豆] 落地被伞叶反弹 ⇒ 不结算');
+                    return ret;
+                }
+            } catch (e) { /* 忽略 */ }
+            /* ★ 以下情况不结算落地效果（用户 2026/10/22 补充）：
+             *   ① 滞空时被三叶草 / 飓风甘蓝吹走（已死 / blew）
+             *   ② 落点正好是海面格（入海即秒杀） */
+            let skipReason = null;
+            try {
+                if (typeof this.isAlive === 'function' && !this.isAlive()) skipReason = 'notAlive';
+                else if (this.blew) skipReason = 'blown';
+                else if (isSeaLanding(this)) skipReason = 'sea';
+            } catch (e) { /* 忽略 */ }
+            if (skipReason) {
+                leaveGroup(this);
+                if (dbg()) log('[弹簧豆] 落地跳过（' + skipReason + '）：不结算伤害/震动/3×3/小跳');
+                return ret;
+            }
+            applyLanding(this, rec.group);
+            leaveGroup(this);
+            return ret;
+        };
+        recs.push({ restore: function () { try { Zombie.prototype.onLeapEnd = origLeapEnd; } catch (e) { /* 忽略 */ } } });
+    } else {
+        warn('弹簧豆：拿不到 Zombie.onLeapEnd（落地伤害/眩晕不会生效）');
+    }
+
+    log('[弹簧豆] 补丁已装（群体击退 / 弹起 ' + CFG.springbean.leapHeight + 'px / 落地 ' + CFG.springbean.landDamage + ' 穿甲 + 震动 + 3×3 眩晕 ' + CFG.springbean.aoeStunDuration + 's + 休息 ' + CFG.springbean.restTime + 's，' + recs.length + ' 个钩子）');
+    return recs;
+}
 function makeCabbagePultPatch(CommonShot, deps) {
     const D = deps || {};
     const recs = [];
@@ -9332,6 +9730,7 @@ export default {
     _sporeCfg: () => CFG.sporeshroom,
     _cabbageCfg: () => CFG.cabbagepult,
     _cabbagePultPatch: makeCabbagePultPatch,           // 孢子菇配置（自检核对数值）
+    _springCfg: () => CFG.springbean,     _springPatch: makeSpringBeanPatch,
     // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
     _sporePoisonPatch: makeSporePoisonBonusPatch,   // ×1.5 补丁工厂
     _sporeMult: gpnSporeMult,                       // 倍率（从 CFG 现算）
@@ -9472,6 +9871,8 @@ export default {
             'chunks:///_virtual/levelController.ts',   // 52（`LevelPlay.shakeScreen(duration)`：**屏幕震动**的原版入口，
                                                        //     流星花的流星子弹 / 黑暗巨人攻击都是调它；幅度固定 ±5px、0.2s 一轮）
             'chunks:///_virtual/TallNut.ts',           // 53（高坚果类 `TallNutPlant`：**按类匹配**比按 `Plant_Type` 字符串稳；
+            'chunks:///_virtual/SpringBean.ts',        // 54（弹簧豆 SpringBean：群体击退/休息/落地效果都在它自己的方法上改）
+            'chunks:///_virtual/Squash.ts',            // 55（窝瓜：只为让 squashSound 组件类注册，运行时从窝瓜 prefab 取 smashSounds 当落地音效）
                                                        //     ⚠️ `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
@@ -9500,7 +9901,7 @@ export default {
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
-                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53];
+                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53], springBeanMod = mods[54], squashMod = mods[55];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -9591,6 +9992,7 @@ export default {
                     { key: 'hurrikale', label: '飓风甘蓝' },
                     { key: 'cabbagepult', label: '卷心菜投手' },
                     { key: 'kernelpult', label: '玉米投手' },
+                    { key: 'springbean', label: '弹簧豆' },
                     { key: 'phatbeet', label: '魔音甜菜' },
                     { key: 'garlic', label: '大蒜' },
                     { key: 'snowpea', label: '寒冰射手' },
@@ -10462,6 +10864,25 @@ let ticks = 0;
                     });
                 if (cabRecs && cabRecs.length) recs.push.apply(recs, cabRecs);
             }
+
+            // ---- 弹簧豆：群体击退 / 距离×3 / 弹起 108 / 落地 80 穿甲+震动+3×3 眩晕+小跳 / 休息 5s / 冷却 15s / 阳光 75 ----
+            {
+                const springRecs = makeSpringBeanPatch(
+                    springBeanMod && springBeanMod.SpringBean,
+                    zombieMod && zombieMod.Zombie,
+                    {
+                        Vec2: ccMod && ccMod.Vec2,
+                        Square: squareMod && squareMod.Square,
+                        LevelPlay: levelMod && levelMod.LevelPlay,
+                        ZombieDamageDetails: charMgrMod && charMgrMod.ZombieDamageDetails,
+                        ZombieDamageType: charMgrMod && charMgrMod.ZombieDamageType,
+                        SquareType: squareMod && squareMod.SquareType,
+                        cc: ccMod,
+                        sounds: soundMod && soundMod.sounds,
+                        SquashPlant: squashMod && squashMod.SquashPlant,
+                    });
+                if (springRecs && springRecs.length) recs.push.apply(recs, springRecs);
+            }
             }
 
             {
@@ -10479,7 +10900,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l90 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l98 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -10533,6 +10954,7 @@ let ticks = 0;
                 + '飓风甘蓝(其他行推力' + Math.round(CFG.hurrikale.otherLanePushScale * 100) + '%'
                 + '/全屏吹飞/特效同行)、'
                 + '玉米投手(黄油落地留油' + CFG.kernelpult.tileLiquidDuration + '秒/大招' + CFG.kernelpult.tileLiquidDurationPlantfood + '秒)、'
+                + '弹簧豆(群体击退/距离×' + CFG.springbean.knockbackDistance + '格·薄荷' + (CFG.springbean.knockbackDistance * CFG.springbean.mintFactor) + '格/弹起' + CFG.springbean.leapHeight + 'px/落地' + CFG.springbean.landDamage + '穿甲+3×3眩晕' + CFG.springbean.aoeStunDuration + '秒/休息' + CFG.springbean.restTime + '秒/冷却' + CFG.springbean.cooldown + '秒/阳光' + CFG.springbean.sunCost + ')、'
                 + '卷心菜投手(子弹首次命中再弹' + CFG.cabbagepult.bounceCells + '格/同伤害/阳光' + CFG.cabbagepult.sunCost + ')、'
                 + '甜椒投手(阳光' + CFG.pepperpult.sunCost + '/冷却' + CFG.pepperpult.packetCooldown
                 + '秒/落点3x3灼烧' + CFG.pepperpult.burnSeconds + '秒/'
@@ -10590,4 +11012,3 @@ let ticks = 0;
         });
     },
 };
-

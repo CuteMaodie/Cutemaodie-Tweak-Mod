@@ -4,7 +4,7 @@
   "uuid": "ab6c0b16-3c3e-4749-9cf2-3110ab32eb10",
   "priority": 100,
   "author": "CuteMaodie",
-  "description": "27 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 / 流星花 / 孢子菇 / 玉米投手 / 卷心菜投手 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧、亡语感染。",
+  "description": "28 项可逐项开关的杂项调整：巴豆 / 钢地刺 / 心蕊 / 暗影龙葵 / 星星果系 / 寒冰射手 / 红针花 / 暗影夏威夷果 / 裂荚射手 / 流星花 / 孢子菇 / 玉米投手 / 卷心菜投手 / 弹簧豆 等；含穿透与溅射、A2 追击、毒气、召唤权重、落点灼烧、亡语感染。",
   "packFormatVersion": 1,
   "minGpNextVersion": "1.4.6",
   "_字段说明": "版本字段按『新旧并存』写，只为了在不改任何字段的前提下兼容两代 GP-Next。① 旧字段 formatversion / gameversion / gpNextVersion 是 0.14.0 时代（GP-Next 1.4.6）的写法 —— 同代参考模组 Vanilla Enhance Mod 用的也是这三个，我们照抄；② 新字段 packFormatVersion / minGpNextVersion 是官方指南（GP-Next 1.5.x / 游戏 0.15.0 起）的写法；③ ⚠️ 按官方文档：清单里只要存在 gpNextVersion，就忽略 min/max ⇒ 本文件里的 minGpNextVersion 在新版是『不生效』的（旧版行为未知、1.4.6 源码未能取得实证）；④ 版本不匹配只会提示『可能不兼容』，不会阻止加载；⑤ ⚠️⚠️ 【js.reloadable 绝对不要加】—— 官方原文是「js.reloadable: false 仅用于同时声明 js.startup: true 的启动模组」；我们不开 startup，加了它 GP-Next 1.5.5 会直接判整包失败：『Non-reloadable JS mods are not supported; setup must be fully disposable』（2026/10/10 实机踩过）。改动此文件前请先读 CTM\\0.14.X\\官方规范审计.md 的 A2 段。⑥ 【name 最终定论 2026/10/13】必须是**普通字符串**。经过：原来写字符串时 1.5.4 会提示『Pack … has no custom name in pack.json』⇒ 我们试过改成多语言对象 {zh, en}（猜测 GP-Next 想要本地化对象）；**结果在 GP-Next 1.5.5 的「数据包」面板里 name 被显示成 `[object Object]`**（面板按字符串渲染对象 ⇒ 直接拼成这个）⇒ **改回纯字符串**（官方指南示例也是字符串），并升版本到 1.1.0。注：1.5.5 下那句『no custom name』警告**没有再出现**（那是 1.5.4 的行为 / 或与新字段写法有关）⇒ 已无需为它做任何妥协。⑦ 【2026/10/16 用户指定】`gpNextVersion` 从 `>=1.0.0` 抬到 **`>=1.5.5`**（`2.0b` 线面向 GP-Next 1.5.x / 游戏 0.15.0）。按官方文档 ④：旧版只会提示『可能不兼容』，**不会阻止加载**；`minGpNextVersion` 仍按 ③ 被忽略（保持 1.4.6 不动）。",
