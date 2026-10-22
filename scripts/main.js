@@ -64,6 +64,7 @@ const FEATURES = {
     dandelion: true,        // 蒲公英：索敌优化 / 额外子弹 / 阳光325 / 对飞行×2+眩晕
     pepperpult: true,       // 甜椒投手：阳光225 / 冷却15秒 / 落点3x3灼烧1秒
     hurrikale: true,        // 飓风甘蓝：全屏寒风（其他行 50% 推力）+ 全屏吹飞飞行僵尸
+    cabbagepult: true,      // 卷心菜投手：子弹首次命中后再**弹跳 1 格**（不索敌；同伤害）+ 阳光 125
     kernelpult: true,       // 玉米投手：黄油**落点留下地面黄油**（与黄油毛茛同款；普通 120 秒 / 大招 150 秒）
     // ↓ 下面这几个以前【忘了登记】：features.json 里写了 false 也不会生效（featOn 找不到这个键 -> 当成开）
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
@@ -351,6 +352,8 @@ const VANILLA = {
     splitpea: { sunCost: 125, cooldown: 5 },
     nightshade: { sunCost: 75, cooldown: 5 },
     tallnut: { sunCost: 125, cooldown: 20 },
+    cabbagepult: { sunCost: 100 },
+    kernelpult: { sunCost: 100 },
     starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
     noctarine: { sunCost: 150, cooldown: 15 },
     dandelion: { sunCost: 275, cooldown: 15 },
@@ -459,8 +462,25 @@ const CFG = {
         buffPrjPath: 'projectiles/BloomingHeart0PRJ',
         debugLog: false,
     },
+    cabbagepult: {
+        plantType: 'cabbagepult',
+        // ★ 2026/10/22 用户指定：卷心菜投手
+        //   ① 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后
+        //      **再弹跳 1 格**：方向 = 子弹当时的**前进方向**（正常向右、反弹后向左）；
+        //      **不索敌**（固定落点 = 命中点 ± bounceCells 格，**允许落在草坪外**）；
+        //   ② 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
+        //   ③ **只弹一次**（第二发不再弹）；炸药桶（ID 17）不触发（与障碍物白名单同口径）；
+        //   ④ 同时把**阳光 100 → 125**。
+        sunCost: 125,
+        bounceCells: 1,
+        bounceGravityScale: 0.7,    // ★ 2026/10/22 用户：普攻弹跳**弧线高度 ≈ 0.7 倍**（保持起始高度不变；靠缩放续飞重力实现）
+        bounceGravityScalePlantfood: 1, // ★ 2026/10/22 用户：**大招**的弹跳弧高恢复 1 倍（普攻为 0.7 倍）
+        blacklistSeconds: 0.5,       // ★ 方案一：首弹命中的目标在 0.5 秒内被检测层排除（同一颗子弹续飞时不会双命中）
+          debugLog: false,  // 发射/命中/弹跳诊断日志（排查时再开）
+    },
     kernelpult: {
         plantType: 'kernelpult',
+        sunCost: 125,                  // ★ 2026/10/22 用户指定：阳光 100 → 125（挂在 kernelpult 开关上）
         // ★ 2026/10/22 用户指定：玉米投手的黄油**落点留下「地面黄油」**（与黄油毛茛同款 TileLiquid `butter`）。
         //   · 普通黄油（30% 替换的那发，弹道 `butter`）：地面黄油 **120 秒**（黄油毛茛普通同为 120）
         //   · 大招黄油（弹道 `butter2`）：地面黄油 **150 秒**（黄油毛茛大招同为 150）
@@ -1779,6 +1799,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         if (featOn('tallnut')) setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
         else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
         setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
+        // ---- 卷心菜投手 / 玉米投手：阳光（2026/10/22 用户指定，各自挂自己的开关）----
+        setField('PlantProps', 'cabbagepult', 'SunCost',
+            featOn('cabbagepult') ? CFG.cabbagepult.sunCost : VANILLA.cabbagepult.sunCost);
+        setField('PlantProps', 'kernelpult', 'SunCost',
+            featOn('kernelpult') ? CFG.kernelpult.sunCost : VANILLA.kernelpult.sunCost);
         // ---- 玉米投手：黄油落点留下「地面黄油」（2026/10/22 用户指定；**数据层**补丁）----
         //   引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
         //     ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
@@ -3858,6 +3883,210 @@ function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
         return [rec, recDie];
     }
     return rec;
+}
+/* =========================================================================
+ * 卷心菜投手：子弹**首次命中后再弹一次**（用户 2026/10/22 指定）
+ *   · 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后，
+ *     向**子弹当时的前进方向**再弹 **1 格**（正常向右、被反弹后向左）；
+ *   · **不索敌**：落点 = 命中点 ± bounceCells 格（允许落在草坪外）；
+ *   · 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
+ *   · **只弹一次**（第二发的标记 done=true；不会链式）；
+ *   · 炸药桶（ID 17）不触发（与 MOD 现有障碍物白名单同口径）；
+ *   · 命中特效/音效 = 引擎原生（同一条弹道类型，照样触发）。
+ *  实现：
+ *   ① 在 `CabbagePultPlant._lobToZombie/_lobToTomb/_lobToPos` 的**返回弹道**上打标记
+ *      （只对 Plant_Type 归一化 = cabbagepult 生效 —— 心蕊等也继承这个类，必须按类型排除）；
+ *   ② 在 `CommonShot.onZombieHit/onTombHit/onPlantHit` 里查标记 ⇒ 用
+ *      `lobOneCabbageOnPos` 生成"固定落点"的第二发，并打 done=true。
+ * =======================================================================*/
+function makeCabbagePultPatch(CommonShot, deps) {
+    const D = deps || {};
+    const recs = [];
+    if (!CommonShot || !CommonShot.prototype) {
+        warn('跳过卷心菜投手：拿不到 commonShot');
+        return recs;
+    }
+    const Pf = D.PrjFunctions;
+    const CABBAGE_TYPES = ['cabbage', 'cabbage1', 'cabbage2', 'cabbage_pf'];
+    const dbg = function () { try { return !!(CFG.cabbagepult && CFG.cabbagepult.debugLog); } catch (e) { return false; } };
+
+    const markShot = function (p, type) {
+        if (!p) return;
+        const set = function (prj) {
+            if (!prj) return;
+            try { prj.__gpnCabbageBounce = { type: type, done: false }; } catch (e) { /* 忽略 */ }
+            if (dbg()) log('[卷心菜] 发射：已标记 类型=' + type + ' vx=' + (prj.linearVelocity && prj.linearVelocity.x));
+        };
+        try {
+            if (typeof p.then === 'function') p.then(set, function (e) { if (dbg()) log('[卷心菜] 发射 promise 失败：' + e); });
+            else set(p);
+        } catch (e) { /* 忽略 */ }
+    };
+
+    /* ★ 打标点：PrjFunctions.lobOneCabbageOnPos（_lobTo* 是 async 且不返回弹道；
+     *   这里是所有投掷的最终出口、且会返回弹道）。按弹道类型过滤（只有卷心菜用 cabbage*）。 */
+    let savedLobPos = null;
+    let savedAcc = null;
+    if (Pf && typeof Pf.lobOneCabbageOnPos === 'function') {
+        savedLobPos = Pf.lobOneCabbageOnPos;
+        Pf.lobOneCabbageOnPos = function (type) {
+            const p = savedLobPos.apply(this, arguments);
+            try {
+                if (featOn('cabbagepult') && CABBAGE_TYPES.indexOf(type) !== -1) markShot(p, type);
+            } catch (e) { /* 忽略 */ }
+            return p;
+        };
+        recs.push({ restore: function () { try { Pf.lobOneCabbageOnPos = savedLobPos; } catch (e) { /* 忽略 */ } } });
+    } else {
+        warn('跳过卷心菜投手：拿不到 PrjFunctions.lobOneCabbageOnPos（弹跳无法打标记）');
+        return recs;
+    }
+    if (typeof Pf.lobOneCabbageOnPosAccCS === 'function') savedAcc = Pf.lobOneCabbageOnPosAccCS;
+    else warn('卷心菜投手：拿不到 lobOneCabbageOnPosAccCS（将退回"新建弹道"模式，视觉会略硬）');
+
+    /** 命中回调里触发一次"同一颗子弹原地续飞"（AKEE 同款） */
+    const bounceFrom = function (shot, target) {
+        const st = shot && shot.__gpnCabbageBounce;
+        if (!st || st.done || !st.type) return;
+        st.done = true;                                  // ★ 先落闸：只会弹一次
+        const C = CFG.cabbagepult || {};
+        const cells = (typeof C.bounceCells === 'number' && C.bounceCells > 0) ? C.bounceCells : 1;
+        const blSec = (typeof C.blacklistSeconds === 'number' && C.blacklistSeconds > 0) ? C.blacklistSeconds : 0.5;
+        const Sq = D.Square;
+        const SW = (Sq && typeof Sq.SquareWidth === 'number') ? Sq.SquareWidth : 68;
+        const Vec2 = D.Vec2;
+        if (!Vec2) { warn('卷心菜弹跳：拿不到 Vec2'); return; }
+        const lane = shot.inLane || null;
+        const vx = (shot.linearVelocity && typeof shot.linearVelocity.x === 'number') ? shot.linearVelocity.x : 0;
+        let dir = (vx < -0.001) ? -1 : 1;                 // 被反射后向左飞 ⇒ 向左弹
+        if (Math.abs(vx) <= 0.001 && D.CharacterType) dir = (shot.enemyType === D.CharacterType.plant) ? -1 : 1;
+        const fromX = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX : 0;
+        const targetX = fromX + dir * cells * SW;         // ★ 落点 = 命中点 ± 1 格（允许出草坪）
+        const targetY = (lane && typeof lane.floorY === 'number') ? lane.floorY : shot.worldPositionY;
+        const layer = (shot.node && shot.node.parent) ? shot.node.parent : (lane && lane.prjLayer);
+        const startPos = shot.worldPosition || { x: fromX, y: targetY };   // ★ 起点 = 命中点（原位置，无瞬移）
+        const height = Math.max(0, (typeof shot.height === 'number') ? shot.height : 0);   // 起始高度**不变**（保持视觉连续）
+        /* ★ 普攻弹道 1/2、大招弹道（cabbage_pf）恢复 1 倍（用户 2026/10/22） */
+        const isPF = (st.type === 'cabbage_pf');
+        const gScale = isPF
+            ? ((typeof C.bounceGravityScalePlantfood === 'number' && C.bounceGravityScalePlantfood > 0) ? C.bounceGravityScalePlantfood : 1)
+            : ((typeof C.bounceGravityScale === 'number' && C.bounceGravityScale > 0) ? C.bounceGravityScale : 0.7);
+        /* ★ 弹起高度由续飞重力决定（弧峰 ∝ 重力）：重力 ×1/2 ⇒ 弧线高度 ≈ 1/2，飞行时间/落点不变 */
+        const grav = ((typeof shot.gravity === 'number' && shot.gravity > 0) ? shot.gravity : 0.4444) * gScale;
+        if (dbg()) {
+            log('[卷心菜弹跳] 类型=' + st.type + ' 方向=' + (dir > 0 ? '右' : '左')
+                + ' 命中x=' + Math.round(fromX) + ' 落点x=' + Math.round(targetX)
+                + ' 目标=' + (target && (target.Zombie_Type || target.Plant_Type || target.ID || '?')));
+        }
+        try {
+            if (savedAcc) {
+                /* ★ 同一颗子弹续飞：位置/高度/重力/节点全不变（无瞬移），落点 ±1 格 */
+                shot.__gpnCabbageSkipPop = true;          // 紧跟其后的引擎 pop() 会被吞掉（不销毁）
+                savedAcc.call(Pf, shot, startPos, height, layer,
+                    new Vec2(targetX, targetY), grav, shot.enemyType, 60, 0, false);
+                shot.targetLocked = null;
+                shot.detectEnemyOn = true;
+                if (target && blSec > 0) {
+                    shot.__gpnCabbageExclude = (shot.__gpnCabbageExclude || []).concat([{ obj: target, until: Date.now() + blSec * 1000 }]);
+                }
+                if (dbg()) log('[卷心菜弹跳] 同一颗续飞（黑名单 ' + blSec + 's 防双命中）');
+            } else {
+                /* 兜底：没有 AccCS ⇒ 新建一颗，出生点仍是**命中点**（不是边缘） */
+                const p = savedLobPos.call(Pf, st.type, startPos, height, layer,
+                    new Vec2(targetX, targetY), grav, shot.enemyType, 60, 0, false, false);
+                const done = function (prj) {
+                    if (!prj) return;
+                    try { prj.__gpnCabbageBounce = { type: st.type, done: true }; } catch (e) { /* 忽略 */ }
+                };
+                try {
+                    if (p && typeof p.then === 'function') p.then(done, function () { });
+                    else done(p);
+                } catch (e) { /* 忽略 */ }
+            }
+        } catch (e) {
+            try { shot.__gpnCabbageSkipPop = false; } catch (e2) { /* 忽略 */ }
+            warn('卷心菜弹跳：续飞/生成第二发出错', e);
+        }
+    };
+
+    /* ★ pop 拦截：续飞后引擎会立刻 pop()，这里**只吞一次**（并补放命中粒子/音效） */
+    const recPop = methodRecord(CommonShot, 'pop');
+    CommonShot.prototype.pop = function () {
+        try {
+            if (this && this.__gpnCabbageSkipPop) {
+                this.__gpnCabbageSkipPop = false;
+                try { if (typeof this.playParticle === 'function') this.playParticle(); } catch (e) { /* 忽略 */ }
+                try { if (typeof this.playPopSound === 'function') this.playPopSound(); } catch (e) { /* 忽略 */ }
+                if (dbg()) log('[卷心菜弹跳] 吞掉一次 pop（继续飞）');
+                return;
+            }
+            if (this) this.__gpnCabbageExclude = null;
+        } catch (e) { /* 忽略 */ }
+        return recPop.original.apply(this, arguments);
+    };
+    recs.push(recPop);
+
+    /* ★ 检测层黑名单：0.5 秒内不把"刚被首弹命中"的目标算进来（也不会因此 pop） */
+    if (typeof CommonShot.prototype.detectEnemyNormal === 'function') {
+        const recDetect = methodRecord(CommonShot, 'detectEnemyNormal');
+        CommonShot.prototype.detectEnemyNormal = function () {
+            let lane = null, excluded = null;
+            try {
+                const self = this;
+                if (featOn('cabbagepult') && self && self.__gpnCabbageExclude && self.__gpnCabbageExclude.length && self.inLane) {
+                    const now = Date.now();
+                    self.__gpnCabbageExclude = self.__gpnCabbageExclude.filter(function (e) { return e && e.until > now; });
+                    const live = [];
+                    for (const e of self.__gpnCabbageExclude) live.push(e.obj);
+                    if (live.length) { lane = self.inLane; excluded = live; }
+                }
+            } catch (e) { /* 忽略 */ }
+            if (!lane || !excluded) return recDetect.original.apply(this, arguments);
+            const saved = {};
+            const shadow = function (name) {
+                if (typeof lane[name] !== 'function') return;
+                saved[name] = lane[name];
+                lane[name] = function () {
+                    const arr = saved[name].apply(lane, arguments);
+                    if (!Array.isArray(arr)) return arr;
+                    return arr.filter(function (x) { return excluded.indexOf(x) === -1; });
+                };
+            };
+            try {
+                shadow('zombiePool'); shadow('hypnoZombiePool'); shadow('plantPool'); shadow('tombPool');
+                return recDetect.original.apply(this, arguments);
+            } finally {
+                const ks = Object.keys(saved);
+                for (let i = 0; i < ks.length; i++) { try { lane[ks[i]] = saved[ks[i]]; } catch (e) { /* 忽略 */ } }
+            }
+        };
+        recs.push(recDetect);
+    }
+
+    const wrapHit = function (name) {
+        if (typeof CommonShot.prototype[name] !== 'function') return;
+        const rec = methodRecord(CommonShot, name);
+        CommonShot.prototype[name] = function (target) {
+            try {
+                if (this && this.__gpnCabbageBounce && dbg()) {
+                    log('[卷心菜] 命中回调 ' + name + ' 标记类型=' + this.__gpnCabbageBounce.type
+                        + ' done=' + this.__gpnCabbageBounce.done + ' vx=' + (this.linearVelocity && this.linearVelocity.x));
+                }
+                if (featOn('cabbagepult') && this && this.__gpnCabbageBounce) {
+                    /* 炸药桶（ID 17）不触发：与 MOD 现有障碍物白名单同口径 */
+                    const skip = (name === 'onTombHit' && target
+                        && typeof gpnMeteorTombIsBlacklisted === 'function'
+                        && gpnMeteorTombIsBlacklisted(target.ID));
+                    if (!skip) bounceFrom(this, target);
+                }
+            } catch (e) { /* 忽略 */ }
+            return rec.original.apply(this, arguments);
+        };
+        recs.push(rec);
+    };
+    wrapHit('onZombieHit'); wrapHit('onTombHit'); wrapHit('onPlantHit');
+    log('[卷心菜投手] 弹跳补丁已装（命中回调 + pop 拦截 + 检测黑名单，共 ' + recs.length + ' 个钩子）');
+    return recs;
 }
 /* =========================================================================
  * 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5
@@ -9100,7 +9329,9 @@ export default {
     _isDropShip: gpnIsDropShip,                 // 运兵艇判定（Zombie_Type 主判据 / instanceof 次判据）
     _dandelionDrive: gpnDandelionDriveDropShips,// 全屏扫池 + 逐只驱离（返回成功次数）
     _sporeFindProp: gpnSporeFindProp,           // prefab 属性挖掘（照抄本 MOD 的 findPropInNode）
-    _sporeCfg: () => CFG.sporeshroom,           // 孢子菇配置（自检核对数值）
+    _sporeCfg: () => CFG.sporeshroom,
+    _cabbageCfg: () => CFG.cabbagepult,
+    _cabbagePultPatch: makeCabbagePultPatch,           // 孢子菇配置（自检核对数值）
     // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
     _sporePoisonPatch: makeSporePoisonBonusPatch,   // ×1.5 补丁工厂
     _sporeMult: gpnSporeMult,                       // 倍率（从 CFG 现算）
@@ -9358,6 +9589,7 @@ export default {
                     { key: 'dandelion', label: '蒲公英' },
                     { key: 'pepperpult', label: '甜椒投手' },
                     { key: 'hurrikale', label: '飓风甘蓝' },
+                    { key: 'cabbagepult', label: '卷心菜投手' },
                     { key: 'kernelpult', label: '玉米投手' },
                     { key: 'phatbeet', label: '魔音甜菜' },
                     { key: 'garlic', label: '大蒜' },
@@ -10218,6 +10450,18 @@ let ticks = 0;
                 }
                 const tall = makeTallnutPatch(wallNutCls, primalMod.PrimalWallNutPlant, tallnutMod && tallnutMod.TallNutPlant);
                 if (tall) { if (Array.isArray(tall)) recs.push.apply(recs, tall); else recs.push(tall); }
+            // ---- 卷心菜投手：子弹首次命中后再弹 1 格（2026/10/22 用户指定）----
+            {
+                const cabRecs = makeCabbagePultPatch(
+                    shotMod && shotMod.commonShot,
+                    {
+                        PrjFunctions: prjMod && prjMod.PrjFunctions,
+                        Vec2: ccMod && ccMod.Vec2,
+                        Square: squareMod && squareMod.Square,
+                        CharacterType: characterMod && characterMod.CharacterType,
+                    });
+                if (cabRecs && cabRecs.length) recs.push.apply(recs, cabRecs);
+            }
             }
 
             {
@@ -10235,7 +10479,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l80 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l90 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -10289,6 +10533,7 @@ let ticks = 0;
                 + '飓风甘蓝(其他行推力' + Math.round(CFG.hurrikale.otherLanePushScale * 100) + '%'
                 + '/全屏吹飞/特效同行)、'
                 + '玉米投手(黄油落地留油' + CFG.kernelpult.tileLiquidDuration + '秒/大招' + CFG.kernelpult.tileLiquidDurationPlantfood + '秒)、'
+                + '卷心菜投手(子弹首次命中再弹' + CFG.cabbagepult.bounceCells + '格/同伤害/阳光' + CFG.cabbagepult.sunCost + ')、'
                 + '甜椒投手(阳光' + CFG.pepperpult.sunCost + '/冷却' + CFG.pepperpult.packetCooldown
                 + '秒/落点3x3灼烧' + CFG.pepperpult.burnSeconds + '秒/'
                 + (CFG.pepperpult.burnArmorProtection ? '不穿甲' : '穿甲') + ')、'
