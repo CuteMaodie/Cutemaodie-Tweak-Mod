@@ -1,42 +1,42 @@
 /**
- * Cutemaodie's Tweak Mod  ——  PvZ2 Gardendless GP-Next JS 模组
+ * Cutemaodie's Tweak Mod —— PvZ2 Gardendless GP-Next JS 模组
  * ==========================================================================
  * 当前包含的调整（这里只列最早几项，完整列表见下方 CFG / features.json）：
- *   1. 巴豆     被啃死时，杀死所有正在啃食它的非机械僵尸（复制 N 份原版击杀）
- *   2. 钢地刺   阳光 250→200；可承受打击次数 3→9；每承受 3 次掉一颗牙
- *   3. 心蕊     攻击的 debuff 由单体改为 1x3（以命中目标为中心，同排左右各一格）
- *   4. 暗影龙葵 阳光 75→125；暗影态攻击一次打中 3 个目标（= 穿透 2 个）+ 飞天豌豆档击退(0.25)
- *   5. 白萝卜   0.00175 秒内只能受到一次伤害（实测等价于「同一帧内只结算一次伤害」）
- *   6. 甜薯     每秒自回血 20 点（吃「受到治疗 ×200%」加成 → 实际 40/秒）
- *              注意：窗口越长 = 挡掉的伤害越多 = 越肉。窗口内被挡下的伤害是【直接消失】的，
- *              所以对「每帧结算的小额啃食伤害」来说，实际 DPS 会乘上 dt/窗口 这个系数。
+ * 1. 巴豆 被啃死时，杀死所有正在啃食它的非机械僵尸（复制 N 份原版击杀）
+ * 2. 钢地刺 阳光 250→200；可承受打击次数 3→9；每承受 3 次掉一颗牙
+ * 3. 心蕊 攻击的 debuff 由单体改为 1x3（以命中目标为中心，同排左右各一格）
+ * 4. 暗影龙葵 阳光 75→125；暗影态攻击一次打中 3 个目标（= 穿透 2 个）+ 飞天豌豆档击退(0.25)
+ * 5. 白萝卜 0.00175 秒内只能受到一次伤害（实测等价于「同一帧内只结算一次伤害」）
+ * 6. 甜薯 每秒自回血 20 点（吃「受到治疗 ×200%」加成 → 实际 40/秒）
+ * 注意：窗口越长 = 挡掉的伤害越多 = 越肉。窗口内被挡下的伤害是【直接消失】的，
+ * 所以对「每帧结算的小额啃食伤害」来说，实际 DPS 会乘上 dt/窗口 这个系数。
  * ==========================================================================
  * 关键实现笔记（踩过的坑）：
  *
  * (A) 数值改动走运行时数据（PvZ2ObjectContainer），并钩住 JSONs.readJsons 再落一次。
  *
  * (B) 弹道私有字段会被引擎丢掉！
- *     commonShot 的 objdata setter 是：
- *         Object.getOwnPropertyNames(this._objdata).forEach(k => o[k] = e[k])
- *     —— 它遍历的是「弹道 props 实例已有的字段名」，只拷贝同名值。
- *     所以自定义的 GPNMaxPierce 传到这一层会被静默丢弃（原版字段
- *     KnockbackDistance 之类则没事）。修法：包一层 setter，在过滤发生前
- *     从原始数据里把私有字段捞到实例上（见 makePiercePatch 的 A 段）。
+ * commonShot 的 objdata setter 是：
+ * Object.getOwnPropertyNames(this._objdata).forEach(k => o[k] = e[k])
+ * —— 它遍历的是「弹道 props 实例已有的字段名」，只拷贝同名值。
+ * 所以自定义的 GPNMaxPierce 传到这一层会被静默丢弃（原版字段
+ * KnockbackDistance 之类则没事）。修法：包一层 setter，在过滤发生前
+ * 从原始数据里把私有字段捞到实例上（见 makePiercePatch 的 A 段）。
  *
  * (D) 甜薯 / 白萝卜的补丁全部挂在【Plant 基类】上，用 this.Plant_Type（codename）判定。
- *     不要挂在 SweetPotatoPlant / TurnipPlant 子类上 —— 一旦预制体挂的类名和预期不一致，
- *     子类原型补丁会静默失效（表现就是「改了但没效果」）。
+ * 不要挂在 SweetPotatoPlant / TurnipPlant 子类上 —— 一旦预制体挂的类名和预期不一致，
+ * 子类原型补丁会静默失效（表现就是「改了但没效果」）。
  *
  * (C) 穿透只对「带 GPNMaxPierce 标记 + 处于暗影态」的弹道生效，绝不碰原版其它炮弹
- *     （原版 A.K.E.E. 数据里也有 MaxHitCount，但引擎根本没读它，拿它当开关会误伤）。
- *     暗影态标记由重写后的 NightShade._shoot 打到弹道上。
+ * （原版 A.K.E.E. 数据里也有 MaxHitCount，但引擎根本没读它，拿它当开关会误伤）。
+ * 暗影态标记由重写后的 NightShade._shoot 打到弹道上。
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
 const MOD_VERSION = '1.2.0';
-/* ★ 实例身份：每次模块被加载都会生成一个新的 ID。
- *   用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
- *   判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
+/* 实例身份：每次模块被加载都会生成一个新的 ID。
+ * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
+ * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
 const GPN_INSTANCE_ID = Math.random().toString(36).slice(2, 8).toUpperCase();
 let gpnApplyCount = 0;                     // 诊断用：apply() 被调用了几次
 try { if (typeof window !== 'undefined' && window) { if (window.__gpnInstances === undefined) window.__gpnInstances = []; window.__gpnInstances.push(GPN_INSTANCE_ID); } } catch (e) { /* 忽略 */ }
@@ -44,8 +44,8 @@ try { if (typeof window !== 'undefined' && window) { if (window.__gpnInstances =
 
 /* =========================================================================
  * 功能开关 —— 从同目录的 features.json 读取
- *   · 改完必须【完全退出游戏再重新启动】才生效（在「模组」页按「保存并应用」没用）
- *   · 读不到 / 解析失败 -> 全部按【开启】处理，绝不让模组挂掉
+ * · 改完必须【完全退出游戏再重新启动】才生效（在「模组」页按「保存并应用」没用）
+ * · 读不到 / 解析失败 -> 全部按【开启】处理，绝不让模组挂掉
  * =======================================================================*/
 const FEATURES = {
     chilibean: true,        // 巴豆：被啃死时杀死所有正在啃它的非机械僵尸
@@ -76,24 +76,24 @@ const FEATURES = {
     splitpea: true,         // 裂荚射手：左键左右翻转 / 前后豌豆对调
     meteorflowerAim: true,  // 流星花：索敌改造（第1颗本行优先/可索障碍与护盾、第2颗不再打歪）；关掉=原版索敌
     sporeshroom: true,      // 孢子菇：亡语（1×3 伤害+感染+0.75s眩晕）／阳光200／血量150／图鉴两条特点；关掉=全回原版
-    // ↓ 诊断日志总开关：★注意★ 它在表里登记成 false —— 日志开关故意和别的开关【反着来】：
-    //   · 只有 features.json 里显式写 true 才开；写 false / 删掉 / 整个文件读不到 ⇒ 一律【关】；
-    //   · 打开后 = 所有"每次触发一条"的诊断日志（各功能的 debugLog）全部回来，方便排查。
+    // ↓ 诊断日志总开关：注意它在表里登记成 false —— 日志开关故意和别的开关【反着来】：
+    // · 只有 features.json 里显式写 true 才开；写 false / 删掉 / 整个文件读不到 ⇒ 一律【关】；
+    // · 打开后 = 所有"每次触发一条"的诊断日志（各功能的 debugLog）全部回来，方便排查。
     verboseLog: false,      // 诊断日志总开关（默认关；排查时把 features.json 里的 verboseLog 改成 true）
 };
 
 /** 【运行期开关表】= 下面导出的 `_features`，**同一个对象**。
- *  · `featOn(...)` 一律**运行期现查**这张表 ⇒ 游戏内配置界面改开关能**立刻生效**（不必退出重进）；
- *  · `featLoad()` 把 features.json 的初值写进它；界面以后写它；
- *  · 之所以不另建一张表：自检（以及将来可能的"重载"）是**改 `_features` 再 setup**，
- *    只有让"导出的开关表" = "内部读的表"，那条链路才成立（曾经另建表导致自检 9 项失败）。 */
+ * · `featOn(...)` 一律**运行期现查**这张表 ⇒ 游戏内配置界面改开关能**立刻生效**（不必退出重进）；
+ * · `featLoad()` 把 features.json 的初值写进它；界面以后写它；
+ * · 之所以不另建一张表：自检（以及将来可能的"重载"）是**改 `_features` 再 setup**，
+ * 只有让"导出的开关表" = "内部读的表"，那条链路才成立（曾经另建表导致自检 9 项失败）。 */
 const FEATURES_LIVE = FEATURES;
 
 /** 只有【显式写了 false】才算关；键不存在 / 不是布尔 -> 按开 */
 function featOn(name) { return FEATURES_LIVE[name] !== false; }
 
 /** 设置一个开关（运行期，立刻生效）；返回是否真的变化了。
- *  这是"游戏内配置界面"写入的入口：改值后调用方按需重新应用数据补丁。 */
+ * 这是"游戏内配置界面"写入的入口：改值后调用方按需重新应用数据补丁。 */
 function featSet(name, on) {
     if (!(name in FEATURES_LIVE)) return false;
     const next = (on !== false);
@@ -106,13 +106,13 @@ function featSet(name, on) {
 
 /* ============================================================================
  * 开关的持久化（GP-Next 官方存储 ctx.storage）
- *   目标：配置界面里改过的开关状态，**退出游戏重进后保留**。
- *   · 只存"布尔开关"（24 个键）；数值仍由代码里的 CFG 决定，不进存储；
- *   · 启动优先级：代码默认 → features.json 的值（老玩家迁移）→ **存储里的值（最高）**；
- *   · 官方 API（逐字核对指南）：
- *       ctx.storage.open({ scope:'global', version:1, defaults, validate }) -> Promise<handle>
- *       handle.read() -> Promise<T> ；handle.update(fn) -> Promise<T>
- *   · 存储不可用（老版本 / 自测环境）⇒ 降级为"仅本次会话有效"，只打一条警告。
+ * 目标：配置界面里改过的开关状态，**退出游戏重进后保留**。
+ * · 只存"布尔开关"（24 个键）；数值仍由代码里的 CFG 决定，不进存储；
+ * · 启动优先级：代码默认 → features.json 的值（老玩家迁移）→ **存储里的值（最高）**；
+ * · 官方 API（逐字核对指南）：
+ * ctx.storage.open({ scope:'global', version:1, defaults, validate }) -> Promise<handle>
+ * handle.read() -> Promise<T> ；handle.update(fn) -> Promise<T>
+ * · 存储不可用（老版本 / 自测环境）⇒ 降级为"仅本次会话有效"，只打一条警告。
  * ========================================================================== */
 const gpnFeatDefaults = {};
 for (const k of Object.keys(FEATURES)) gpnFeatDefaults[k] = FEATURES[k] !== false;
@@ -127,15 +127,15 @@ function gpnFeatSnapshot() {
 }
 
 function gpnFeatValidate(v) {
-    // ★ 宽容校验（实机教训）：原来要求"23 个键全是 boolean"，
-    //   只要存档缺一个键（老版本 / 早期键集）就判**整份无效** ⇒ 引擎静默回落到 defaults（全开）。
-    //   现在只做形状检查，键的补齐与坏值纠正交给 gpnFeatMigrate。
+    // 宽容校验（实机教训）：原来要求"23 个键全是 boolean"，
+    // 只要存档缺一个键（老版本 / 早期键集）就判**整份无效** ⇒ 引擎静默回落到 defaults（全开）。
+    // 现在只做形状检查，键的补齐与坏值纠正交给 gpnFeatMigrate。
     return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
 /** 把任意旧值归一成"完整、键齐全、值为 boolean"的设置表。
- *  逐键合并到 defaults 之上：缺键 ⇒ 用默认值；坏值 ⇒ 用默认值。
- *  （这就是官方说的 migrate："它返回升级后的值，再经 validate 检查"。） */
+ * 逐键合并到 defaults 之上：缺键 ⇒ 用默认值；坏值 ⇒ 用默认值。
+ * （这就是官方说的 migrate："它返回升级后的值，再经 validate 检查"。） */
 function gpnFeatNormalize(v) {
     const out = {};
     const src = (v && typeof v === 'object') ? v : {};
@@ -166,13 +166,13 @@ async function gpnFeatStorageLoad(ctx) {
         }
         gpnFeatStore = await ctx.storage.open({
             scope: 'global',
-            version: 2,                              // ★ 提升到 2：旧存档会走 migrate 补齐缺键
+            version: 2,                              // 提升到 2：旧存档会走 migrate 补齐缺键
             defaults: Object.assign({}, gpnFeatDefaults),
             validate: gpnFeatValidate,
-            migrate: gpnFeatMigrate,                 // ★ 官方 API："增加 version 时用 migrate 处理旧数据"
+            migrate: gpnFeatMigrate,                 // 官方 API："增加 version 时用 migrate 处理旧数据"
         });
         const saved = await gpnFeatStore.read();
-        // ★ 读回后再逐键兜底一次：缺键/坏值一律回落到默认（避免"某个键凭空变开"，实机踩过）
+        // 读回后再逐键兜底一次：缺键/坏值一律回落到默认（避免"某个键凭空变开"，实机踩过）
         const norm = gpnFeatNormalize(saved);
         let applied = 0;
         for (const k of Object.keys(gpnFeatDefaults)) {
@@ -264,8 +264,8 @@ function featReadText(path) {
 }
 
 /** 从自己的调用栈里抠出模组文件夹名（形如 .../packs/<名字>/scripts/main.js）
- *  不用 import.meta.url —— 万一加载器不支持 import.meta，那是【语法错误】，
- *  整个模组都不会加载；而读调用栈是纯运行时行为，读不到就返回 null（走硬编码兜底）。 */
+ * 不用 import.meta.url —— 万一加载器不支持 import.meta，那是【语法错误】，
+ * 整个模组都不会加载；而读调用栈是纯运行时行为，读不到就返回 null（走硬编码兜底）。 */
 function featModName() {
     try {
         const st = String((new Error()).stack || '');
@@ -341,15 +341,15 @@ function featLoad() {
  * 配置区 —— 要调数值只改这里
  * =======================================================================*/
 /** 【原版值表】"关掉开关时写回什么"的**唯一出处**。
- *  来源：`CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`（逐字段核对过）。
- *  为什么要有这张表：开关一旦支持"开/关两种状态"，数据补丁就必须在**关掉时写回原版值**；
- *  若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
+ * 来源：`CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`（逐字段核对过）。
+ * 为什么要有这张表：开关一旦支持"开/关两种状态"，数据补丁就必须在**关掉时写回原版值**；
+ * 若把原版值散落在各处硬编码，极易写错（已经踩过：钢地刺冷却原版是 **5** 秒，曾被误写成 15）。 */
 const VANILLA = {
     spikerock: { sunCost: 250, maxSpike: 3, cooldown: 5 },
     // ↓ 全部来自原始数据 `CTM\原始数据\game-json-0.15.0.zip` 的 `Objects/PlantProps.json`
-    //   （逐字段核对过；并已与用户手工提供的清单交叉验证）
-    //   ⚠️ 注意：这些条目曾在一次 `git checkout e247a7d` 回退中被意外丢掉（导致 VANILLA.nightshade
-    //      为 undefined ⇒ 关掉龙葵时 setup 抛异常）。已按原始数据重新补全。
+    // （逐字段核对过；并已与手工提供的清单交叉验证）
+    // 注意：这些条目曾在一次 `git checkout e247a7d` 回退中被意外丢掉（导致 VANILLA.nightshade
+    // 为 undefined ⇒ 关掉龙葵时 setup 抛异常）。已按原始数据重新补全。
     splitpea: { sunCost: 125, cooldown: 5 },
     nightshade: { sunCost: 75, cooldown: 5 },
     tallnut: { sunCost: 125, cooldown: 20 },
@@ -368,7 +368,7 @@ const VANILLA = {
 
 const CFG = {
     chilibean: {
-        // true  = 每只啃食者都跑一次完整的 chilibeanFart（音效/粒子/范围眩晕叠 N 遍）
+        // true = 每只啃食者都跑一次完整的 chilibeanFart（音效/粒子/范围眩晕叠 N 遍）
         // false = 第一只跑完整流程（视觉只出现一次），其余静默击杀
         fullFartForEveryEater: true,
     },
@@ -392,63 +392,63 @@ const CFG = {
     },
     sporeshroom: {
         plantType: 'sporeshroom',
-        // ---- 数值（用户指定）----
-        sunCost: 175,          // 阳光消耗（原版 150；用户 2026/10/16：200 → **175**）
-        toughness: 100,        // 血量上限（原版 300；用户 2026/10/16：150 → 100）
-        // ---- 亡语（被击败时触发；用户指定）----
-        //   伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查对应弹道的 Damage）
-        //     sporeshroom_spore  -> 50   （1 级普攻）
-        //     sporeshroom_spore1 -> 150
-        //     sporeshroom_spore2 -> 250
-        //   ⚠️ 这 3 个值**只作为兜底**：正常路径是运行期从 ProjectileProps 里读那 3 条弹道的真实 Damage。
+        // ---- 数值 ----
+        sunCost: 175,          // 阳光消耗（原版 150；200 → **175**）
+        toughness: 100,        // 血量上限（原版 300；150 → 100）
+        // ---- 亡语（被击败时触发） ----
+        // 伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查对应弹道的 Damage）
+        // sporeshroom_spore -> 50 （1 级普攻）
+        // sporeshroom_spore1 -> 150
+        // sporeshroom_spore2 -> 250
+        // 这 3 个值**只作为兜底**：正常路径是运行期从 ProjectileProps 里读那 3 条弹道的真实 Damage。
         deathDamageByPea: {
             sporeshroom_spore: 50,
             sporeshroom_spore1: 150,
             sporeshroom_spore2: 250,
         },
         deathDamageFallback: 50,   // 读不到弹道数据时的兜底（= 1 级普攻）
-        //   ⚠️ 上面两张表存的是**普攻攻击力本身**（数据实测 50 / 150 / 250）；
-        //      亡语**实际**伤害 = 它 × `deathDamageScale`（用户 2026/10/16 指定：先 1.25，随后改 **1.35**）。
-        deathDamageScale: 1.35,    // ★ 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 67.5 / 202.5 / 337.5
-        deathStun: 1.5,            // 亡语附带眩晕秒数（用户指定 2026/10/16：0.75 → 1.5）
+        // 上面两张表存的是**普攻攻击力本身**（数据实测 50 / 150 / 250）；
+        // 亡语**实际**伤害 = 它 × `deathDamageScale`（先 1.25，随后改 **1.35**）。
+        deathDamageScale: 1.35,    // 亡语伤害 = 本株普攻攻击力 × 该倍率 ⇒ 67.5 / 202.5 / 337.5
+        deathStun: 1.5,            // 亡语附带眩晕秒数（0.75 → 1.5）
         deathRadiusTiles: 3,       // 亡语**伤害/眩晕/特效/障碍物**的横向格数（1 行 × 3 列，以自身格为中心）
-        // ★ 2026/10/22 用户指定：**施加 `CarriedSporeShroom` 标记**的范围扩到 **3 行 × 3 列**；
-        //    伤害 / 眩晕 / 特效 / 障碍物伤害仍是上面的 1 行 × 3 列（**保持不变**）。
-        //    相邻两行里落在同样 3 列范围内的僵尸：**只标记**（不扣血、不眩晕）⇒ 之后吃毒性家族 ×1.5、可被巴豆屁联动识别。
+        // **施加 `CarriedSporeShroom` 标记**的范围扩到 **3 行 × 3 列**；
+        // 伤害 / 眩晕 / 特效 / 障碍物伤害仍是上面的 1 行 × 3 列（**保持不变**）。
+        // 相邻两行里落在同样 3 列范围内的僵尸：**只标记**（不扣血、不眩晕）⇒ 之后吃毒性家族 ×1.5、可被巴豆屁联动识别。
         deathMarkRows: 3,          // 标记范围：行数（以自身行为中心；1 = 原版单行）
         deathMarkCols: 3,          // 标记范围：列数（以自身格为中心）
-        // ---- 毒性家族 ×1.5（R6/R7，用户指定；直伤 + Dot 都算）----
-        //   判定口径 = `PlantProps[Plant_Type].objdata.Family === 'Poison'`
-        //     （数据实测 Poison 家族共 13 株：poisonpeashooter / poisonpeashooter_mgp /
-        //       bloominghearts / scaredyshroom / fumeshroom / ailmint / puffshroom /
-        //       vamporcini / **chilibean** / marigold_purple / seashroom / **garlic** / sporeshroom）
-        //     **减去** garlic / chilibean（用户指定排除；它们**本来就是** Poison 家族）
-        //     **加上** gloomshroom / shadowshroom（Family 是 Shadow，靠数据判不出来 ⇒ 显式白名单）
-        //   多段叠加 Dot：该帧全部家族 Dot **合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
+        // ---- 毒性家族 ×1.5（R6/R7，直伤 + Dot 都算） ----
+        // 判定口径 = `PlantProps[Plant_Type].objdata.Family === 'Poison'`
+        // （数据实测 Poison 家族共 13 株：poisonpeashooter / poisonpeashooter_mgp /
+        // bloominghearts / scaredyshroom / fumeshroom / ailmint / puffshroom /
+        // vamporcini / **chilibean** / marigold_purple / seashroom / **garlic** / sporeshroom）
+        // **减去** garlic / chilibean（排除；它们**本来就是** Poison 家族）
+        // **加上** gloomshroom / shadowshroom（Family 是 Shadow，靠数据判不出来 ⇒ 显式白名单）
+        // 多段叠加 Dot：该帧全部家族 Dot **合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
         poisonBonus: 1.5,          // 倍率（图鉴第 2 条特点的文案也从这里现算）
-        // ---- 亡语特效（用户指定：暗影豌豆·初档大招子弹的**命中特效**）----
-        //   资源取自 resources bundle 的 `projectiles/PeaShadowPF0PRJ`，
-        //   读它 `commonShot` 组件上的 `PopParticle`（实机实测值 = "ShadowPeaPF0PAR"）。
-        //   ⚠️ 绝不引用用户给的 PTX 贴图；这里只用引擎自己的 prefab。
-        // ---- 巴豆屁联动（§3.80，用户 2026-10-20）----
-        //   S1 阶段只做**只读探针**：verboseLog 打开时打印气体节点结构/轴向/音效计数，不改任何行为。
-        //   S2 做完主体后可以把它设 false（或保留作长期诊断，代价是每只巴豆屁多几行日志）。
-        fartRows: 3,           // ★ 眩晕气体覆盖几行（1 = 原版单行，不放大也不下移；以尸体所在行为中心，实际覆盖 = 2×floor(rows/2)+1 ⇒ 偶数也按奇数算）
-        fartRowScale: 3,       // ★ 气体节点沿 **Y（行高方向）** 放大的倍数（实机探针：行间位移=(0,-81)、节点 angle=0）
-        fartYOffset: -40,      // ★ 气体位置下移量（px）。引擎把气体挂在**僵尸高度**上 ⇒ 原版偏高（像脑袋放屁）；-40 ≈ 半行（81/2）
-        fartDelaySec: 2,       // ★ 与原版同拍：chilibeanFart 后多少秒触发扩行（≈ tween 的 2 秒）
-        // ⚠️ **改色已放弃**（2026-10-20 用户决定）：DragonBones 节点色是乘算、槽色是包装对象且会被动画写回，
-        //    自绘紫气观感不还原 ⇒ 保持原版**绿色**；音量加强也一并放弃（维持原版音量）。
-        //    所以这里**没有** fartColor* / fartVolume 这些项，别再试着加回来。
-        fartShake: 1,          // ★ 放屁时**屏幕震动**时长：**1 秒**（照抄侏罗纪霸王龙 roar 的 LevelPlay.shakeScreen(1)；
-                               //   引擎每 0.2s 一轮递归 ⇒ 1 = 连续抖 5 轮；0 = 关；0.2 = 一轮（流星花流星子弹的默认值））
-        fartShakeCD: 0.15,     // ★ 同帧多只屁时只抖一次（秒）
-        // ---- 吹退（用户 2026-10-20 定：**沿屁的方向**、1 秒 1 格；飞行僵尸 1 秒 2 格；可叠加；不减速）----
-        fartPushTiles: 1,      //   普通僵尸：共吹退几格（1 秒内推完）
-        fartPushFlyingTiles: 2,//   飞行僵尸（flying===true，与飓风甘蓝同口径）：共吹退几格
-        fartPushDuration: 1,   //   吹退的**总时长**（**固定 1 秒**；叠加不延长时间、只叠加速度）
-        fartPushMaxTiles: 8,   //   叠加**总格数上限**（用户 2026-10-20：最多 8 格）
-        fartPushBlowStacks: 3, //   ★ 正向屁 + 单次吹退内**命中次数≥3** + 飞行僵尸 ⇒ **吹飞**（出场击杀，0 = 关）
+        // ---- 亡语特效（暗影豌豆·初档大招子弹的**命中特效**） ----
+        // 资源取自 resources bundle 的 `projectiles/PeaShadowPF0PRJ`，
+        // 读它 `commonShot` 组件上的 `PopParticle`（实机实测值 = "ShadowPeaPF0PAR"）。
+        // 绝不引用原始数据里的 PTX 贴图；这里只用引擎自己的 prefab。
+        // ---- 巴豆屁联动（§3.80） ----
+        // S1 阶段只做**只读探针**：verboseLog 打开时打印气体节点结构/轴向/音效计数，不改任何行为。
+        // S2 做完主体后可以把它设 false（或保留作长期诊断，代价是每只巴豆屁多几行日志）。
+        fartRows: 3,           // 眩晕气体覆盖几行（1 = 原版单行，不放大也不下移；以尸体所在行为中心，实际覆盖 = 2×floor(rows/2)+1 ⇒ 偶数也按奇数算）
+        fartRowScale: 3,       // 气体节点沿 **Y（行高方向）** 放大的倍数（实机探针：行间位移=(0,-81)、节点 angle=0）
+        fartYOffset: -40,      // 气体位置下移量（px）。引擎把气体挂在**僵尸高度**上 ⇒ 原版偏高（像脑袋放屁）；-40 ≈ 半行（81/2）
+        fartDelaySec: 2,       // 与原版同拍：chilibeanFart 后多少秒触发扩行（≈ tween 的 2 秒）
+        // 改色已放弃：DragonBones 节点色是乘算、槽色是包装对象且会被动画写回，
+        // 自绘紫气观感不还原 ⇒ 保持原版**绿色**；音量加强也一并放弃（维持原版音量）。
+        // 所以这里**没有** fartColor* / fartVolume 这些项，别再试着加回来。
+        fartShake: 1,          // 放屁时**屏幕震动**时长：**1 秒**（照抄侏罗纪霸王龙 roar 的 LevelPlay.shakeScreen(1)；
+                               // 引擎每 0.2s 一轮递归 ⇒ 1 = 连续抖 5 轮；0 = 关；0.2 = 一轮（流星花流星子弹的默认值））
+        fartShakeCD: 0.15,     // 同帧多只屁时只抖一次（秒）
+        // ---- 吹退（**沿屁的方向**、1 秒 1 格；飞行僵尸 1 秒 2 格；可叠加；不减速） ----
+        fartPushTiles: 1,      // 普通僵尸：共吹退几格（1 秒内推完）
+        fartPushFlyingTiles: 2,// 飞行僵尸（flying===true，与飓风甘蓝同口径）：共吹退几格
+        fartPushDuration: 1,   // 吹退的**总时长**（**固定 1 秒**；叠加不延长时间、只叠加速度）
+        fartPushMaxTiles: 8,   // 叠加**总格数上限**（最多 8 格）
+        fartPushBlowStacks: 3, // 正向屁 + 单次吹退内**命中次数≥3** + 飞行僵尸 ⇒ **吹飞**（出场击杀，0 = 关）
         fartDebugLog: false,   // 每次联动打一条日志（排查用；正式使用保持 false）
         probeFart: false,      // 只读探针（诊断用；正式使用保持 false，排查时再开）
         fxPrjPath: 'projectiles/PeaShadowPF0PRJ',
@@ -466,28 +466,28 @@ const CFG = {
     },
     cabbagepult: {
         plantType: 'cabbagepult',
-        // ★ 2026/10/22 用户指定：卷心菜投手
-        //   ① 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后
-        //      **再弹跳 1 格**：方向 = 子弹当时的**前进方向**（正常向右、反弹后向左）；
-        //      **不索敌**（固定落点 = 命中点 ± bounceCells 格，**允许落在草坪外**）；
-        //   ② 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
-        //   ③ **只弹一次**（第二发不再弹）；炸药桶（ID 17）不触发（与障碍物白名单同口径）；
-        //   ④ 同时把**阳光 100 → 125**。
+        // 卷心菜投手
+        // ① 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后
+        // **再弹跳 1 格**：方向 = 子弹当时的**前进方向**（正常向右、反弹后向左）；
+        // **不索敌**（固定落点 = 命中点 ± bounceCells 格，**允许落在草坪外**）；
+        // ② 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
+        // ③ **只弹一次**（第二发不再弹）；炸药桶（ID 17）不触发（与障碍物白名单同口径）；
+        // ④ 同时把**阳光 100 → 125**。
         sunCost: 125,
         bounceCells: 1,
-        bounceGravityScale: 0.7,    // ★ 2026/10/22 用户：普攻弹跳**弧线高度 ≈ 0.7 倍**（保持起始高度不变；靠缩放续飞重力实现）
-        bounceGravityScalePlantfood: 1, // ★ 2026/10/22 用户：**大招**的弹跳弧高恢复 1 倍（普攻为 0.7 倍）
-        blacklistSeconds: 0.5,       // ★ 方案一：首弹命中的目标在 0.5 秒内被检测层排除（同一颗子弹续飞时不会双命中）
+        bounceGravityScale: 0.7,    // 普攻弹跳**弧线高度 ≈ 0.7 倍**（保持起始高度不变；靠缩放续飞重力实现）
+        bounceGravityScalePlantfood: 1, // **大招**的弹跳弧高恢复 1 倍（普攻为 0.7 倍）
+        blacklistSeconds: 0.5,       // 首弹命中的目标在 0.5 秒内被检测层排除（同一颗子弹续飞时不会双命中）
           debugLog: false,  // 发射/命中/弹跳诊断日志（排查时再开）
     },
     kernelpult: {
         plantType: 'kernelpult',
-        sunCost: 125,                  // ★ 2026/10/22 用户指定：阳光 100 → 125（挂在 kernelpult 开关上）
-        // ★ 2026/10/22 用户指定：玉米投手的黄油**落点留下「地面黄油」**（与黄油毛茛同款 TileLiquid `butter`）。
-        //   · 普通黄油（30% 替换的那发，弹道 `butter`）：地面黄油 **120 秒**（黄油毛茛普通同为 120）
-        //   · 大招黄油（弹道 `butter2`）：地面黄油 **150 秒**（黄油毛茛大招同为 150）
-        //   · 地面黄油行为由引擎 `ButterTileLiquid` 决定：本行**最左一只**踩到的非飞行僵尸再被定 **8 秒**，然后黄油消失；
-        //   · **伤害/眩晕数值都不改**：黄油仍是 60 伤害 / 8 秒眩晕，大招 butter2 仍是 200 伤害 / 8 秒眩晕。
+        sunCost: 125,                  // 阳光 100 → 125（挂在 kernelpult 开关上）
+        // 玉米投手的黄油**落点留下「地面黄油」**（与黄油毛茛同款 TileLiquid `butter`）。
+        // · 普通黄油（30% 替换的那发，弹道 `butter`）：地面黄油 **120 秒**（黄油毛茛普通同为 120）
+        // · 大招黄油（弹道 `butter2`）：地面黄油 **150 秒**（黄油毛茛大招同为 150）
+        // · 地面黄油行为由引擎 `ButterTileLiquid` 决定：本行**最左一只**踩到的非飞行僵尸再被定 **8 秒**，然后黄油消失；
+        // · **伤害/眩晕数值都不改**：黄油仍是 60 伤害 / 8 秒眩晕，大招 butter2 仍是 200 伤害 / 8 秒眩晕。
         tileLiquidType: 'butter',
         tileLiquidDuration: 120,
         tileLiquidDurationPlantfood: 150,
@@ -495,31 +495,32 @@ const CFG = {
     },
     springbean: {
         plantType: 'springbean',
-        // ★ 2026/10/22 用户方案：弹簧豆
-        //   ① 单体 → **群体**：触发框 bounceDetector（1×1）内**所有**可击退僵尸一起弹；
-        //   ② 击退距离 1 → **3 格**（数据 KnockbackDistance；僵尸自身 KnockBackDistanceScale 仍生效）；
-        //      薄荷加成后 **6 格**（MintKnockBackDistanceFactor 改为 2 ⇒ 2×3=6）；
-        //   ③ 弹起高度 27 → **108**（滞空时长仍 0.5 秒 ⇒ 落地更快）；
-        //   ④ 落地：**50 点物理穿甲伤害**（固定值，不吃薄荷）+ 屏幕震动 0.2 +（3×3 眩晕 1 秒 + 原地小跳 1 格）
-        //   ⑤ 休息 10 → **5 秒**；冷却 10 → **15 秒**；阳光 50 → **75**；
-        //   ⑥ 图鉴：介绍改"所有僵尸弹飞"、恢复时间 5、范围 1×1。
+        // 弹簧豆：单体、击退、落地、休息、图鉴
+        // ① 单体 → **群体**：触发框 bounceDetector（1×1）内**所有**可击退僵尸一起弹；
+        // ② 击退距离 1 → **3 格**（数据 KnockbackDistance；僵尸自身 KnockBackDistanceScale 仍生效）；
+        // 薄荷加成后 **6 格**（MintKnockBackDistanceFactor 改为 2 ⇒ 2×3=6）；
+        // ③ 弹起高度 27 → **432 px**（滞空 0.9 秒）；
+        // ④ 落地：**50 点物理穿甲伤害**（固定值，不吃薄荷）+ 屏幕震动 0.2 +（3×3 眩晕 1 秒 + 原地小跳 1 格）
+        // ⑤ 休息 10 → **5 秒**；冷却 10 → **15 秒**；阳光 50 → **75**；
+        // ⑥ 图鉴：介绍改"所有僵尸弹飞"、恢复时间 5、范围"本格"。
         sunCost: 75,
         cooldown: 15,
         restTime: 5,
         knockbackDistance: 3,
         mintFactor: 2,               // 薄荷后 = 2 × 3 = 6 格
-        leapHeight: 432,             // 弹起高度（px；原版 27 —— 2026/10/22 三次调整 108 → 324 → 432）
+        leapHeight: 432,             // 弹起高度（px；原版 27 —— 三次调整 108 → 324 → 432）
         leapDuration: 0.9,           // 滞空时长（原版 0.5 → 0.9 秒）
         leapStun: 0.91,              // 滞空眩晕 = duration + 0.01（引擎行为）
-        landDamage: 50,              // 落地伤害（固定值，不吃薄荷；2026/10/22 用户：80 → 50）
+        landDamage: 50,              // 落地伤害（固定值，不吃薄荷：80 → 50）
         landShake: 0.2,              // 屏幕震动时长
         landShakeCD: 0.1,            // 震动去重窗口（秒；大招全屏落地时防连抖）
+        landSoundCD: 0.35,           // 落地音效全局最小间隔（秒）；同一批（大招）只播一次
         aoeRadiusCells: 1,           // 落地眩晕半径（1 ⇒ 3×3）
         aoeStunDuration: 1,          // 3×3 眩晕时长（秒；1.5 → 1）
         hopCells: 1,                 // 3×3 小跳高度（格）
         hopDuration: 0.5,            // 小跳滞空时长（0.25 → 0.5；滞空眩晕 = 0.51）
-        landSoundVolume: 1,         // 落地音效音量（0 = 静音）
-        landSoundPrefab: 'resouce_prefabs/PlantsRP',   // 窝瓜音效所在预制体（A 方案：运行时从窝瓜 prefab 取 smashSounds）
+        landSoundVolume: 0.25,      // 落地音效音量（游戏内音效约 0.25；1.0 会响得离谱）
+        landSoundPrefab: 'plants/SquashPLANT',        // 真实路径（F12 assetInfos 实测：plants/SquashPLANT，DIS 是展示用变体）
         landSoundNode: 'squashSound',                  // 组件名：窝瓜的音频组件
         debugLog: false,
     },
@@ -542,9 +543,9 @@ const CFG = {
         // 受伤间隔。注意方向：窗口越长 -> 被挡掉的伤害越多 -> 越肉。
         //
         // 关键分界线是「一帧的时长 dt」（60fps ≈ 0.0167，30fps ≈ 0.033）：
-        //   窗口 <= dt  -> 锁在下一帧开始前就解开了，跨帧伤害一点不丢，
-        //                  但【同一帧内】的多段伤害仍然只会结算第一段（同帧去重）
-        //   窗口 >  dt  -> 会连跨帧的小额伤害一起挡掉，实际 DPS 变成 EatDPS × dt / 窗口
+        // 窗口 <= dt -> 锁在下一帧开始前就解开了，跨帧伤害一点不丢，
+        // 但【同一帧内】的多段伤害仍然只会结算第一段（同帧去重）
+        // 窗口 > dt -> 会连跨帧的小额伤害一起挡掉，实际 DPS 变成 EatDPS × dt / 窗口
         damageGateSeconds: 0.00175,
     },
     sweetpotato: {
@@ -552,75 +553,75 @@ const CFG = {
         selfHealPerSecond: 20,         // 每秒自回血（v2.8.2：10 -> 20）
         healReceivedMultiplier: 2,     // 受到的治疗 ×200%
         // 自回血是否也吃上面这个加成。
-        //   true  -> 每秒回 20 × 2 = 40 点（当前）
-        //   false -> 每秒固定回 20 点
+        // true -> 每秒回 20 × 2 = 40 点（当前）
+        // false -> 每秒固定回 20 点
         selfHealAlsoDoubled: true,
         debugLog: false,                // 打开后每次治疗/自回血都会打日志，用来验证加成有没有生效
     },
     starfruit: {                       // 星星果 / 天使星星果 / 流星果
-        sunCost: 125,                  //   星星果阳光 150 -> 125
-        pinkSunCost: 175,              //   天使星星果阳光（本次调整）
-        shootingSunCost: 550,          //   流星果阳光（原版 500，本次 500→550；550 不是原版）
-        shootingCooldown: 10,          //   流星果种植冷却（= 原版 10 秒；显式写一遍，防被别的 mod 改掉）
-        // ★ 三种星果的【穿透】各拆一份 —— 值 = "一次打中几个目标"，1 = 不穿透（可随时改回）
-        //   规则：小数向下取整；< 1（含 0 / 负数 / 写错）一律按 1 处理（永远不出现 0 个名额）
-        pierceTargets: 2,              //   星星果：一次打中 2 个（= 穿透 1 个）
-        pinkPierceTargets: 2,          //   天使星星果：同上
-        shootingPierceTargets: 2,      //   ★ 流星果：打中 2 个（= 穿透 1 个）；1 = 不穿透
-        splashRatio: 0.2,              //   星星果 / 天使星星果：溅射 = 该发子弹【实际伤害】的 20%（运行时算）
-        splashRatioShooting: 0.4,      //   流星果：溅射单独用 40%（它阳光高，保持强度）
-        splashCells: 1,                //   溅射范围：以命中点为中心 1 格
-        // ---------------- A2 追击攻击 ----------------
+        sunCost: 125,                  // 星星果阳光 150 -> 125
+        pinkSunCost: 175,              // 天使星星果阳光（本次调整）
+        shootingSunCost: 550,          // 流星果阳光（原版 500，本次 500→550；550 不是原版）
+        shootingCooldown: 10,          // 流星果种植冷却（= 原版 10 秒；显式写一遍，防被别的 mod 改掉）
+        // 三种星果的【穿透】各拆一份 —— 值 = "一次打中几个目标"，1 = 不穿透（可随时改回）
+        // 规则：小数向下取整；< 1（含 0 / 负数 / 写错）一律按 1 处理（永远不出现 0 个名额）
+        pierceTargets: 2,              // 星星果：一次打中 2 个（= 穿透 1 个）
+        pinkPierceTargets: 2,          // 天使星星果：同上
+        shootingPierceTargets: 2,      // 流星果：打中 2 个（= 穿透 1 个）；1 = 不穿透
+        splashRatio: 0.2,              // 星星果 / 天使星星果：溅射 = 该发子弹【实际伤害】的 20%（运行时算）
+        splashRatioShooting: 0.4,      // 流星果：溅射单独用 40%（它阳光高，保持强度）
+        splashCells: 1,                // 溅射范围：以命中点为中心 1 格
+        // ---- ---- ---- ---- A2 追击攻击 ---- ---- ---- ----
         // 天使星星果 / 流星果 的子弹打中目标（僵尸或障碍物）时，
         // 所有"能打到那个目标"的【基础星星果】立刻补发一轮 5 方向齐射。
-        followEnabled: true,           //   追击攻击总开关
-        followDamageRatio: 0.50,       //   追击弹伤害 = 基础星星果这一发的伤害 x 50%（运行时算）
-                                       //   （v2.8.3：25% -> 40%；本次：40% -> 50%；lv1 = 20 x 50% = 10）
-        followPierceBonus: 1,          //   追击弹比【星星果普攻】多打中几个目标：
-                                       //   followPierce = 星星果.pierceTargets + 这个值（默认 2+1=3 ⇒ 打中 3 = 穿透 2）
+        followEnabled: true,           // 追击攻击总开关
+        followDamageRatio: 0.50,       // 追击弹伤害 = 基础星星果这一发的伤害 x 50%（运行时算）
+                                       // （v2.8.3：25% -> 40%；本次：40% -> 50%；lv1 = 20 x 50% = 10）
+        followPierceBonus: 1,          // 追击弹比【星星果普攻】多打中几个目标：
+                                       // followPierce = 星星果.pierceTargets + 这个值（默认 2+1=3 ⇒ 打中 3 = 穿透 2）
         // 追击弹自己的溅射比例（和 A1 的 splashRatio 分开）：
-        //   追击弹溅射 = 追击弹伤害 x followSplashRatio = 攻击 x 50% x 40% = 攻击 x 20%
+        // 追击弹溅射 = 追击弹伤害 x followSplashRatio = 攻击 x 50% x 40% = 攻击 x 20%
         followSplashRatio: 0.4,
-        followStun: 0.075,             //   追击弹附带 0.075 秒眩晕（引擎是"取最大值"，所以只会刷新不会叠加）
-        followAnimSpeed: 2,            //   追击时播的 Shoot 动画倍速（想要完整的开火动作）
-        followAnimGuard: 1.0,          //   掐掉"动画自带那一轮齐射"的保护时长（秒）
-        // ---- A2 追击「延迟窗口合并」（独立开关 starfruitFollowMerge）----
-        //   同一株基础星星果在【延迟窗口】内被多次触发 -> 只补一轮 5 方向齐射；
-        //   每颗弹伤害 = followDamageRatio × Σ(各次触发时该株的攻击力)（伤害不缩水）；
-        //   穿透名额 = 追击打中数（= 星果打中数 + followPierceBonus，默认 2+1 = 3 个）；不设上限；大招期间不记录并清空已有记录。
-        followMergeWindow: 0.1,        //   延迟窗口（秒）；0 = 关闭合并（= 每次触发各补一轮的旧行为）
-        followMergeDebugLog: false,    //   打印"并入窗口 / 窗口开火 / 大招丢弃"日志（排查用，默认关）
+        followStun: 0.075,             // 追击弹附带 0.075 秒眩晕（引擎是"取最大值"，所以只会刷新不会叠加）
+        followAnimSpeed: 2,            // 追击时播的 Shoot 动画倍速（想要完整的开火动作）
+        followAnimGuard: 1.0,          // 掐掉"动画自带那一轮齐射"的保护时长（秒）
+        // ---- A2 追击「延迟窗口合并」（独立开关 starfruitFollowMerge） ----
+        // 同一株基础星星果在【延迟窗口】内被多次触发 -> 只补一轮 5 方向齐射；
+        // 每颗弹伤害 = followDamageRatio × Σ(各次触发时该株的攻击力)（伤害不缩水）；
+        // 穿透名额 = 追击打中数（= 星果打中数 + followPierceBonus，默认 2+1 = 3 个）；不设上限；大招期间不记录并清空已有记录。
+        followMergeWindow: 0.1,        // 延迟窗口（秒）；0 = 关闭合并（= 每次触发各补一轮的旧行为）
+        followMergeDebugLog: false,    // 打印"并入窗口 / 窗口开火 / 大招丢弃"日志（排查用，默认关）
         followDebugLog: false,
         debugLog: false,
     },
     noctarine: {                       // 暗影油桃
-        sunCost: 100,                  //   阳光 150 -> 100
-        damageScale: 0.5,              //   数据里 Actions 的爆炸伤害也 ×0.5（例：20 的爆炸伤害会变成 10）
-        normalLifespan: 40,            //   毒气时长 20 -> 40（x2）
-        shadowLifespan: 50,            //   暗影态毒气时长 25 -> 50（x2）
-        normalAttackDamage: 10,        //   毒气伤害 20 -> 10（x0.5）
-        shadowAttackDamage: 15,        //   暗影态毒气伤害 30 -> 15（x0.5）
+        sunCost: 100,                  // 阳光 150 -> 100
+        damageScale: 0.5,              // 数据里 Actions 的爆炸伤害也 ×0.5（例：20 的爆炸伤害会变成 10）
+        normalLifespan: 40,            // 毒气时长 20 -> 40（x2）
+        shadowLifespan: 50,            // 暗影态毒气时长 25 -> 50（x2）
+        normalAttackDamage: 10,        // 毒气伤害 20 -> 10（x0.5）
+        shadowAttackDamage: 15,        // 暗影态毒气伤害 30 -> 15（x0.5）
         debugLog: false,
     },
     pepperpult: {                      // 甜椒投手
-        sunCost: 225,                  //   阳光 200 -> 225
-        packetCooldown: 15,            //   种植冷却 20 -> 15 秒
-        burnSeconds: 1,                //   落点灼烧持续 1 秒
+        sunCost: 225,                  // 阳光 200 -> 225
+        packetCooldown: 15,            // 种植冷却 20 -> 15 秒
+        burnSeconds: 1,                // 落点灼烧持续 1 秒
         // !! 语义（v1.0.0 纠正）：这 40% 是【单次火焰的总伤害】占攻击力的比例，
-        //    不是「每秒 40%」。引擎在有 isDPS 标记时是每帧结算 damage*dt，
-        //    所以代码里要先把【总伤害】算出来，再摊到 burnSeconds 上得到每秒值。
-        //    （当前 burnSeconds = 1，所以数值上恰好等于"每秒也是 40%"，
-        //      但口径必须是"总伤害"，改持续时间时才不会跑偏。）
-        burnTotalRatio: 0.4,           //   单次火焰总伤害 = 攻击力 x 40%（运行时算）
-        burnCells: 3,                  //   灼烧范围：以落点为中心 3x3
-        burnHeight: 15,                //   火焰高度（和柴火藤蔓/火爆辣椒同档）
+        // 不是「每秒 40%」。引擎在有 isDPS 标记时是每帧结算 damage*dt，
+        // 所以代码里要先把【总伤害】算出来，再摊到 burnSeconds 上得到每秒值。
+        // （当前 burnSeconds = 1，所以数值上恰好等于"每秒也是 40%"，
+        // 但口径必须是"总伤害"，改持续时间时才不会跑偏。）
+        burnTotalRatio: 0.4,           // 单次火焰总伤害 = 攻击力 x 40%（运行时算）
+        burnCells: 3,                  // 灼烧范围：以落点为中心 3x3
+        burnHeight: 15,                // 火焰高度（和柴火藤蔓/火爆辣椒同档）
         // 灼烧要不要让护甲正常吸收（注意：引擎里这个字段的语义是「护甲生效」，是正的）
-        //   true  = 不穿甲：先扣护甲，护甲被打穿后【溢出】的那部分才打到本体（和豌豆一样）
-        //   false = 穿甲：无视护甲、直接扣本体（原版火爆辣椒/甜薯/香水菇传的就是 false）
+        // true = 不穿甲：先扣护甲，护甲被打穿后【溢出】的那部分才打到本体（和豌豆一样）
+        // false = 穿甲：无视护甲、直接扣本体（原版火爆辣椒/甜薯/香水菇传的就是 false）
         // 引擎里「火焰陷阱地砖」也是用数据里的 ArmorProtection 逐火配置的，
         // 说明这本来就是「每个火焰自己定」的字段。
         burnArmorProtection: true,
-        debugLog: false,       //  v2.7.1~2.7.3 开一轮：确认灼烧真的触发、真的掉血、且不穿甲（验证通过后就关）
+        debugLog: false,       // v2.7.1~2.7.3 开一轮：确认灼烧真的触发、真的掉血、且不穿甲（验证通过后就关）
     },
     zoybeanpod: {                      // 腐尸豆荚
         // 非大招召唤权重（原版：zoybean 50 / armor1 30 / armor2 20）
@@ -642,84 +643,84 @@ const CFG = {
         debugLog: false,
     },
     dandelion: {                       // 蒲公英
-        sunCost: 325,                  //   种植阳光：原版数据 275 -> 325
-        extraShots: 1,                 //   每次【普攻】额外发射的子弹数
-        extraDelay: 0.4,               //   额外子弹延迟（秒）：0.2 -> 0.4
-        // ---- 对飞行僵尸 / 指定 BOSS 的加成 ----
-        //   ・飞行判据：zombie.flying === true（临时 flying 也算）；BOSS = isBoss
-        //   ・按「被这发子弹伤害到的每一只僵尸」逐个判定（直击 + 爆炸/溅射都算）
-        flyingDamageScale: 2,          //   飞行僵尸伤害倍率
-        flyingStun: 1,                 //   普攻 / 吹风反应弹对飞行僵尸的眩晕（秒）
-        plantfoodFlyingStun: 5,        //   大招弹对飞行僵尸的眩晕（秒）
-        bossDamageScale: 2,            //   指定 BOSS 的伤害倍率（不给眩晕）
+        sunCost: 325,                  // 种植阳光：原版数据 275 -> 325
+        extraShots: 1,                 // 每次【普攻】额外发射的子弹数
+        extraDelay: 0.4,               // 额外子弹延迟（秒）：0.2 -> 0.4
+        // ---- 对飞行僵尸 / BOSS 的加成 ----
+        // ・飞行判据：zombie.flying === true（临时 flying 也算）；BOSS = isBoss
+        // ・按「被这发子弹伤害到的每一只僵尸」逐个判定（直击 + 爆炸/溅射都算）
+        flyingDamageScale: 2,          // 飞行僵尸伤害倍率
+        flyingStun: 1,                 // 普攻 / 吹风反应弹对飞行僵尸的眩晕（秒）
+        plantfoodFlyingStun: 5,        // 大招弹对飞行僵尸的眩晕（秒）
+        bossDamageScale: 2,            // BOSS 的伤害倍率（不给眩晕）
         bossTypes: ['zombossmech_lostcity', 'zombossmech_lostcity2', 'zombossmech_sky'],
-        // ---- ⑨ 大招驱离运兵艇（`sky_dropship`，云端堡垒）—— 用户 2026/10/16 指定：等同电离红掌 ----
-        //   引擎事实（逐字核对，见设计稿 §1.2）：
-        //     · 红掌大招 `foodStrike` = `PlantfoodDamage **1200**` ×（最多）`PlantfoodLightningCount **3**` 的**电伤**，
-        //       直接对 `cm.zombiePool` 里的僵尸 `dealDamage`；
-        //     · `Zombie.defaultDealDamage` **没有** `isRealZombie` 早退（只挡 invincible）⇒ 运兵艇会掉血；
-        //     · 运兵艇 `Toughness` **恰好 1200** ⇒ **一发致死** ⇒ 死亡即"离场"（它掉完小鬼也走 playDie）
-        //       ⇒ **剩余小鬼不再掉**（= 用户实机看到的效果）。
-        //   ⇒ 我们走**同一条**「伤害→死亡」路（含击杀结算），并保留 'leave'（纯离场）作保险。
-        //   ⚠️ 绝不用 `ray` 伤害类型：`defaultDealDamage` 里 `damageType==ray && canPlayAshNow()` ⇒ 化灰，
-        //      化灰**不走**常规离场 ⇒ 观感会变。统一用 `physicle`。
-        pbDriveDropShip: true,         //   大招是否驱离运兵艇（全屏所有）
-        pbDriveMode: 'kill',           //   'kill' = 致死伤害（= 红掌同款，含击杀结算）；'leave' = 只调它自己的 playDie
-        pbDriveDelay: 1,               // ★ 延时秒数（用户 2026/10/16：**1 秒**；最初定 1.5，随即改回 1）—— 让空投动画先落地，再把运兵艇赶走；
-                                       //   0 = 一开大就立刻驱离（旧行为）
-        pbDriveLog: false,             //   每次驱离打一条日志（排查用）
+        // ---- ⑨ 大招驱离运兵艇（`sky_dropship`，云端堡垒）—— 等同电离红掌 ----
+        // 引擎事实（逐字核对，见设计稿 §1.2）：
+        // · 红掌大招 `foodStrike` = `PlantfoodDamage **1200**` ×（最多）`PlantfoodLightningCount **3**` 的**电伤**，
+        // 直接对 `cm.zombiePool` 里的僵尸 `dealDamage`；
+        // · `Zombie.defaultDealDamage` **没有** `isRealZombie` 早退（只挡 invincible）⇒ 运兵艇会掉血；
+        // · 运兵艇 `Toughness` **恰好 1200** ⇒ **一发致死** ⇒ 死亡即"离场"（它掉完小鬼也走 playDie）
+        // ⇒ **剩余小鬼不再掉**（= 实机看到的效果）。
+        // ⇒ 我们走**同一条**「伤害→死亡」路（含击杀结算），并保留 'leave'（纯离场）作保险。
+        // 绝不用 `ray` 伤害类型：`defaultDealDamage` 里 `damageType==ray && canPlayAshNow()` ⇒ 化灰，
+        // 化灰**不走**常规离场 ⇒ 观感会变。统一用 `physicle`。
+        pbDriveDropShip: true,         // 大招是否驱离运兵艇（全屏所有）
+        pbDriveMode: 'kill',           // 'kill' = 致死伤害（= 红掌同款，含击杀结算）；'leave' = 只调它自己的 playDie
+        pbDriveDelay: 1,               // 延时秒数（**1 秒**；最初定 1.5，随即改回 1）—— 让空投动画先落地，再把运兵艇赶走；
+                                       // 0 = 一开大就立刻驱离（旧行为）
+        pbDriveLog: false,             // 每次驱离打一条日志（排查用）
         debugLog: false,
     },
     pushPlant: { skipBlockers: true },   // 被「不可推」的植物挡住时，跳过它继续找空位
     hurrikale: {                       // 飓风甘蓝（全屏寒风）
         plantType: 'hurrikale',
         // ---- ② 其他行推 + 减速 ----
-        otherLanePushScale: 0.5,       //   其他行的【推动力度】= 本行的 50%（= 推速减半）
-        affectAllLanes: true,          //   作用范围：全部行（false = 只 ±2 行）
-        mintScalesOtherLanes: true,    //   薄荷时其他行也跟着 ×2（保持"恰好一半"）
-        // ---- ③④ 全屏风（吹飞飞行僵尸 + 天空之城飞船扣血）----
-        //   直接置引擎自己的 FrontYard.windy —— 就是三叶草用的那面旗，
-        //   所以"吹飞全屏飞行僵尸 / 飞船按 BloverDPS 扣血 / 天空之城推回最右格 / 沙盒正常吹飞"
-        //   全部由引擎自己决定，模组不绕过、不额外处理。
-        shipWindUseBloverDuration: true,   //   B 方案：全屏风时长借【三叶草】的 BlowDuration×薄荷倍率
-        bloverType: 'blover',              //   三叶草的植物别名（用来读数据）
+        otherLanePushScale: 0.5,       // 其他行的【推动力度】= 本行的 50%（= 推速减半）
+        affectAllLanes: true,          // 作用范围：全部行（false = 只 ±2 行）
+        mintScalesOtherLanes: true,    // 薄荷时其他行也跟着 ×2（保持"恰好一半"）
+        // ---- ③④ 全屏风（吹飞飞行僵尸 + 天空之城飞船扣血） ----
+        // 直接置引擎自己的 FrontYard.windy —— 就是三叶草用的那面旗，
+        // 所以"吹飞全屏飞行僵尸 / 飞船按 BloverDPS 扣血 / 天空之城推回最右格 / 沙盒正常吹飞"
+        // 全部由引擎自己决定，模组不绕过、不额外处理。
+        shipWindUseBloverDuration: true,   // 全屏风时长借用三叶草的 BlowDuration × 薄荷倍率
+        bloverType: 'blover',              // 三叶草的植物别名（用来读数据）
         // ---- ⑤ 其他行的寒风特效 ----
-        otherLaneVfx: true,            //   其他行也播同样两个特效（复用植物自己的 prefab）
-        // ---- ⑥ 蒲公英联动（其他行）----
-        //   原版：飓风甘蓝吹风时只让【它自己那一行】随机最多 4 株蒲公英一起吹。
-        //   这里让【其他每一行】也各随机挑最多 N 株一起吹（跟随 affectAllLanes）。
-        //   只调植物自己的 blowStart()，子弹数量/落点/动画全由引擎决定，模组不干预。
-        otherLaneDandelions: 1,        //   其他每一行最多让几株蒲公英吹；0 = 关闭这条
+        otherLaneVfx: true,            // 其他行也播同样两个特效（复用植物自己的 prefab）
+        // ---- ⑥ 蒲公英联动（其他行） ----
+        // 原版：飓风甘蓝吹风时只让【它自己那一行】随机最多 4 株蒲公英一起吹。
+        // 这里让【其他每一行】也各随机挑最多 N 株一起吹（跟随 affectAllLanes）。
+        // 只调植物自己的 blowStart()，子弹数量/落点/动画全由引擎决定，模组不干预。
+        otherLaneDandelions: 1,        // 其他每一行最多让几株蒲公英吹；0 = 关闭这条
         debugLog: false,
     },
     phatbeet: {                        // 魔音甜菜（Phat Beet）
         plantType: 'phatbeet',
-        sunCost: 150,                  //   阳光消耗（已改回原版 150）
+        sunCost: 150,                  // 阳光消耗（已改回原版 150）
         // ---- ① 普攻眩晕 ----
-        normalStun: 0.15,              //   普攻使命中的僵尸眩晕几秒（用户 2026/10/16：0.1 -> 0.15）
-        // ---- ①b 普攻也施加「音乐免疫」（用户 2026/10/16 新增）----
-        //   与下面 ②③⑤ 是**同一套机制**（gpnJamMask + __gpnJamClearCD）：
-        //   普攻命中后，这只僵尸在 N 秒内不吃「魔音舞台（jam）」的任何效果。
-        //   ⚠️ 用 Math.max 合并 ⇒ 普攻**绝不会缩短**大招给的 25 秒。
-        normalJamClearSeconds: 1.25,   //   普攻命中后的音乐免疫秒数（0 = 关掉这条）
-        normalJamFx: true,             // ★ 普攻这 1.25 秒**也铺**⑧命中特效（用户 2026/10/16 要求；纯视觉、零伤害）
-                                       //   false = 只给机制、不铺特效（旧行为）
+        normalStun: 0.15,              // 普攻使命中的僵尸眩晕几秒（0.1 -> 0.15）
+        // ---- ①b 普攻也施加「音乐免疫」（新增） ----
+        // 与下面 ②③⑤ 是**同一套机制**（gpnJamMask + __gpnJamClearCD）：
+        // 普攻命中后，这只僵尸在 N 秒内不吃「魔音舞台（jam）」的任何效果。
+        // 用 Math.max 合并 ⇒ 普攻**绝不会缩短**大招给的 25 秒。
+        normalJamClearSeconds: 1.25,   // 普攻命中后的音乐免疫秒数（0 = 关掉这条）
+        normalJamFx: true,             // 普攻这 1.25 秒**也铺**⑧命中特效（纯视觉、零伤害）
+                                       // false = 只给机制、不铺特效（旧行为）
         // ---- ④ 大招眩晕 + 原地向上击起 ----
-        plantfoodStun: 5,              //   大招使命中的僵尸眩晕几秒（本次 3 -> 5）
-        liftDuration: 0.5,             //   滞空总时长（上抛 + 落回）；必须明显小于 plantfoodStun
-        liftHeight: 40,                //   击起高度（像素；一格 = 80）
-        bossBlocksLift: true,          //   BOSS 不击起（引擎只挡了部分 BOSS 类，所以显式再挡一道）
-        heavyBlocksLift: true,         //   「沉重」不击起（暗物质火龙果的 darkmatter）
-        // ---- ②③⑤ 音响僵尸「安抚」+ 音乐（jam）----
-        clearPlantDebuff: true,        //   普攻(3x3)/大招(5x5) 解除音响僵尸对植物施加的安抚
-        jamClearSeconds: 25,           //   大招让命中僵尸不受音乐影响的时长（本次 16 -> 25）
-        // ---- ⑦⑧ 命中特效（hitPar；纯视觉：不 dealDamage、不碰 health）----
-        clearFx: true,                 //   ⑦ 普攻/大招解除某株植物的安抚时，在该植物脚下放一次命中特效
-        jamFx: true,                   //   ⑧ 大招「解除魔音舞台效果」期间，在被解除的僵尸脚下持续放命中特效
-        jamFxInterval: 0,              //   持续特效的间隔（秒）；0 = 自动读动画时长（无缝接续）
-        jamFxFallback: 0.3,            //   自动读不到时的兜底间隔（秒）
-        jamFxScale: 1,                 //   间隔倍率（>1 更稀、<1 更密）
-        jamFxLiftFollow: true,         //   僵尸被击起滞空时特效跟着抬起来；false = 留在地面
+        plantfoodStun: 5,              // 大招使命中的僵尸眩晕几秒（本次 3 -> 5）
+        liftDuration: 0.5,             // 滞空总时长（上抛 + 落回）；必须明显小于 plantfoodStun
+        liftHeight: 40,                // 击起高度（像素；一格 = 80）
+        bossBlocksLift: true,          // BOSS 不击起（引擎只挡了部分 BOSS 类，所以显式再挡一道）
+        heavyBlocksLift: true,         // 「沉重」不击起（暗物质火龙果的 darkmatter）
+        // ---- ②③⑤ 音响僵尸「安抚」+ 音乐（jam） ----
+        clearPlantDebuff: true,        // 普攻(3x3)/大招(5x5) 解除音响僵尸对植物施加的安抚
+        jamClearSeconds: 25,           // 大招让命中僵尸不受音乐影响的时长（本次 16 -> 25）
+        // ---- ⑦⑧ 命中特效（hitPar；纯视觉：不 dealDamage、不碰 health） ----
+        clearFx: true,                 // ⑦ 普攻/大招解除某株植物的安抚时，在该植物脚下放一次命中特效
+        jamFx: true,                   // ⑧ 大招「解除魔音舞台效果」期间，在被解除的僵尸脚下持续放命中特效
+        jamFxInterval: 0,              // 持续特效的间隔（秒）；0 = 自动读动画时长（无缝接续）
+        jamFxFallback: 0.3,            // 自动读不到时的兜底间隔（秒）
+        jamFxScale: 1,                 // 间隔倍率（>1 更稀、<1 更密）
+        jamFxLiftFollow: true,         // 僵尸被击起滞空时特效跟着抬起来；false = 留在地面
         debugLog: false,
     },
     garlic: {                          // 大蒜（不新增图鉴文本）
@@ -733,7 +734,7 @@ const CFG = {
         peaType: 'pea_snow',
         spikeAlias: 'pea_snow_spike',
         cloneFrom: 'snowdrop_freeze',
-        freezeChance: 0.30,            //   冰锥概率（本次 0.15 -> 0.30；薄荷 ×3 = 90%）
+        freezeChance: 0.30,            // 冰锥概率（本次 0.15 -> 0.30；薄荷 ×3 = 90%）
         mintChanceFactor: 3,
         chillDuration: 10,
         freezeDuration: 6,
@@ -742,28 +743,28 @@ const CFG = {
     },
     redstinger: {                      // 红针花：承伤倍率 + 左键循环切换形态
         plantType: 'redstinger',
-        sunCost: 175,                  //   阳光消耗（原版 150 ⇒ 曾改 200 ⇒ 用户指定改为 **175**）
-        tier1: 0.2,                    //   inArea 1（第 4~6 列）承伤倍率（原 0.3333333）= 80% 减伤
-        tier2: 0.1,                    //   inArea 2（第 7~9 列）承伤倍率（原 0.2）= 90% 减伤
-        knockbackDistance: 0.05,       //   inArea 1 的子弹击退力度（格）—— 走引擎自带的 knockbackDistance（同飞天豌豆/龙葵）
-        clickSwitch: true,             //   左键循环切换形态 0 -> 1 -> 2 -> 0（右键在沙盒有冲突，故用左键）
+        sunCost: 175,                  // 阳光消耗（原版 150 ⇒ 曾改 200 ⇒ 改为 **175**）
+        tier1: 0.2,                    // inArea 1（第 4~6 列）承伤倍率（原 0.3333333）= 80% 减伤
+        tier2: 0.1,                    // inArea 2（第 7~9 列）承伤倍率（原 0.2）= 90% 减伤
+        knockbackDistance: 0.05,       // inArea 1 的子弹击退力度（格）—— 走引擎自带的 knockbackDistance（同飞天豌豆/龙葵）
+        clickSwitch: true,             // 左键循环切换形态 0 -> 1 -> 2 -> 0（右键在沙盒有冲突，故用左键）
         debugLog: false,
     },
     murkadamia: {                      // 暗影夏威夷果（MurkadamiaNut / 别名 murkadamia）
         plantType: 'murkadamia',
-        shadowBodyAlpha: 0.5,          //   暗影状态下本体的透明度（0.5 = 50%；走主渲染器 color.a）
-        shieldKeepsOpaque: true,       //   盾牌和本体在同一个渲染器上 ⇒ 盾牌在的时候不做半透明
-        hideWhenJellyDown: true,       //   暗影物质被打光（冷却中）才上真隐身；回血后立刻解除
-        jellyBaseHp: 2500,             //   原版暗影物质耐久上限的基础值（兜底 + 启动日志展示用）
-        jellyBonusHp: 2500,            //   暗影物质耐久上限的固定加成（2500 + 2500 = 5000；永久生效）
-        jellyCooldown: 5,              //   暗影物质被打光后的冷却秒数（= 原版值；保留此键便于再调）
-        jellyInitialPct: 0.3,          //   暗影物质出现 / 冷却结束时的初始比例（原版 0.6 ⇒ 本次 0.3 = 5000×30% = 1500）
+        shadowBodyAlpha: 0.5,          // 暗影状态下本体的透明度（0.5 = 50%；走主渲染器 color.a）
+        shieldKeepsOpaque: true,       // 盾牌和本体在同一个渲染器上 ⇒ 盾牌在的时候不做半透明
+        hideWhenJellyDown: true,       // 暗影物质被打光（冷却中）才上真隐身；回血后立刻解除
+        jellyBaseHp: 2500,             // 原版暗影物质耐久上限的基础值（兜底 + 启动日志展示用）
+        jellyBonusHp: 2500,            // 暗影物质耐久上限的固定加成（2500 + 2500 = 5000；永久生效）
+        jellyCooldown: 5,              // 暗影物质被打光后的冷却秒数（= 原版值；保留此键便于再调）
+        jellyInitialPct: 0.3,          // 暗影物质出现 / 冷却结束时的初始比例（原版 0.6 ⇒ 本次 0.3 = 5000×30% = 1500）
         debugLog: false,
     },
     splitpea: {                        // 裂荚射手（SplitPea）
         plantType: 'splitpea',
-        sunCost: 200,                  //   阳光消耗（保持原版 200）
-        clickFlip: true,               //   鼠标左键点它 -> 左右翻转（前后豌豆数跟着对调）
+        sunCost: 200,                  // 阳光消耗（保持原版 200）
+        clickFlip: true,               // 鼠标左键点它 -> 左右翻转（前后豌豆数跟着对调）
         // 图鉴「射速」那行要补的话（中英成对，追加在原文后面）
         extraZh: '。或者向前方两倍，向后方正常',
         extraEn: ' Or double forward, normal backward.',
@@ -805,15 +806,15 @@ function restore(rec) {
 }
 
 /** 植物 codename 标准化：小写 + 去掉非字母数字（心蕊是 bloominghearts 复数，容错用） */
-/** ★★ 硬规则（2026/10/21）：**任何按 Plant_Type 判定植物的代码都必须走这里**。
- *  实机日志证明部分关卡把 `Plant_Type` 设成 `RTID(tallnut@PlantTypes)` 形式（不是裸 codename），
- *  裸 `===` 比较会**静默失效**（高坚果扛砸 / 甜薯治疗·自回血 / 白萝卜闸门 / 心蕊减伤 / 孢子菇毒性家族都踩过）。
- *  新写判定时请：`normalizeType(this.Plant_Type) === normalizeType(CFG.x.plantType)`，并补一条 RTID 形式的自检。 */
+/** 硬规则：**任何按 Plant_Type 判定植物的代码都必须走这里**。
+ * 实机日志证明部分关卡把 `Plant_Type` 设成 `RTID(tallnut@PlantTypes)` 形式（不是裸 codename），
+ * 裸 `===` 比较会**静默失效**（高坚果扛砸 / 甜薯治疗·自回血 / 白萝卜闸门 / 心蕊减伤 / 孢子菇毒性家族都踩过）。
+ * 新写判定时请：`normalizeType(this.Plant_Type) === normalizeType(CFG.x.plantType)`，并补一条 RTID 形式的自检。 */
 function normalizeType(t) {
     if (typeof t !== 'string') return '';
     let s = t.trim();
-    /* ★ 引擎在**部分关卡**把 `Plant_Type` 设成 RTID 形式（实机日志证过：`RTID(tallnut@PlantTypes)`）
-     *   ⇒ 先把里面的 codename 取出来，再做小写/去符号。否则所有按 `Plant_Type` 判定的功能都会静默失效。 */
+    /* 引擎在**部分关卡**把 `Plant_Type` 设成 RTID 形式（实机日志证过：`RTID(tallnut@PlantTypes)`）
+     * ⇒ 先把里面的 codename 取出来，再做小写/去符号。否则所有按 `Plant_Type` 判定的功能都会静默失效。 */
     const m = /^rtid\(([^@)]+)@/i.exec(s) || /^rtid\(([^@)]+)\)/i.exec(s);
     if (m) s = m[1];
     return s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -822,16 +823,16 @@ function normalizeType(t) {
 /** 打补丁前先登记原方法 + 它是不是自有属性 */
 /* ============================================================================
  * 【开关门禁】统一包装器：把"关掉开关 ⇒ 完全不插手"收敛到**这一处**
- *   用法：Cls.prototype.m = gpnGatedBody(original, 'featKey', function () { …补丁体… });
- *   开着 ⇒ 走补丁体；关掉 ⇒ 直接 original.apply ⇒ 与"没打补丁"完全等价
- *   为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
- *   __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
+ * 用法：Cls.prototype.m = gpnGatedBody(original, 'featKey', function () { …补丁体… });
+ * 开着 ⇒ 走补丁体；关掉 ⇒ 直接 original.apply ⇒ 与"没打补丁"完全等价
+ * 为什么要它：上次用"字符串批量替换"给 40+ 处手插判断 ⇒ 破坏控制流 ⇒ 一堆怪 BUG。
+ * __gpnGated 标记防"setup 跑两次 ⇒ 重复包装"。
  * ========================================================================== */
-/* ★ 数据补丁自愈：apply() 返回 false 说明"static 数组还没填充 / 容器还没到位"，每秒重试直到成功。
- *   为什么需要（实机证据）：`PlantProps` 等由 readJsons 填充；实机日志里
- *   `数据已在 readJsons 之后重新应用` 从未出现 ⇒ 我们唯一的那次"补"没发生，
- *   于是 setField 一直空写、数值停留原版（表现为"关掉开关阳光不变"）。
- *   注意：不设硬上限（关卡数据可能是进关卡才加载），但也不会刷屏（只在特定次数打点）。
+/* 数据补丁自愈：apply() 返回 false 说明"static 数组还没填充 / 容器还没到位"，每秒重试直到成功。
+ * 为什么需要（实机证据）：`PlantProps` 等由 readJsons 填充；实机日志里
+ * `数据已在 readJsons 之后重新应用` 从未出现 ⇒ 我们唯一的那次"补"没发生，
+ * 于是 setField 一直空写、数值停留原版（表现为"关掉开关阳光不变"）。
+ * 注意：不设硬上限（关卡数据可能是进关卡才加载），但也不会刷屏（只在特定次数打点）。
  */
 let gpnDataRetryTimer = null;
 let gpnDataRetryCount = 0;
@@ -854,34 +855,34 @@ function gpnStartDataPatchRetry(getPatch) {
     }, 1000);
 }
 const gpnGateStats = { bodies: 0, calls: 0, bypass: 0, reused: 0 };
-/* ★ 注册表：保证"同一个原函数只被包装一次"
- *   为什么需要（实测）：setup 跑 N 次时，第 2 次拿到的 original 是"第 1 次包装后的函数"，
- *   于是又包一层 ⇒ 开着开关时**补丁体会被执行 N 次**（原函数仍只 1 次）。
- *   对"只改状态"的补丁（钢地刺的 spikeLeft、甜薯回血、香水菇层数、红针花形态）就可能出怪现象。
- *   而两次 setup 拿到的 o1 **是同一个函数对象** ⇒ 用 WeakMap 按 identity 缓存即可彻底幂等。
+/* 注册表：保证"同一个原函数只被包装一次"
+ * 为什么需要（实测）：setup 跑 N 次时，第 2 次拿到的 original 是"第 1 次包装后的函数"，
+ * 于是又包一层 ⇒ 开着开关时**补丁体会被执行 N 次**（原函数仍只 1 次）。
+ * 对"只改状态"的补丁（钢地刺的 spikeLeft、甜薯回血、香水菇层数、红针花形态）就可能出怪现象。
+ * 而两次 setup 拿到的 o1 **是同一个函数对象** ⇒ 用 WeakMap 按 identity 缓存即可彻底幂等。
  */
 const gpnGateRegistry = new WeakMap();
-/* ★ 生命周期：模组被停用/重载后置 true。所有"会继续活动"的入口都要检查它，
- *   否则旧运行时会与新运行时并行（实机已复现：开关错乱、保存报 AbortError）。
- *   注意：模块级变量在**同一个模块实例**内共享；GP-NEXT 重新加载会得到新的模块实例，
- *   所以这个标志只用来让"本实例"安静下来，不会影响新实例。 */
+/* 生命周期：模组被停用/重载后置 true。所有"会继续活动"的入口都要检查它，
+ * 否则旧运行时会与新运行时并行（实机已复现：开关错乱、保存报 AbortError）。
+ * 注意：模块级变量在**同一个模块实例**内共享；GP-NEXT 重新加载会得到新的模块实例，
+ * 所以这个标志只用来让"本实例"安静下来，不会影响新实例。 */
 let gpnDisposed = false;
 let gpnCtx = null;                       // setup 的 ctx（配置界面注册 onDispose 时用）
 let gpnDataBox = null;                   // 数据容器（PvZ2ObjectContainer）—— 配置界面打印"数据层现值"用
 let gpnPlantsRef = null;                  // 由 setup 登记：plants 模块（引擎 getPlantProps 在这里）
 
 /* ============================================================================
- * ★ 跨实例"活动令牌"（生命周期核心）
- *   背景（实机证据）：GP-NEXT 的「保存并重载」会**重新求值本模块并重跑 setup()**，
- *   但旧实例的 onDispose **从未被调用** ⇒ 两套逻辑并行，面板/点击互相覆盖。
- *   做法：把"当前活动实例"记在一个**跨模块实例共享**的全局对象上；
- *         每个运行期回调都先问"我还是活动实例吗"，不是就立刻静默。
- *   ⚠️ 不能只依赖 onDispose —— 实机证明它不会来。
+ * 跨实例"活动令牌"（生命周期核心）
+ * 背景（实机证据）：GP-NEXT 的「保存并重载」会**重新求值本模块并重跑 setup()**，
+ * 但旧实例的 onDispose **从未被调用** ⇒ 两套逻辑并行，面板/点击互相覆盖。
+ * 做法：把"当前活动实例"记在一个**跨模块实例共享**的全局对象上；
+ * 每个运行期回调都先问"我还是活动实例吗"，不是就立刻静默。
+ * 不能只依赖 onDispose —— 实机证明它不会来。
  * ========================================================================== */
 const GPN_ACTIVE_KEY = '__GPN_CTM_ACTIVE_V1__';
 /** 跨实例共享的"我方窗体"登记表：键=实例ID，值={ panel, origWin }。
- *  用途：新实例抢占令牌后，把上一个实例**残留的窗体关掉**（否则两个面板叠在同一位置）。
- *  注意窗体会随场景销毁 ⇒ 用之前必须判 isValid。 */
+ * 用途：新实例抢占令牌后，把上一个实例**残留的窗体关掉**（否则两个面板叠在同一位置）。
+ * 注意窗体会随场景销毁 ⇒ 用之前必须判 isValid。 */
 function gpnPanelReg() {
     try {
         const g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
@@ -921,9 +922,9 @@ function gpnGlobalReg() {
 /** 本实例的代次（每个模块实例一个，抢占令牌时分配） */
 let gpnInstanceSeq = 0;
 /** 本实例是否仍是"当前活动实例"（被更高代次的实例顶替 ⇒ 过期 ⇒ 一律静默）
- *  判据用**代次比较**而不是"令牌是否相等"：
- *    · 自检会在同一进程内多次加载模块；若用"相等"判定，旧实例的 cleanup 会被误判成过期。
- *    · 只有"存在代次比我更大的实例"才真的说明我被顶替了。 */
+ * 判据用**代次比较**而不是"令牌是否相等"：
+ * · 自检会在同一进程内多次加载模块；若用"相等"判定，旧实例的 cleanup 会被误判成过期。
+ * · 只有"存在代次比我更大的实例"才真的说明我被顶替了。 */
 function gpnIsActiveInstance() {
     try {
         const r = gpnGlobalReg();
@@ -938,13 +939,13 @@ function gpnClaimInstance() {
         const r = gpnGlobalReg();
         if (!r) return;
         const prev = r.active;
-        // ⚠️ **不要**调用 `r.retired[prev]()`：那个闭包改的是**它自己模块实例**的 `gpnDisposed`。
-        //    自检会在同一进程内反复加载模块，"上一个实例"的模块级变量可能就属于当前实例
-        //    ⇒ 一调用就把自己标成"已销毁"，所有补丁都不装（实测 59 条断言失败）。
-        //    令牌赋值本身就够：旧实例的所有回调都会先查 `gpnIsActiveInstance()` 而静默。
+        // **不要**调用 `r.retired[prev]()`：那个闭包改的是**它自己模块实例**的 `gpnDisposed`。
+        // 自检会在同一进程内反复加载模块，"上一个实例"的模块级变量可能就属于当前实例
+        // ⇒ 一调用就把自己标成"已销毁"，所有补丁都不装（实测 59 条断言失败）。
+        // 令牌赋值本身就够：旧实例的所有回调都会先查 `gpnIsActiveInstance()` 而静默。
         try { delete r.retired[prev]; } catch (e2) { /* 忽略 */ }
         r.active = GPN_INSTANCE_ID;
-        r.seq = (r.seq || 0) + 1;                              // ★ 代次递增
+        r.seq = (r.seq || 0) + 1;                              // 代次递增
         gpnInstanceSeq = r.seq;
         log('[CTM] 活动实例令牌 = ' + GPN_INSTANCE_ID + '（第 ' + gpnInstanceSeq + ' 代，上一个 = ' + (prev || '无') + '）');
     } catch (e) { /* 忽略 */ }
@@ -958,10 +959,10 @@ function gpnRetireSelf() {
 /** 由配置界面块登记：让位时关掉自己的窗体（避免两个面板叠着） */
 let gpnOnRetire = null;
 
-/* ★ 统一取"数据容器"。
- *   ⚠️ 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
- *   （曾经写成 `typeof box === 'object'` ⇒ 对类永远为假 ⇒ 诊断谎报"无容器"，排查被误导很久。）
- *   判据改成"结构判据"：有 PlantProps / ProjectileProps / PlantAlmanac 任一即可。
+/* 统一取"数据容器"。
+ * 必须兼容三种形态：它是 JSONs 模块里的**类**（typeof === "function"）、也可能是实例/普通对象。
+ * （曾经写成 `typeof box === 'object'` ⇒ 对类永远为假 ⇒ 诊断谎报"无容器"，排查被误导很久。）
+ * 判据改成"结构判据"：有 PlantProps / ProjectileProps / PlantAlmanac 任一即可。
  */
 function gpnResolveDataBox() {
     const cands = [gpnDataBox, (typeof PvZ2ObjectContainerRef === 'function') ? PvZ2ObjectContainerRef() : null];
@@ -981,7 +982,7 @@ function gpnGatedBody(original, featKey, body) {
     } catch (e) { /* 忽略 */ }
     const wrapped = function () {
         gpnGateStats.calls++;
-        if (gpnDisposed) { gpnGateStats.bypass++; return original.apply(this, arguments); }   // ★ 旧运行时：不插手
+        if (gpnDisposed) { gpnGateStats.bypass++; return original.apply(this, arguments); }   // 旧运行时：不插手
         if (!featOn(featKey)) { gpnGateStats.bypass++; return original.apply(this, arguments); }
         return body.apply(this, arguments);
     };
@@ -1005,18 +1006,18 @@ function methodRecord(Cls, name) {
 /* =========================================================================
  * 1. 数值：运行时改 PlantProps / ProjectileProps
  * =======================================================================*/
-/* ★ 鼠标点击去重（修「矿车/格子上一次点击切换两次形态」）
- *   实测（probe-cart-1 探针）一次按下+抬起会走两条链：
- *     A = plantMouseReact ← 格子 onMouseDown（按下时）
- *     B = 格子 onMouseUp 的 delayMouseDownPlantsOnCart.forEach(e => e.onMouseDown(t))（抬起时补发）
- *   引擎本来用 B 来兜「拖车时不算点击」，而我们在 A 里已经切过一次 ⇒ 重复。
- *   ⇒ 只把**补发的那一次**挡掉：阈值 180ms（实测两条链相差 44~103ms）。
- *      这个量级与引擎自己的重复点击护栏一致 —— 引擎在 MouseListener 里也是
- *      每次点击后置 `MouseClickCoolingDown = 2`（约 2 帧 ≈ 66~100ms，按 30~60fps 估）。
- *   ⚠️ 副作用（与引擎那道护栏同性质）：180ms 内的两次独立点击会被并成一次。
- *      正常人手速约 200~300ms ⇒ 绝大多数情况无感；但**很刻意地快速连点**
- *      （间隔 <180ms）会少切一次。要更灵敏就把 GPN_CLICK_DEDUP_MS 调小（如 120，
- *      但要 >103ms，否则挡不住补发那一次）。实测数据：两条链相差 44 / 60 / 83 / 103ms。
+/* 鼠标点击去重（修「矿车/格子上一次点击切换两次形态」）
+ * 实测（probe-cart-1 探针）一次按下+抬起会走两条链：
+ * A = plantMouseReact ← 格子 onMouseDown（按下时）
+ * B = 格子 onMouseUp 的 delayMouseDownPlantsOnCart.forEach(e => e.onMouseDown(t))（抬起时补发）
+ * 引擎本来用 B 来兜「拖车时不算点击」，而我们在 A 里已经切过一次 ⇒ 重复。
+ * ⇒ 只把**补发的那一次**挡掉：阈值 180ms（实测两条链相差 44~103ms）。
+ * 这个量级与引擎自己的重复点击护栏一致 —— 引擎在 MouseListener 里也是
+ * 每次点击后置 `MouseClickCoolingDown = 2`（约 2 帧 ≈ 66~100ms，按 30~60fps 估）。
+ * 副作用（与引擎那道护栏同性质）：180ms 内的两次独立点击会被并成一次。
+ * 正常人手速约 200~300ms ⇒ 绝大多数情况无感；但**很刻意地快速连点**
+ * （间隔 <180ms）会少切一次。要更灵敏就把 GPN_CLICK_DEDUP_MS 调小（如 120，
+ * 但要 >103ms，否则挡不住补发那一次）。实测数据：两条链相差 44 / 60 / 83 / 103ms。
  */
 const GPN_CLICK_DEDUP_MS = 180;
 function gpnClickOnce(self, key) {
@@ -1030,8 +1031,8 @@ function gpnClickOnce(self, key) {
 }
 
 /** 数字 -> 中文（图鉴文本用；0~20 用汉字，其它回落到阿拉伯数字）
- *  为什么到 20：图鉴里有「能承受滚动前行的僵尸 N 次打击」这类句子，
- *  只到 10 会在 11+ 时变成「…11 次打击」那样半文半白。 */
+ * 为什么到 20：图鉴里有「能承受滚动前行的僵尸 N 次打击」这类句子，
+ * 只到 10 会在 11+ 时变成「…11 次打击」那样半文半白。 */
 const GPN_ZH_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
     '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十'];
 /** 穿透/打中数统一钳制：小数向下取整；非有限数或 < 1 ⇒ 1（1 = 不穿透，永远不出现 0） */
@@ -1062,26 +1063,26 @@ function gpnPierceZh(n) {
 }
 
 /* ============================================================================
- * ★ 图鉴文案总览（**纯只读**）
- *   背景：40 处图鉴写入散在 apply() 里，文案是「拼」出来的（含 CFG 现算表达式），
- *         想知道最终长什么样、得手工代值 —— 这个总览把「实际写进去的文案」原样读出来。
- *   特点：**不写任何数据、不加任何原型补丁**；只在被调用时遍历 PlantAlmanac。
- *   用法（F12 Console，随时可用，无需重进游戏）：
- *     gpnAlmDumpAll()              // 只看我们改过的
- *     gpnAlmDumpAll('all')         // 我们改过的 + 其余仅列名
- *     gpnAlmDumpOne('starfruit')   // 只看某一株
- *     gpnAlmOverview()             // 结构化数据（可 copy(gpnAlmOverview()) 取出）
+ * 图鉴文案总览（**纯只读**）
+ * 背景：40 处图鉴写入散在 apply() 里，文案是「拼」出来的（含 CFG 现算表达式），
+ * 想知道最终长什么样、得手工代值 —— 这个总览把「实际写进去的文案」原样读出来。
+ * 特点：**不写任何数据、不加任何原型补丁**；只在被调用时遍历 PlantAlmanac。
+ * 用法（F12 Console，随时可用，无需重进游戏）：
+ * gpnAlmDumpAll() // 只看我们改过的
+ * gpnAlmDumpAll('all') // 我们改过的 + 其余仅列名
+ * gpnAlmDumpOne('starfruit') // 只看某一株
+ * gpnAlmOverview() // 结构化数据（可 copy(gpnAlmOverview()) 取出）
  * ========================================================================== */
 
 /* 图鉴「两态」用的状态（模块级，跨 apply 保留）：
- *   · GPN_ALM_SNAPSHOT_DONE —— 是否已抓过原件快照（只在**第一次** apply 抓，那一刻还没被我们改过）
- *   · GPN_ALM_ORIG          —— [{ alias, od: 原件 objdata 的深拷贝 }]
- *   ⚠ 跨实例（保存并重载）时模块会被重新求值 ⇒ 这两个会重置，而那时数据可能已被旧实例改过；
- *     届时按"当前状态"重新抓快照（会把我们自己的文案当成原件，但那一轮仍能正确两态）。 */
+ * · GPN_ALM_SNAPSHOT_DONE —— 是否已抓过原件快照（只在**第一次** apply 抓，那一刻还没被我们改过）
+ * · GPN_ALM_ORIG —— [{ alias, od: 原件 objdata 的深拷贝 }]
+ * 跨实例（保存并重载）时模块会被重新求值 ⇒ 这两个会重置，而那时数据可能已被旧实例改过；
+ * 届时按"当前状态"重新抓快照（会把我们自己的文案当成原件，但那一轮仍能正确两态）。 */
 let GPN_ALM_SNAPSHOT_DONE = false;
 const GPN_ALM_ORIG = [];
 /** objdata 的深拷贝 —— 只处理 JSON 安全值（对象/数组/字符串/数字/布尔/null），
- *  图鉴文案结构就是这么朴素；遇到其它类型退回引用（不影响正确性，只影响"完全还原"）。 */
+ * 图鉴文案结构就是这么朴素；遇到其它类型退回引用（不影响正确性，只影响"完全还原"）。 */
 function gpnAlmDeepClone(v) {
     if (v === null || typeof v !== 'object') return v;
     if (Array.isArray(v)) {
@@ -1105,10 +1106,10 @@ function log_alm_snapshot(n) {
 let GPN_ALM_LAST_SNAP_N = -1;
 
 /** 我们改过图鉴的植物：**[图鉴 alias, 对应功能开关名]**。
- *  为什么不只是数组：图鉴 alias 与开关名**并不一一对应** ——
- *    · 心蕊：图鉴是复数 `bloominghearts`，开关是 `bloomingheart`；
- *    · 星星果系 3 株：图鉴 alias 各不同，开关**都是** `starfruit`。
- *  这张表既是「哪些算我们改的」的唯一出处，也是给后来人的提醒。 */
+ * 为什么不只是数组：图鉴 alias 与开关名**并不一一对应** ——
+ * · 心蕊：图鉴是复数 `bloominghearts`，开关是 `bloomingheart`；
+ * · 星星果系 3 株：图鉴 alias 各不同，开关**都是** `starfruit`。
+ * 这张表既是「哪些算我们改的」的唯一出处，也是给后来人的提醒。 */
 const GPN_ALM_CHANGED = [
     ['chilibean', 'chilibean'], ['spikerock', 'spikerock'], ['bloominghearts', 'bloomingheart'],
     ['nightshade', 'nightshade'], ['turnip', 'turnip'], ['sweetpotato', 'sweetpotato'],
@@ -1217,9 +1218,9 @@ try {
     }
 } catch (e) { /* 忽略 */ }
 /* dynamic original value: the "off" branch must READ it, never hardcode it.
- *   Lesson (caught by selftest): I hardcoded phatbeet off=150, but its real original value
- *   can be anything (the mock uses 999 as a sentinel) => hardcoding is simply wrong.
- *   Rule: record it on first read (including "field did not exist"), then always reuse it.
+ * Lesson (caught by selftest): I hardcoded phatbeet off=150, but its real original value
+ * can be anything (the mock uses 999 as a sentinel) => hardcoding is simply wrong.
+ * Rule: record it on first read (including "field did not exist"), then always reuse it.
  */
 const gpnVanillaMemo = new Map();
 function gpnVanilla(listName, alias, field) {
@@ -1283,27 +1284,27 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         }
         // ============================================================
         // 图鉴文本（v1.0.0 正式版）
-        //   ⚠ 这里的数值一律【从 CFG 现算】，不写死 —— 调参之后图鉴会跟着变，
-        //      不会出现"图鉴写 40%、实际改了却是别的值"这类不一致。
-        //   ⚠ 跨功能的文案要跟着【另一个】开关走：例如香水菇那条里的"啃食伤害降低"
-        //      其实是 bloomingheart 的效果，所以只在 bloomingheart 也开着时才写。
-        //   只改 Introduction / BriefIntroduction / Special 三类文字。
-        //   Elements 里的 SUNCOST / RECHARGE 【不带数值】，UI 运行时从 PlantProps 读
-        //   ⇒ 阳光 / 冷却改了会自动显示，不用动图鉴。
-        //   规则：能保留就保留（追加），只有【原话说错了】的才改写。
+        // 这里的数值一律【从 CFG 现算】，不写死 —— 调参之后图鉴会跟着变，
+        // 不会出现"图鉴写 40%、实际改了却是别的值"这类不一致。
+        // 跨功能的文案要跟着【另一个】开关走：例如香水菇那条里的"啃食伤害降低"
+        // 其实是 bloomingheart 的效果，所以只在 bloomingheart 也开着时才写。
+        // 只改 Introduction / BriefIntroduction / Special 三类文字。
+        // Elements 里的 SUNCOST / RECHARGE 【不带数值】，UI 运行时从 PlantProps 读
+        // ⇒ 阳光 / 冷却改了会自动显示，不用动图鉴。
+        // 规则：能保留就保留（追加），只有【原话说错了】的才改写。
         // ============================================================
 
         return true;
     };
 
     /**
-     * ★★ 图鉴文案（**独立函数**：从 setField() 里搬出来的，见开发记录 §3.58）★★
-     *   【为什么要搬】原来这 480 多行**被包在 `setField()` 里面**，于是有两个毛病：
-     *     ① `setField()` 有两条**提前返回**（列表为空 / 找不到条目）⇒ 一旦命中，
-     *        图鉴块**整块不执行** ⇒ 图鉴文案悄悄没写（引擎数据晚到时就会这样）；
-     *     ② `apply()` 会调用 `setField()` **二十多次** ⇒ 图鉴块被重复执行二十多遍。
-     *   现在它是独立一步：**与 setField 的成败无关**，且每次 apply **只跑一次**。
-     *   ⚠️ 调用点在 apply() 里，用 try/catch 包住 —— 图鉴写失败不应连累数据补丁的返回值。
+     * 图鉴文案（**独立函数**：从 setField() 里搬出来的，见开发记录 §3.58）
+     * 【为什么要搬】原来这 480 多行**被包在 `setField()` 里面**，于是有两个毛病：
+     * ① `setField()` 有两条**提前返回**（列表为空 / 找不到条目）⇒ 一旦命中，
+     * 图鉴块**整块不执行** ⇒ 图鉴文案悄悄没写（引擎数据晚到时就会这样）；
+     * ② `apply()` 会调用 `setField()` **二十多次** ⇒ 图鉴块被重复执行二十多遍。
+     * 现在它是独立一步：**与 setField 的成败无关**，且每次 apply **只跑一次**。
+     * 调用点在 apply() 里，用 try/catch 包住 —— 图鉴写失败不应连累数据补丁的返回值。
      */
     const applyAlmanacText = () => {
     if (PvZ2ObjectContainer && Array.isArray(PvZ2ObjectContainer.PlantAlmanac)) {
@@ -1311,11 +1312,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 我们名单里的 alias 集合（只对它们做"写不到就 warn"，避免误报）
         const gpnAlmAliasSet = Object.create(null);
         for (const _p of GPN_ALM_CHANGED) gpnAlmAliasSet[_p[0]] = true;
-        // ★ findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
-        //   ⚠️ 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
-        //      心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
-        //      万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
-        //      现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
+        // findAl：先精确匹配；失败再试「去尾部 s / 加尾部 s」的**双名兜底**。
+        // 为什么需要兜底：图鉴里的 alias 与别处**并不一一对应** ——
+        // 心蕊在图鉴里是复数 `bloominghearts`，而别处（功能开关 / 弹道）是单数 `bloomingheart`。
+        // 万一写错，以前是**静默返回 null ⇒ 图鉴悄悄没写**（排查花过很久）；
+        // 现在 ① 双名兜底能自动救回来，② 真救不回来时由 warn 报出来（不再是静默失败）。
         const gpnAlmWarned = Object.create(null);
         const gpnAlmWarnMiss = (what, alias) => {
             if (!gpnAlmAliasSet[alias]) return;          // 只提醒"我们名单里的"，避免误报
@@ -1387,8 +1388,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             return false;
         };
         // 在「含某关键词的那个本地化对象」上【追加】一句。
-        //  图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
-        //  所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
+        // 图鉴文案可能不在 Special / Introduction / BriefIntroduction 里（可能在别的字段的任意深度），
+        // 所以这里【递归】找；再找不到就把该植物所有 zh 文案连路径一起打出来（debugLog），便于定位。
         const appendLoc = (alias, needles, zhSuffix, enSuffix) => {
             const e = findAl(alias);
             if (!e || !e.objdata) { warn('图鉴：找不到这个植物的条目（' + alias + '）'); return false; }
@@ -1452,8 +1453,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
             const d = hit.o;
             // 【诊断】图鉴追加的"零输出记账"（只在 dump 时输出一次）：
-            //   记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
-            //   用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
+            // 记录"是否真的写进去了 / 写了几次 / 每次写前的当前值前缀"，
+            // 用来判断那 50 次重复到底是"apply 被反复调用"还是"我们自己的判据失效"。
             gpnAlmAppendCalls++;
             const _zhBefore = (typeof d.zh === 'string') ? d.zh : '';
             const _zhHitBefore = (typeof zhSuffix === 'string') ? (_zhBefore.indexOf(zhSuffix) !== -1) : null;
@@ -1468,9 +1469,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             if (typeof zhSuffix === 'string' && d.zh.indexOf(zhSuffix) === -1) {
                 track(d, 'zh'); d.zh = d.zh + zhSuffix;
                 gpnAlmAppendWrites++;
-                // ★ 只在【真的写入】时打日志，且最多打 5 条（2026/10/10 实机定论：这段代码
-                //   每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
-                //   但判据是可靠的 —— 文本【不会】被重复追加，用户实机确认图鉴文案正常）。
+                // 只在【真的写入】时打日志，且最多打 5 条（实机定论：这段代码
+                // 每帧/每次 apply 都会被执行，之前"执行一次打一行"⇒ 一局刷出 ~50 行噪音，
+                // 但判据是可靠的 —— 文本【不会】被重复追加，实机验证图鉴文案正常）。
                 if (dbgOn(CFG.splitpea.debugLog) && gpnAlmAppendWrites <= 5) {
                     log('图鉴：' + alias + ' 的「' + hitNeedle + '」在 ' + hit.path + '，已追加（第 '
                         + gpnAlmAppendWrites + ' 次写入；本次是第 ' + gpnAlmAppendCalls + ' 次进入）');
@@ -1495,8 +1496,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                         + ' 进入时"已含后缀"=' + x.hitBefore + ' 长度=' + x.lenBefore
                         + ' 尾部="…' + x.tail + '"');
                 });
-                // ★ 关键验证：现在再读一次那份文案，看"我们写的还在不在"
-                //   （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
+                // 关键验证：现在再读一次那份文案，看"我们写的还在不在"
+                // （若被引擎重载/换对象覆盖掉 ⇒ 判据失效 ⇒ 就是重复追加的根因）
                 const arr = (typeof findAl === 'function') ? findAl('splitpea') : null;
                 const obj = arr && arr.objdata;
                 let readBack = '(取不到)';
@@ -1519,15 +1520,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             } catch (e) { /* 只影响诊断 */ }
         };
 
-        // ★★★ 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）★★★
-        //   【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
-        //   【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
-        //          ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
-        //          ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
-        //   【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
-        //          之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
-        //          ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
-        //   ⚠ 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
+        // 图鉴文案的「两态」—— 原件快照 + 每次重建（修 config-l31 的 BUG）
+        // 【BUG 现象】开着用过 → 再关掉，图鉴文案**不会回到原版**（留在"开着"的样子）。
+        // 【根因】下面 19 个写入点全是 `if (featOn(...)) { 写入 }`，**只有"开时写"，没有"关时移除"**
+        // ⇒ 单向闩锁。而"启动时就关着"的实例因为一次都没写过，反而是对的
+        // ⇒ 所以这个 BUG **只在"开着用过再关掉"时暴露**（自检原先也没覆盖这条路径）。
+        // 【修法】第一次 apply 抓一份「这 20 株的原件 objdata」快照（此刻还没被我们改过），
+        // 之后**每次 apply 都先把正在用的 objdata 还原成原件**，再按当前开关重新写。
+        // ⇒ "开→关"与"关→开"走同一条路，两个方向都对；顺带保证 Special 数组不会累积。
+        // 下面 19 个写入点**一行都不用改**（它们只管"开着时怎么写"）。
         if (!GPN_ALM_SNAPSHOT_DONE) {
             for (const _p of GPN_ALM_CHANGED) {
                 let _e = null;
@@ -1553,7 +1554,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             for (const _k of Object.keys(_o)) _t[_k] = gpnAlmDeepClone(_o[_k]);
         }
 
-        // ---- 巴豆（追加"所有啃食者一起倒下"）----
+        // ---- 巴豆（追加"所有啃食者一起倒下"） ----
         if (featOn('chilibean')) {
             // Intro 的中文保持原版不动；英文用带补充的那句
             writeIntro('chilibean', null,
@@ -1564,7 +1565,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 '被僵尸吃下后，杀死所有正在啃食它的僵尸，并释放眩晕气体',
                 'After being eaten, it kills every zombie that is eating it and releases stunning gas.');
         }
-        // ---- 钢地刺（原话写错：三次 / 3 个）----
+        // ---- 钢地刺（原话写错：三次 / 3 个） ----
         if (featOn('spikerock')) {
             const SPK = CFG.spikerock.maxSpike;
             writeBrief('spikerock', '对走过的僵尸造成伤害，并破坏 ' + SPK + ' 个滚动的物体',
@@ -1573,7 +1574,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 '能承受滚动前行的僵尸' + gpnZhNum(SPK) + '次打击',
                 'Can withstand ' + SPK + ' hits from rolling zombies.');
         }
-        // ---- 心蕊（追加 1×3 + 啃食减伤）----
+        // ---- 心蕊（追加 1×3 + 啃食减伤） ----
         if (featOn('bloomingheart')) {
             writeIntro('bloominghearts',
                 '心蕊向僵尸投掷子弹，使之本格及其同排左右各一格中的所有僵尸防御力下降。',
@@ -1588,7 +1589,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 'Zombies with this defence reduction deal less chewing damage to these plants: '
                 + 'Blooming Heart ×' + P50 + '%, Sweet Potato / Hot Date ×' + P75 + '%.');
         }
-        // ---- 暗影龙葵（追加穿透 + 击退）----
+        // ---- 暗影龙葵（追加穿透 + 击退） ----
         if (featOn('nightshade')) {
             // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
             const NS_K = gpnPierceText(CFG.nightshade.pierceTargets);
@@ -1601,29 +1602,29 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                         + ' targets and slightly knock zombies back.'
                     : 'When powered by shadow energy, its thrown leaves slightly knock zombies back.');
         }
-        // ---- 白萝卜（追加受伤间隔）----
+        // ---- 白萝卜（追加受伤间隔） ----
         if (featOn('turnip')) {
             addSpecial('turnip', CFG.turnip.damageGateSeconds + ' 秒内只能受到一次伤害',
                 'Can only take damage once every ' + CFG.turnip.damageGateSeconds + ' seconds.');
         }
-        // ---- 甜薯（追加回血 + 治疗加成）----
+        // ---- 甜薯（追加回血 + 治疗加成） ----
         if (featOn('sweetpotato')) {
             const SP_HP = CFG.sweetpotato.selfHealPerSecond;
             const SP_MULT = Math.round(CFG.sweetpotato.healReceivedMultiplier * 100);
             addSpecial('sweetpotato', '每秒回复 ' + SP_HP + ' 点生命，且受到的任何治疗 ×' + SP_MULT + '%',
                 'Recovers ' + SP_HP + ' HP per second, and all healing it receives is ×' + SP_MULT + '%.');
         }
-        // ---- 高坚果（追加免疫位移 + 抗砸）----
+        // ---- 高坚果（追加免疫位移 + 抗砸） ----
         if (featOn('tallnut')) {
             addSpecial('tallnut', '免疫位移', 'Immune to being moved.');
             const TN_N = Math.max(1, Math.round(1 / CFG.tallnut.smashHpFraction) - 1);
             addSpecial('tallnut', '可承受砸击 ' + TN_N + ' 次', 'Can withstand ' + TN_N + ' smashes.');
         }
-        // ---- 香水菇（改现有的「特点」行）----
+        // ---- 香水菇（改现有的「特点」行） ----
         if (featOn('perfumeshroom')) {
             // 原有的「特点」行保持原话不动，新增能力单独开一条。
             // !!「啃食伤害降低」其实是 bloomingheart 那个补丁的效果 ——
-            //    所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
+            // 所以那句话只在 bloomingheart 也开着时才写，否则图鉴会说错。
             let PM_ZH = '使僵尸防御降低';
             let PM_EN = 'Zombies hit have their defence lowered';
             if (featOn('bloomingheart')) {
@@ -1632,11 +1633,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
             addSpecial('perfumeshroom', PM_ZH, PM_EN + '.');
         }
-        // ---- 星星果系（追加穿透 / 溅射 / 追击）----
+        // ---- 星星果系（追加穿透 / 溅射 / 追击） ----
         if (featOn('starfruit')) {
             // Intro 保持原版不动（下面这些说明都改成新增 Special）
             // 穿透文案统一口径：K = 打中数 − 1（= 真·穿透数）；K = 0 ⇒ 不写穿透句
-            //   （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
+            // （中文用汉字数字：一个 / 两个…；英文仍用阿拉伯数字）
             const STAR_K = gpnPierceText(CFG.starfruit.pierceTargets);
             const PINK_K = gpnPierceText(CFG.starfruit.pinkPierceTargets);
             const SHOOT_K = gpnPierceText(CFG.starfruit.shootingPierceTargets);
@@ -1668,7 +1669,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
             if (ST_FOLLOW) {
                 // 第 3 条：追击子弹的伤害口径（合并开/关两种说法；数值从 CFG 现算）。
-                //   这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
+                // 这一条会随开关【换文案】⇒ 先把上一次写进去的变体删掉，否则 apply 跑多次时会叠成两条。
                 const ST_R = Math.round(CFG.starfruit.followDamageRatio * 100);
                 {
                     const alST = findAl('starfruit');
@@ -1699,7 +1700,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('pinkstarfruit', pierceZh(PINK_K, '少量'), pierceEn(PINK_K, 'small'));
             addSpecial('shootingstarfruit', pierceZh(SHOOT_K, '中等'), pierceEn(SHOOT_K, 'medium'));
         }
-        // ---- 暗影油桃（追加削弱说明）----
+        // ---- 暗影油桃（追加削弱说明） ----
         if (featOn('noctarine')) {
             const NO_DMG = Math.round(CFG.noctarine.damageScale * 100);
             // 原版毒气时长是 20 秒（数据里的 NormalLifespan），这里换算成"×多少%"
@@ -1707,7 +1708,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('noctarine', '造成伤害仅为攻击力的 ' + NO_DMG + '%，但毒气持续时间×' + NO_DUR + '%',
                 'Deals only ' + NO_DMG + '% of its attack power as damage, but its gas lasts ×' + NO_DUR + '% as long.');
         }
-        // ---- 蒲公英（原话"一行"→"两颗"）----
+        // ---- 蒲公英（原话"一行"→"两颗"） ----
         if (featOn('dandelion')) {
             const DN_N = 1 + CFG.dandelion.extraShots;
             writeIntro('dandelion',
@@ -1716,7 +1717,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('dandelion', '可击晕飞行僵尸，且对其造成更高伤害',
                 'Stuns flying zombies and deals extra damage to them.');
         }
-        // ---- 甜椒投手（追加落点灼烧）----
+        // ---- 甜椒投手（追加落点灼烧） ----
         if (featOn('pepperpult')) {
             // 拆成两条：原文整条太长，图鉴那一行会在「清」字处自动折行、排版错位
             const PP_C = CFG.pepperpult.burnCells;
@@ -1731,7 +1732,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('pepperpult', '火焰可清零其中植物的冻结进度',
                 'The fire also clears the freeze progress of the plants inside it.');
         }
-        // ---- 飓风甘蓝（原话"本行"→"全屏"）----
+        // ---- 飓风甘蓝（原话"本行"→"全屏"） ----
         if (featOn('hurrikale')) {
             writeIntro('hurrikale', '飓风甘蓝利用强风将全屏的僵尸向后推。',
                 'Hurrikales push back all zombies on the screen with a chilling wind.');
@@ -1746,11 +1747,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     ? 'Pushes zombies outside its own lane with only half the force.'
                     : 'Pushes zombies outside its own lane with only ' + Math.round(HK_SCALE * 100) + '% of the force.');
         }
-        // ---- 魔音甜菜（Phat Beet）----
+        // ---- 魔音甜菜（Phat Beet） ----
         if (featOn('phatbeet')) {
-            // ⚠️ 这两条文案由用户 2026/10/16 亲自给定，**不再带数字** ⇒ 之后调
-            //    `normalStun` / `jamClearSeconds` / `normalJamClearSeconds` 时**图鉴不会跟着变**
-            //    （这是刻意的，不是漏同步 —— 别当 BUG 修）。
+            // 这两条文案由 亲自给定，**不再带数字** ⇒ 之后调
+            // `normalStun` / `jamClearSeconds` / `normalJamClearSeconds` 时**图鉴不会跟着变**
+            // （这是刻意的，不是漏同步 —— 别当 BUG 修）。
             addSpecial('phatbeet', '攻击可以停顿僵尸，同时干扰僵尸，使音乐暂时无法对其生效',
                 'Its attacks can halt zombies and disrupt them, temporarily preventing the Jam Stage effect from affecting them.');
             addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
@@ -1758,7 +1759,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('phatbeet', '大招可以将僵尸震起',
                 'Its Plant Food can knock zombies upward.');
         }
-        // ---- 寒冰射手：图鉴 Intro / 特点（中英）----
+        // ---- 寒冰射手：图鉴 Intro / 特点（中英） ----
         if (featOn('snowpea')) {
             writeIntro('snowpea',
                 '寒冰射手发射寒冰子弹或冰锥，能使僵尸前进变得缓慢或冻结僵尸。',
@@ -1767,14 +1768,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 '子弹会对僵尸造成伤害并冰冻，并有概率发射冻结僵尸的冰锥',
                 'Its peas damage and chill zombies, and it may fire an icicle that freezes them.');
         }
-        // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下）----
+        // ---- 红针花：新增 2 条特点（中英；都挂在本功能的开关下） ----
         if (featOn('redstinger')) {
             addSpecial('redstinger', '可以通过鼠标左键点击主动切换形态',
                 'You can click it with the left mouse button to switch its form at will.');
             addSpecial('redstinger', '攻击形态火力最强，中间形态攻击可造成微弱击退，并提升一定防御力，防御形态大幅提高防御力',
                 'Its attack form has the strongest firepower; its middle form attacks knock enemies back slightly and grant extra defence; its defence form greatly boosts its defence.');
         }
-        // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用）----
+        // ---- 裂荚射手：「射速」那行补一句（左右翻转后也适用） ----
         if (featOn('splitpea')) {
             // 先找正文那句（更可靠），再退一步找标题「射速」
             appendLoc('splitpea', ['向后方两倍', '射速'], CFG.splitpea.extraZh, CFG.splitpea.extraEn);
@@ -1782,15 +1783,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             addSpecial('splitpea', '可以通过鼠标左键点击进行前后互换',
                 'You can click it with the left mouse button to swap its front and back sides.');
         }
-        // ---- 暗影夏威夷果：补一条特点（中英）----
+        // ---- 暗影夏威夷果：补一条特点（中英） ----
         if (featOn('murkadamia')) {
             addSpecial('murkadamia', '被暗影强化时本体获得隐身',
                 'While shadow-boosted, its body becomes invisible.');
         }
-        // ---- 孢子菇：新增两条特点（用户指定文案，中英）----
-        //   ⚠️ 第 2 条文案按用户口径**只提"毒性家族"** —— 但忧郁菇/毒影菇实际也吃加成，
-        //      那是用户**特意安排**的，文案保持原样、不要"补全"。
-        //   ⚠️ 倍率**从 CFG 现算**（本 MOD 的统一约定：调参 ⇒ 图鉴自动跟着变）。
+        // ---- 孢子菇：新增两条特点（文案，中英） ----
+        // 第 2 条文案按规则**只提"毒性家族"** —— 但忧郁菇/毒影菇实际也吃加成，
+        // 那是**特意安排**的，文案保持原样、不要"补全"。
+        // 倍率**从 CFG 现算**（本 MOD 的统一约定：调参 ⇒ 图鉴自动跟着变）。
         if (featOn('sporeshroom')) {
             addSpecial('sporeshroom', '被击败后：对 1 行 × ' + CFG.sporeshroom.deathRadiusTiles + ' 列内的僵尸造成伤害并眩晕；给 ' + CFG.sporeshroom.deathMarkRows + ' × ' + CFG.sporeshroom.deathMarkCols + ' 范围内所有僵尸打上感染标记',
                 'When defeated: damages + stuns zombies in a 1x' + CFG.sporeshroom.deathRadiusTiles + ' area, and infects every zombie within a ' + CFG.sporeshroom.deathMarkRows + 'x' + CFG.sporeshroom.deathMarkCols + ' area.');
@@ -1819,52 +1820,52 @@ function makeDataPatcher(PvZ2ObjectContainer) {
 
 
     const apply = () => {
-        // ★ 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
+        // 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
         const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
         if (!Box) { warn('数据补丁：容器不可用，这次没落下去'); return false; }
         // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
         gpnAlmApplyCalls++;
         const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
         // 钢地刺：降价 + 打击次数 3 -> 9
-        //  ⚠️【即时生效改造·数据类样板】这里**不再**用 `featOn` 包住赋值，而是"开/关都写"：
-        //   开 ⇒ 写我们的值；关 ⇒ 写回原版值（ORIG）。这样开关一改、再调一次 `apply()`
-        //   就能立刻改回去（`setField` 就是直接赋值 ⇒ 重复 apply 幂等）。
-        //   注意：**已经翻开的卡片 / 已经种下的植物**可能仍用旧值 ⇒ 界面上这类开关要标注
-        //   "下次进关卡生效"（官方文档也是这个口径）。
+        // 【即时生效改造·数据类样板】这里**不再**用 `featOn` 包住赋值，而是"开/关都写"：
+        // 开 ⇒ 写我们的值；关 ⇒ 写回原版值（ORIG）。这样开关一改、再调一次 `apply()`
+        // 就能立刻改回去（`setField` 就是直接赋值 ⇒ 重复 apply 幂等）。
+        // 注意：**已经翻开的卡片 / 已经种下的植物**可能仍用旧值 ⇒ 界面上这类开关要标注
+        // "下次进关卡生效"（官方文档也是这个口径）。
         setField('PlantProps', 'spikerock', 'SunCost', featOn('spikerock') ? CFG.spikerock.sunCost : VANILLA.spikerock.sunCost);
         setField('PlantProps', 'spikerock', 'MaxSpike', featOn('spikerock') ? CFG.spikerock.maxSpike : VANILLA.spikerock.maxSpike);
         setField('PlantProps', 'spikerock', 'Cooldown', featOn('spikerock') ? CFG.spikerock.cooldown : VANILLA.spikerock.cooldown);
-        // 暗影龙葵：涨价 —— ★不再用 featOn 包住整段（否则关掉时这段根本不执行 ⇒ 永远不会写回 75）。
-        //   写成"每次都跑、开/关都写"的两态形式：apply() 一跑就自动还原。
+        // 暗影龙葵：涨价 —— 不再用 featOn 包住整段（否则关掉时这段根本不执行 ⇒ 永远不会写回 75）。
+        // 写成"每次都跑、开/关都写"的两态形式：apply() 一跑就自动还原。
         setField('PlantProps', 'nightshade', 'SunCost', featOn('nightshade') ? CFG.nightshade.sunCost : VANILLA.nightshade.sunCost);
         // 高坚果：免疫位移。这是原版字段，vanilla 里只有 turnip(白萝卜) 和 gravebuster 开了它。
         // 注意【不要】动 canBeChied()：那个开关是「整体打断气功 + 保护身后」，不是我们要的。
         // 只开这个字段的效果 = 橄榄车/抛掷/舞王推/渔夫钩 全部无效，但气功照常对其它植物生效、
-        //                        高坚果自己原地不动（pushPlantLeft 对它的格子返回 false）。
+        // 高坚果自己原地不动（pushPlantLeft 对它的格子返回 false）。
         // 时空黑洞(ChiHole) 走的是 canBeChied()，不看这个字段 ⇒ 高坚果照样被吸走，符合预期。
-        // ★ 两态（不再用 featOn 包整段，否则关掉时不会还原）
+        // 两态（不再用 featOn 包整段，否则关掉时不会还原）
         // boolean field: write only when ON; when OFF restore the original shape (delete if absent)
         if (featOn('tallnut')) setField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech', true);
         else gpnRestoreField('PlantProps', CFG.tallnut.plantType, 'CannotBePushedByFootballMech');
         setField('PlantProps', CFG.tallnut.plantType, 'Cooldown', featOn('tallnut') ? CFG.tallnut.cooldown : VANILLA.tallnut.cooldown);
-        // ---- 卷心菜投手 / 玉米投手：阳光（2026/10/22 用户指定，各自挂自己的开关）----
+        // ---- 卷心菜投手 / 玉米投手：阳光（各自挂自己的开关） ----
         setField('PlantProps', 'cabbagepult', 'SunCost',
             featOn('cabbagepult') ? CFG.cabbagepult.sunCost : VANILLA.cabbagepult.sunCost);
         setField('PlantProps', 'kernelpult', 'SunCost',
             featOn('kernelpult') ? CFG.kernelpult.sunCost : VANILLA.kernelpult.sunCost);
 
-        // ★ 弹簧豆：阳光/冷却/休息/击退距离/薄荷系数（挂 springbean 开关，关掉写回原版）
+        // 弹簧豆：阳光/冷却/休息/击退距离/薄荷系数（挂 springbean 开关，关掉写回原版）
         setField('PlantProps', 'springbean', 'SunCost', featOn('springbean') ? CFG.springbean.sunCost : VANILLA.springbean.sunCost);
         setField('PlantProps', 'springbean', 'Cooldown', featOn('springbean') ? CFG.springbean.cooldown : VANILLA.springbean.cooldown);
         setField('PlantProps', 'springbean', 'RestTime', featOn('springbean') ? CFG.springbean.restTime : VANILLA.springbean.restTime);
         setField('PlantProps', 'springbean', 'KnockbackDistance', featOn('springbean') ? CFG.springbean.knockbackDistance : VANILLA.springbean.knockbackDistance);
         setField('PlantProps', 'springbean', 'MintKnockBackDistanceFactor', featOn('springbean') ? CFG.springbean.mintFactor : VANILLA.springbean.mintFactor);
-        // ---- 玉米投手：黄油落点留下「地面黄油」（2026/10/22 用户指定；**数据层**补丁）----
-        //   引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
-        //     ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
-        //       ⇒ `setButter(8, true)`（播黄油音效）⇒ **黄油自身 die()**（一次性）。
-        //   engine 侧行为完全照抄黄油毛茛；我们只补数据，不改任何代码路径。
-        //   ⚠️ 必须在**第一次写值之前**登记原值：`gpnVanilla` 只认第一次读到的值。
+        // ---- 玉米投手：黄油落点留下「地面黄油」（**数据层**补丁） ----
+        // 引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
+        // ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
+        // ⇒ `setButter(8, true)`（播黄油音效）⇒ **黄油自身 die()**（一次性）。
+        // engine 侧行为完全照抄黄油毛茛；我们只补数据，不改任何代码路径。
+        // 必须在**第一次写值之前**登记原值：`gpnVanilla` 只认第一次读到的值。
         gpnVanilla('ProjectileProps', 'butter', 'TileLiquid');
         gpnVanilla('ProjectileProps', 'butter2', 'TileLiquid');
         if (featOn('kernelpult')) {
@@ -1877,7 +1878,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             gpnRestoreField('ProjectileProps', 'butter2', 'TileLiquid');
         }
 
-        // 星星果系：阳光/冷却（★两态，挪到包裹外）+ 12 条弹道的穿透/溅射（开=写、关=删）
+        // 星星果系：阳光/冷却（两态，挪到包裹外）+ 12 条弹道的穿透/溅射（开=写、关=删）
         setField('PlantProps', 'starfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.sunCost : VANILLA.starfruit.sunCost);
         setField('PlantProps', 'pinkstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.pinkSunCost : VANILLA.starfruit.pinkSunCost);
         setField('PlantProps', 'shootingstarfruit', 'SunCost', featOn('starfruit') ? CFG.starfruit.shootingSunCost : VANILLA.starfruit.shootingSunCost);
@@ -1896,7 +1897,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     const put = (key, value) => { track(e.objdata, key); e.objdata[key] = value; };
                     const putAbsent = (key) => { track(e.objdata, key); try { delete e.objdata[key]; } catch (e2) { /* ignore */ } };
                     if (!onStar) {
-                        // ★ 关掉 ⇒ 清掉我们打过的全部标记与溅射条目（原版星果弹道没有这些字段）
+                        // 关掉 ⇒ 清掉我们打过的全部标记与溅射条目（原版星果弹道没有这些字段）
                         putAbsent(PIERCE_KEY);
                         putAbsent(PIERCE_ALWAYS_KEY);
                         putAbsent(SPLASH_RATIO_KEY);
@@ -1907,17 +1908,17 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     // v2.8.0：标出这条弹道属于哪一株（A2 追击的触发判定要用）
                     const kind = gpnStarKindOf(e.aliases[0]);
                     // v1.0.0：三种星果的穿透各自一份；钳制后 = 1 ⇒ 干脆不打穿透标记
-                    //   ⇒ 这条弹道走【原版】detectEnemy（命中即消失），溅射照旧（数据里的 SplashDamage）
-                    //   ⚠️ 但 GPNStarKind 必须照写（下一行），否则流星果不再触发 A2 追击
+                    // ⇒ 这条弹道走【原版】detectEnemy（命中即消失），溅射照旧（数据里的 SplashDamage）
+                    // 但 GPNStarKind 必须照写（下一行），否则流星果不再触发 A2 追击
                     const pierceN = gpnPierceN(kind === 'shooting' ? CFG.starfruit.shootingPierceTargets
                         : kind === 'pink' ? CFG.starfruit.pinkPierceTargets : CFG.starfruit.pierceTargets);
                     if (pierceN >= 2) {
                         put(PIERCE_KEY, pierceN);
                         put(PIERCE_ALWAYS_KEY, true);
                     } else {
-                        // ★ 1 = 不穿透：连【上一次 apply 留下的】穿透标记也要清掉，
-                        //   否则同一次会话里改了 CFG（1 -> 2 -> 1）会残留旧标记。
-                        //   track 先记原值，cleanup 时能原样还回去。
+                        // 1 = 不穿透：连【上一次 apply 留下的】穿透标记也要清掉，
+                        // 否则同一次会话里改了 CFG（1 -> 2 -> 1）会残留旧标记。
+                        // track 先记原值，cleanup 时能原样还回去。
                         const putAbsent = (key) => { track(e.objdata, key); delete e.objdata[key]; };
                         putAbsent(PIERCE_KEY);
                         putAbsent(PIERCE_ALWAYS_KEY);
@@ -1939,10 +1940,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 }
             }
         }
-        // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用）----
-        // ★ 阳光两态放到包裹外面（否则关掉时整段不执行 ⇒ 不还原）
+        // ---- 蒲公英：阳光 + 三种弹道标记（飞行/BOSS 加成用） ----
+        // 阳光两态放到包裹外面（否则关掉时整段不执行 ⇒ 不还原）
         setField('PlantProps', 'dandelion', 'SunCost', featOn('dandelion') ? CFG.dandelion.sunCost : VANILLA.dandelion.sunCost);
-        // ★ 弹道标记也两态：关掉时清掉标记（原来是"只在开着时写" ⇒ 关掉后标记残留）
+        // 弹道标记也两态：关掉时清掉标记（原来是"只在开着时写" ⇒ 关掉后标记残留）
         {
             const DANDELION_KIND = { dandelion: 'normal', dandelion_blew: 'blew', dandelion_pf: 'pf' };
             const dlist = PvZ2ObjectContainer.ProjectileProps;
@@ -1961,25 +1962,25 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 }
             }
         }
-        // ---- 魔音甜菜：阳光（改回原版 150）----
-        // ★ 两态：魔音甜菜的阳光值恰好 = 原版 150（历史上曾改高再改回），写成两态更安全
+        // ---- 魔音甜菜：阳光（改回原版 150） ----
+        // 两态：魔音甜菜的阳光值恰好 = 原版 150（历史上曾改高再改回），写成两态更安全
         {
             const _v = gpnVanilla('PlantProps', CFG.phatbeet.plantType, 'SunCost');
             setField('PlantProps', CFG.phatbeet.plantType, 'SunCost', featOn('phatbeet') ? CFG.phatbeet.sunCost : _v.value);
         }
-        // ---- 大蒜：每口固定伤害 / 阳光 / 冷却（引擎字段就是 ReceivesDamageWhenEaten、Cooldown）----
-        // ★ 两态（大蒜：被啃伤害 / 阳光 / 冷却）
+        // ---- 大蒜：每口固定伤害 / 阳光 / 冷却（引擎字段就是 ReceivesDamageWhenEaten、Cooldown） ----
+        // 两态（大蒜：被啃伤害 / 阳光 / 冷却）
         setField('PlantProps', CFG.garlic.plantType, 'ReceivesDamageWhenEaten', featOn('garlic') ? CFG.garlic.eatDamage : VANILLA.garlic.eatDamage);
         setField('PlantProps', CFG.garlic.plantType, 'SunCost', featOn('garlic') ? CFG.garlic.sunCost : VANILLA.garlic.sunCost);
         setField('PlantProps', CFG.garlic.plantType, 'Cooldown', featOn('garlic') ? CFG.garlic.cooldown : VANILLA.garlic.cooldown);
         // ---- 红针花：承伤倍率（越小越肉）+ 半防御半攻击形态的子弹击退 ----
-        // ★ 三项两态（承伤倍率 / 阳光）
+        // 三项两态（承伤倍率 / 阳光）
         setField('PlantProps', CFG.redstinger.plantType, 'DamageScale1', featOn('redstinger') ? CFG.redstinger.tier1 : VANILLA.redstinger.tier1);
         setField('PlantProps', CFG.redstinger.plantType, 'DamageScale2', featOn('redstinger') ? CFG.redstinger.tier2 : VANILLA.redstinger.tier2);
         setField('PlantProps', CFG.redstinger.plantType, 'SunCost', featOn('redstinger') ? CFG.redstinger.sunCost : VANILLA.redstinger.sunCost);
-        // ---- 红针花 inArea1 的「子弹击退」：★两态 ----
-        //   原版 redstinger_weak 只有 Damage/Size（已核对 Objects/ProjectileProps.json）
-        //   ⇒ 开：写三个击退字段；关：**删掉**它们（恢复原版弹道）。
+        // ---- 红针花 inArea1 的「子弹击退」：两态 ----
+        // 原版 redstinger_weak 只有 Damage/Size（已核对 Objects/ProjectileProps.json）
+        // ⇒ 开：写三个击退字段；关：**删掉**它们（恢复原版弹道）。
         {
             const plist = PvZ2ObjectContainer.ProjectileProps;
             const onRs = featOn('redstinger');
@@ -2002,11 +2003,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 }
             }
         }
-        // ---- 裂荚射手：阳光【显式写回原版 200】（原注释错写成「200 -> 225」；写一遍防被别的 mod 改掉）----
-        setField('PlantProps', CFG.splitpea.plantType, 'SunCost', featOn('splitpea') ? CFG.splitpea.sunCost : VANILLA.splitpea.sunCost);   // ★两态：关掉写回原版 125
-        // ---- 寒冰射手：单格范围冰减速 + 概率冰锥（伤害跟随寒冰射手）----
-        //  ★ 两态化：开=写数据+建冰锥；关=**删掉**弹道溅射、**移除**克隆冰锥、写回原版两字段。
-        //     （原来整块被 featOn 包住 ⇒ 关掉时不执行 ⇒ 冰锥与单格减速都还在。）
+        // ---- 裂荚射手：阳光【显式写回原版 200】（原注释错写成「200 -> 225」；写一遍防被别的 mod 改掉） ----
+        setField('PlantProps', CFG.splitpea.plantType, 'SunCost', featOn('splitpea') ? CFG.splitpea.sunCost : VANILLA.splitpea.sunCost);   // 两态：关掉写回原版 125
+        // ---- 寒冰射手：单格范围冰减速 + 概率冰锥（伤害跟随寒冰射手） ----
+        // 两态化：开=写数据+建冰锥；关=**删掉**弹道溅射、**移除**克隆冰锥、写回原版两字段。
+        // （原来整块被 featOn 包住 ⇒ 关掉时不执行 ⇒ 冰锥与单格减速都还在。）
         {
             const SP = CFG.snowpea, PC = PvZ2ObjectContainer;   // 容器是 makeDataPatcher 的入参
             const onSP = featOn('snowpea');
@@ -2024,7 +2025,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (peaDmg != null) od.Damage = peaDmg;
                 });
                 if (spike) {
-                    // ★ 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
+                    // 双表注册：引擎按别名查 ProjectileTypes，只加 ProjectileProps 会兜底成普通豌豆
                     try {
                         const tl = PC.ProjectileTypes;
                         if (Array.isArray(tl) && !tl.some((x) => (x.aliases || []).indexOf(SP.spikeAlias) !== -1)) {
@@ -2039,10 +2040,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             } else {
                 // ---- 关掉：把寒冰射手还原成原版 ----
                 try {
-                    // ★ 原版 pea_snow 没有 SplashDamage（已核对 Objects/ProjectileProps.json：
-                    //    只有 Damage:20 / ChillDuration:10 / IceBlockSize / Size）⇒ 直接删除。
-                    //    ⚠️ 不能用 gpnVanilla 取「原值」：首次 apply 时我们已经先写了 SplashDamage，
-                    //       那时记录到的就是「我们自己的值」，还原时等于又写回去（实机诊断抓到的 BUG）。
+                    // 原版 pea_snow 没有 SplashDamage（已核对 Objects/ProjectileProps.json：
+                    // 只有 Damage:20 / ChillDuration:10 / IceBlockSize / Size）⇒ 直接删除。
+                    // 不能用 gpnVanilla 取「原值」：首次 apply 时我们已经先写了 SplashDamage，
+                    // 那时记录到的就是「我们自己的值」，还原时等于又写回去（实机诊断抓到的 BUG）。
                     const pi = findIdx(PC.ProjectileProps, SP.peaType);
                     if (pi >= 0 && PC.ProjectileProps[pi].objdata) {
                         track(PC.ProjectileProps[pi].objdata, 'SplashDamage');
@@ -2078,18 +2079,18 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             setField('PlantProps', SP.plantType, 'PeaFreezeType', onSP ? SP.spikeAlias : SP.peaType);
         }
         // 甜椒投手：阳光 + 种植冷却 + 灼烧标记
-        // ★ 两态：阳光/冷却挪到包裹外（关掉时必须写回原版 200/20）
+        // 两态：阳光/冷却挪到包裹外（关掉时必须写回原版 200/20）
         setField('PlantProps', 'pepperpult', 'SunCost', featOn('pepperpult') ? CFG.pepperpult.sunCost : VANILLA.pepperpult.sunCost);
         setField('PlantProps', 'pepperpult', 'Cooldown', featOn('pepperpult') ? CFG.pepperpult.packetCooldown : VANILLA.pepperpult.cooldown);
         if (featOn('pepperpult')) {
             // !! v2.8.2 修：真实字段叫 Cooldown，不叫 PacketCooldown ——
-            //    之前写错了名字，等于凭空加了个没人读的字段，游戏里冷却一直是 20 秒。
+            // 之前写错了名字，等于凭空加了个没人读的字段，游戏里冷却一直是 20 秒。
             // 给甜椒弹道打上「落地要灼烧」的私有标记。
             // v2.7.1 修正：运行时 ProjectileProps 用的是【小写对象别名】
-            //   pepper / pepper1 / pepper2 / pepper_pf，
-            //   而 PepperpultDefault 之类是 ProjectileTypes 那边的【对象类名】。
-            //   之前按类名匹配，一条都没打上，所以灼烧从来没生效过。
-            //   这里再加一道保险：直接读植物数据的 CabbageType 来推导，免得以后又对不上。
+            // pepper / pepper1 / pepper2 / pepper_pf，
+            // 而 PepperpultDefault 之类是 ProjectileTypes 那边的【对象类名】。
+            // 之前按类名匹配，一条都没打上，所以灼烧从来没生效过。
+            // 这里再加一道保险：直接读植物数据的 CabbageType 来推导，免得以后又对不上。
             const PEP_PRJ = ['pepper', 'pepper1', 'pepper2', 'pepper_pf'];
             const want = PEP_PRJ.slice();
             try {
@@ -2112,7 +2113,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                     if (!e.aliases.some((a) => want.indexOf(a) !== -1)) continue;
                     if (!e.objdata) e.objdata = {};
                     track(e.objdata, BURN_RATIO_KEY);
-                    // ★ 两态：开=打标记；关=删掉标记（否则关掉后落地/护盾/障碍仍会铺火）
+                    // 两态：开=打标记；关=删掉标记（否则关掉后落地/护盾/障碍仍会铺火）
                     if (featOn('pepperpult')) e.objdata[BURN_RATIO_KEY] = CFG.pepperpult.burnTotalRatio;
                     else { try { delete e.objdata[BURN_RATIO_KEY]; } catch (e2) { /* ignore */ } }
                     pepHit++;
@@ -2123,19 +2124,19 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
         }
 
-        // ---- 孢子菇：阳光 150 → 200 / 血量上限 300 → 150（两态，关掉写回原版）----
-        //   注意：这两个字段在原版数据里就叫 SunCost / Toughness（见 Objects/PlantProps.json）。
+        // ---- 孢子菇：阳光 150 → 200 / 血量上限 300 → 150（两态，关掉写回原版） ----
+        // 注意：这两个字段在原版数据里就叫 SunCost / Toughness（见 Objects/PlantProps.json）。
         setField('PlantProps', CFG.sporeshroom.plantType, 'SunCost',
             featOn('sporeshroom') ? CFG.sporeshroom.sunCost : VANILLA.sporeshroom.sunCost);
         setField('PlantProps', CFG.sporeshroom.plantType, 'Toughness',
             featOn('sporeshroom') ? CFG.sporeshroom.toughness : VANILLA.sporeshroom.toughness);
 
         // 暗影油桃：阳光 + 数据驱动的「爆炸」伤害
-        // ★ 阳光两态放到包裹外面
+        // 阳光两态放到包裹外面
         setField('PlantProps', 'noctarine', 'SunCost', featOn('noctarine') ? CFG.noctarine.sunCost : VANILLA.noctarine.sunCost);
-        // ★ 油桃的 Actions 爆炸伤害：**两态**，且原值一律取自 track 的第一次记录。
-        //   为什么放在 featOn 外面：关掉开关时也必须还原（原来放在里面 ⇒ 关掉后不还原）。
-        //   为什么不用局部变量记原值：第一次 apply 时 track 还没数据，会把"已乘过的值"当原值 ⇒ 连乘。
+        // 油桃的 Actions 爆炸伤害：**两态**，且原值一律取自 track 的第一次记录。
+        // 为什么放在 featOn 外面：关掉开关时也必须还原（原来放在里面 ⇒ 关掉后不还原）。
+        // 为什么不用局部变量记原值：第一次 apply 时 track 还没数据，会把"已乘过的值"当原值 ⇒ 连乘。
         {
             const plist = PvZ2ObjectContainer.PlantProps;
             const on = featOn('noctarine');
@@ -2157,7 +2158,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
 
         // 龙葵 6 条弹道：穿透标记（+ 地面推的两个辅助字段）
         // 注意：击退【不在这里】—— 它是逐发按暗影态在 _shoot 里设的（见 makeNightShadePatch），
-        //       否则非暗影态的子弹也会带击退（v2.4.2 的 BUG）。
+        // 否则非暗影态的子弹也会带击退（v2.4.2 的 BUG）。
         const prjs = PvZ2ObjectContainer.ProjectileProps;
         {
             const onNs = featOn('nightshade');
@@ -2176,7 +2177,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                         if (nsPierce >= 2) put(PIERCE_KEY, nsPierce);
                         else putAbsent(PIERCE_KEY);
                     } else {
-                        // ★ 关掉 ⇒ 清掉我们打过的字段（原版 nightshade 弹道没有它们）
+                        // 关掉 ⇒ 清掉我们打过的字段（原版 nightshade 弹道没有它们）
                         putAbsent('CancelsKnockbackFlying');
                         putAbsent('CannotInterruptOtherKnockback');
                         putAbsent(PIERCE_KEY);
@@ -2185,7 +2186,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             }
         }
         // 【诊断】每次 apply 结束都把图鉴追加的记账 dump 一次（内容很小；
-        //   排查完把 gpnAlmTempVerbose 改回 false 即静默）
+        // 排查完把 gpnAlmTempVerbose 改回 false 即静默）
         _almDumpTail('apply() 结束');
         // 【诊断】打印"apply 自己看到的开关"与"它算出来的值"（只在 verboseLog 打开时打印）
         if (verboseOn()) try {
@@ -2203,7 +2204,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             try {
                 const _PM = (typeof gpnPlantsRef === 'function') ? gpnPlantsRef() : null;
                 if (_PM && typeof _PM.getPlantProps === 'function' && typeof CFG !== 'undefined') {
-                    _typeId = 'nightshade';   // ★ 修 BUG：CFG.nightshade 没有 plantType 字段（之前传 undefined ⇒ 引擎回退成豌豆射手）
+                    _typeId = 'nightshade';   // 修 BUG：CFG.nightshade 没有 plantType 字段（之前传 undefined ⇒ 引擎回退成豌豆射手）
                     const _gp = _PM.getPlantProps(_typeId);
                     if (_gp) {
                         _engineSun = _gp.SunCost;
@@ -2228,9 +2229,9 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                 })()
                 + ' ｜ 同一对象? ' + _sameRef + ' ｜ 实例=' + GPN_INSTANCE_ID);
         } catch (e) { /* 只影响诊断 */ }
-        // ★ 图鉴文案：**独立一步**（原来是寄生在 setField 里 ⇒ setField 提前返回时整块不跑）。
-        //   放在数据补丁之后：它只用 PvZ2ObjectContainer + CFG + 开关，不依赖前面算了什么；
-        //   而"关掉后还原成原版"靠的是块内的「原件快照 + 每次重建」（见开发记录 §3.54/§3.58）。
+        // 图鉴文案：**独立一步**（原来是寄生在 setField 里 ⇒ setField 提前返回时整块不跑）。
+        // 放在数据补丁之后：它只用 PvZ2ObjectContainer + CFG + 开关，不依赖前面算了什么；
+        // 而"关掉后还原成原版"靠的是块内的「原件快照 + 每次重建」（见开发记录 §3.54/§3.58）。
         try { applyAlmanacText(); } catch (eAlm) { warn("图鉴文本：这次没落下去", eAlm); }
         return undo.length > 0;
     };
@@ -2245,7 +2246,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
     };
 
     // _undoCount：自检用（只读）—— 看"已记录的原值条数"有没有增长。
-    //   ⚠ 必须挂在这里：`undo` 是 makeDataPatcher 的**内部变量**，模块级导出闭包看不到它。
+    // 必须挂在这里：`undo` 是 makeDataPatcher 的**内部变量**，模块级导出闭包看不到它。
     return { apply, revert, _undoCount: () => undo.length };
 }
 
@@ -2285,9 +2286,9 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         return originals.fart.call(this, stunDuration, poison);
     };
     // 包装后的函数存成变量：下面 isImmune 用「是否重写过 chilibeanFart」判天然免疫。
-    // ⚠️ 2026/10/20 改：不再用"函数引用相等"判断，改用 `__gpnGated` 标记 —— 因为
-    //    孢子菇那边（§3.80 巴豆屁联动）会在这一层**再包一层**，引用比较会把所有僵尸误判成免疫。
-    //    任何"我们装上去的包装"都必须带 `__gpnGated`（gpnGatedBody 会写 featKey 字符串，真值即可）。
+    // 改：不再用"函数引用相等"判断，改用 `__gpnGated` 标记 —— 因为
+    // 孢子菇那边（§3.80 巴豆屁联动）会在这一层**再包一层**，引用比较会把所有僵尸误判成免疫。
+    // 任何"我们装上去的包装"都必须带 `__gpnGated`（gpnGatedBody 会写 featKey 字符串，真值即可）。
     const gatedFart = gpnGatedBody(originals.fart, 'chilibean', patchedFart);
     Zombie.prototype.chilibeanFart = gatedFart;   // （gpnGatedBody 已给它打上 __gpnGated = 'chilibean'）
     recs.push({ Cls: Zombie, name: 'chilibeanFart', original: originals.fart });
@@ -2303,21 +2304,21 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
         return extraMechRe.test(code) || arbiterRe.test(code);
     };
 
-    /** ★ 引擎口径的「这一帧能不能行动」——用来排除"被控住、当下没在啃"的僵尸。
+    /** 引擎口径的「这一帧能不能行动」——用来排除"被控住、当下没在啃"的僵尸。
      *
-     *  为什么不能只看 `isEating`：它只是【动作状态标记】——
-     *    `playEat()` 里置 true，`playWalk()` / `playIdle()` 里置 false；
-     *    而**冰冻 / 眩晕 / 巴豆毒这些控制效果只让它停住，并不清 `isEating`** ⇒ 被控的僵尸
-     *    仍会被算作"正在啃食"，被一起带走（玩家实测的 BUG）。
+     * 为什么不能只看 `isEating`：它只是【动作状态标记】——
+     * `playEat()` 里置 true，`playWalk()` / `playIdle()` 里置 false；
+     * 而**冰冻 / 眩晕 / 巴豆毒这些控制效果只让它停住，并不清 `isEating`** ⇒ 被控的僵尸
+     * 仍会被算作"正在啃食"，被一起带走（玩家实测的 BUG）。
      *
-     *  引擎真正门控啃食的是 `shouldSpeedScale()`：
-     *    `Zombie.switchingFalse()` 里 `var e = this.shouldSpeedScale(), i = 0.001 * e; this.detectPlant(i)`
-     *    ⇒ **被控时 e = 0 ⇒ 每帧的啃食 dt 就是 0**（所以原版很多 detectPlant 第一句是 `if (0 != t)`）。
-     *  它的返回 0 覆盖：freeze（冰冻生菜）/ stunned（眩晕洋葱）/ butterStun / chilibeanPoisoning·chiliStun（巴豆毒）
-     *    / iceblocked / sheepend（被羊化）/ 被植物卡住 / 坠落 / 传送…
-     *  ⚠️ 而【减速】只乘 0.5（chill / 香水 / 树胶）⇒ 返回 > 0 ⇒ 仍然算"在啃" ✓
-     *     —— 所以这里判的是 `> 0`，**不是** `=== 1`。
-     *  拿不到这两个方法时返回 true（退回旧行为，不崩、不静默改语义）。 */
+     * 引擎真正门控啃食的是 `shouldSpeedScale()`：
+     * `Zombie.switchingFalse()` 里 `var e = this.shouldSpeedScale(), i = 0.001 * e; this.detectPlant(i)`
+     * ⇒ **被控时 e = 0 ⇒ 每帧的啃食 dt 就是 0**（所以原版很多 detectPlant 第一句是 `if (0 != t)`）。
+     * 它的返回 0 覆盖：freeze（冰冻生菜）/ stunned（眩晕洋葱）/ butterStun / chilibeanPoisoning·chiliStun（巴豆毒）
+     * / iceblocked / sheepend（被羊化）/ 被植物卡住 / 坠落 / 传送…
+     * 而【减速】只乘 0.5（chill / 香水 / 树胶）⇒ 返回 > 0 ⇒ 仍然算"在啃" ✓
+     * —— 所以这里判的是 `> 0`，**不是** `=== 1`。
+     * 拿不到这两个方法时返回 true（退回旧行为，不崩、不静默改语义）。 */
     const canAct = (z) => {
         try {
             if (z && typeof z.shouldSpeedScale === 'function') return z.shouldSpeedScale() > 0;
@@ -2344,7 +2345,7 @@ function makeChiliPatches(ChiliBean, Zombie, ZombiePoison) {
                 if (!z || z === zombie || eaters.indexOf(z) !== -1) continue;
                 if (typeof z.isAlive !== 'function' || !z.isAlive()) continue;
                 if (!z.isEating) continue;
-                if (!canAct(z)) continue;                // ★ 被控住（冰冻/眩晕/巴豆毒…）当下没在啃 -> 不带走
+                if (!canAct(z)) continue;                // 被控住（冰冻/眩晕/巴豆毒…）当下没在啃 -> 不带走
                 if (!z.bodyRecReal || !z.bodyRecReal.judgeCrossRec(this.bodyRec)) continue;
                 if (isImmune(z)) continue;
                 eaters.push(z);
@@ -2415,9 +2416,9 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
         if (!featOn('bloomingheart')) return original.call(this, zombie);
         if (!zombie) return original.call(this, zombie);
 
-        // ★★ 场外（最右列更右侧）：`zombie.inLnC` 是全场共用的假格 `LnCRight`（lIndex = -2），
-        //    原来以它的 `node` 为中心铺 3 格 ⇒ 判定框会落在场外 ⇒ **范围失效**。
-        //    这里改走"按 Y 求行 + 以命中目标为中心"的兜底（与引擎寒冰辣椒同款思路）。
+        // 场外（最右列更右侧）：`zombie.inLnC` 是全场共用的假格 `LnCRight`（lIndex = -2），
+        // 原来以它的 `node` 为中心铺 3 格 ⇒ 判定框会落在场外 ⇒ **范围失效**。
+        // 这里改走"按 Y 求行 + 以命中目标为中心"的兜底（与引擎寒冰辣椒同款思路）。
         if (gpnIsOffField(zombie) || gpnIsOffField(this)) {
             gpnOffFieldAreaApply(this, zombie, deps, ['bloom']);
             return original.call(this, zombie);
@@ -2427,14 +2428,14 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
             return original.call(this, zombie);
         }
         // 场内：以**命中目标所在格**为中心、同排 3 格宽的判定框
-        //   ⚠️ 中心怎么取（踩过坑，按可靠性排序）：
-        //     ① **格子中心**（引擎的 `Square.getSquareWorldPosition(l, c, .5, .5)`）—— 最准，
-        //        它和僵尸的 bodyRec 是同一套世界坐标（引擎自己的 `getLnCRec` 也用它）；
-        //     ② 僵尸自己的 `worldPositionX/Y`；
-        //     ③ `zombie.inLnC.node.worldPosition`。
-        //   ❌ 不要用 ③ 打头：`LnC.plantPoint` 这个 getter 在 `_plantPoint` 为空时会**退回 `node`**，
-        //      而 `node` 未必是格心（自检抓到过：框心跑到 (0,0)，把三格外的僵尸框进来、
-        //      相邻格的反而没框到）。
+        // 中心怎么取（踩过坑，按可靠性排序）：
+        // ① **格子中心**（引擎的 `Square.getSquareWorldPosition(l, c, .5, .5)`）—— 最准，
+        // 它和僵尸的 bodyRec 是同一套世界坐标（引擎自己的 `getLnCRec` 也用它）；
+        // ② 僵尸自己的 `worldPositionX/Y`；
+        // ③ `zombie.inLnC.node.worldPosition`。
+        // 不要用 ③ 打头：`LnC.plantPoint` 这个 getter 在 `_plantPoint` 为空时会**退回 `node`**，
+        // 而 `node` 未必是格心（自检抓到过：框心跑到 (0,0)，把三格外的僵尸框进来、
+        // 相邻格的反而没框到）。
         const zLane = (typeof zombie.lIndex === 'number' && zombie.lIndex >= 0 && zombie.lIndex <= 4)
             ? zombie.lIndex : gpnLaneByY(zombie.worldPositionY, Square);
         const zCol = (typeof zombie.cIndex === 'number' && zombie.cIndex >= 0 && zombie.cIndex <= 8)
@@ -2480,15 +2481,15 @@ function makeBloomingHeartPatch(Shot, Rectangle, Square, CommonShot) {
 /* ==========================================================================
  * §3.80 巴豆 × 孢子菇 联动 —— **S1 只读探针**（`probeFart` + `verboseLog` 都开才打印）
  *
- *   目的：实机拿 3 组证据，再决定主体怎么写：
- *     P1 **气体节点结构**：是 `ParticleSystem` 还是 `Sprite`？颜色字段在哪（startColor/endColor/color）？
- *     P2 **轴向**：节点 `scale` 的哪个分量对应"屏幕竖直 = 行高方向"（决定放大 3 行时改哪个轴）？
- *     P3 **钩子可靠性**：`chilibeanFart` 调用次数 : `playZombieFart` 调用次数 : 气体节点数 是否 1:1:1
+ * 目的：实机拿 3 组证据，再决定主体怎么写：
+ * P1 **气体节点结构**：是 `ParticleSystem` 还是 `Sprite`？颜色字段在哪（startColor/endColor/color）？
+ * P2 **轴向**：节点 `scale` 的哪个分量对应"屏幕竖直 = 行高方向"（决定放大 3 行时改哪个轴）？
+ * P3 **钩子可靠性**：`chilibeanFart` 调用次数 : `playZombieFart` 调用次数 : 气体节点数 是否 1:1:1
  *
- *   ⚠️ **只打印，绝不改行为**：不碰 scale / color / 音量 / 伤害 / 标记。
- *   ⚠️ 包装 `Zombie.chilibeanFart` 时必须带 `__gpnGated` 标记（featKey 字符串）—— 巴豆补丁里
- *      `z.chilibeanFart !== gatedFart ⇒ 原生免疫` 的判定见 §3 末尾的"身份守卫"；
- *      现在改成 `__gpnGated` 标记（否则多包一层会把所有僵尸误判成巴豆免疫）。
+ * **只打印，绝不改行为**：不碰 scale / color / 音量 / 伤害 / 标记。
+ * 包装 `Zombie.chilibeanFart` 时必须带 `__gpnGated` 标记（featKey 字符串）—— 巴豆补丁里
+ * `z.chilibeanFart !== gatedFart ⇒ 原生免疫` 的判定见 §3 末尾的"身份守卫"；
+ * 现在改成 `__gpnGated` 标记（否则多包一层会把所有僵尸误判成巴豆免疫）。
  * ========================================================================== */
 
 /** 颜色对象 → "(r,g,b,a)" */
@@ -2578,8 +2579,8 @@ function gpnProbeScanLater(z, state) {
 /* ---- §3.80 跨行补扫 + 视觉改造（S2 主体用；探针与功能共用） ---- */
 
 /** 屏幕震动：调原版 `LevelPlay.shakeScreen(duration)`（流星花/黑暗巨人同款）。
- *  ⚠️ 它依赖"关卡组件单例"（`LevelPlay.component`）⇒ 不在关卡里调用会抛异常，必须 try/catch + 判空。
- *  ⚠️ 同一帧多只屁只抖一次（`CFG.fartShakeCD`），否则连抖会像抽搐。 */
+ * 它依赖"关卡组件单例"（`LevelPlay.component`）⇒ 不在关卡里调用会抛异常，必须 try/catch + 判空。
+ * 同一帧多只屁只抖一次（`CFG.fartShakeCD`），否则连抖会像抽搐。 */
 let gpnFartLastShakeAt = 0;
 function gpnFartShake(C, levelPlay) {
     try {
@@ -2598,7 +2599,7 @@ function gpnFartShake(C, levelPlay) {
     } catch (e) { warn('巴豆屁：屏幕震动出错', e); return 'err'; }
 }
 /** 给一只"被气体命中"的僵尸**加**吹退距离（可叠加）。
- *  dir：+1 = 沿屁向右推，-1 = 沿屁向左推（反向僵尸的屁朝左）。 */
+ * dir：+1 = 沿屁向右推，-1 = 沿屁向左推（反向僵尸的屁朝左）。 */
 function gpnFartAddPush(t, dir, SW, C) {
     try {
         if (!t || typeof t.worldPositionX !== 'number') return;
@@ -2608,11 +2609,11 @@ function gpnFartAddPush(t, dir, SW, C) {
             : ((typeof C.fartPushTiles === 'number') ? C.fartPushTiles : 1);
         if (!(tiles > 0)) return;
         const sign = (dir < 0 ? -1 : 1);
-        /* ★ 用户 2026-10-20 追加：**正向屁 + 单次吹退内命中次数 ≥ fartPushBlowStacks(3) + 飞行僵尸** ⇒ 吹飞。
-         *   · 只对 `flying === true`（跳起/坠落也算，同飓风口径）；
-         *   · 反向屁永远不吹飞（只推）；
-         *   · 吹飞**不要求在场中格**（引擎 blowAway 自己拉 2000px 出场）；
-         *   · 尊重引擎的 `specialUnblowable` 豁免（BOSS 等免疫，不硬绕）。 */
+        /* 追加：**正向屁 + 单次吹退内命中次数 ≥ fartPushBlowStacks(3) + 飞行僵尸** ⇒ 吹飞。
+         * · 只对 `flying === true`（跳起/坠落也算，同飓风口径）；
+         * · 反向屁永远不吹飞（只推）；
+         * · 吹飞**不要求在场中格**（引擎 blowAway 自己拉 2000px 出场）；
+         * · 尊重引擎的 `specialUnblowable` 豁免（BOSS 等免疫，不硬绕）。 */
         const stacks = ((typeof t.__gpnFartStacks === 'number') ? t.__gpnFartStacks : 0) + 1;
         t.__gpnFartStacks = stacks;
         const needStacks = (typeof C.fartPushBlowStacks === 'number' && C.fartPushBlowStacks > 0) ? C.fartPushBlowStacks : 3;
@@ -2622,8 +2623,8 @@ function gpnFartAddPush(t, dir, SW, C) {
             try { t.blowAway(); } catch (e) { warn('巴豆屁：吹飞出错', e); }
             return;   // 吹飞后不再推退
         }
-        /* ★ 叠加的是【速度】不是时间：总格数累加（带上限），但**总时长永远是 `fartPushDuration`(1 秒)**，
-         *   速度 = 总格数 / 1 秒 ⇒ 叠得越多推得越快，但都在 1 秒内推完。 */
+        /* 叠加的是【速度】不是时间：总格数累加（带上限），但**总时长永远是 `fartPushDuration`(1 秒)**，
+         * 速度 = 总格数 / 1 秒 ⇒ 叠得越多推得越快，但都在 1 秒内推完。 */
         const maxT = (typeof C.fartPushMaxTiles === 'number' && C.fartPushMaxTiles > 0) ? C.fartPushMaxTiles : 8;
         let sum = (typeof t.__gpnFartPushTiles === 'number') ? t.__gpnFartPushTiles : 0;
         sum = sum + sign * tiles;
@@ -2635,9 +2636,9 @@ function gpnFartAddPush(t, dir, SW, C) {
 }
 
 /** 草坪左右边界（"最左格最左边 / 最右格最右边"）。
- *  ⚠️ 实机反馈"到了最右格右侧还在被推" ⇒ 说明 `FrontYard.lawnRec` 可能取不到(nil)，
- *     所以这里**优先 lawnRec（引擎飓风甘蓝同款），取不到就用格子节点兜底**：
- *     最左格中心 − SW/2、最右格中心 + SW/2。 */
+ * 实机反馈"到了最右格右侧还在被推" ⇒ 说明 `FrontYard.lawnRec` 可能取不到(nil)，
+ * 所以这里**优先 lawnRec（引擎飓风甘蓝同款），取不到就用格子节点兜底**：
+ * 最左格中心 − SW/2、最右格中心 + SW/2。 */
 function gpnFartLawnBounds(deps, Square) {
     let cells = null, lawn = null;
     // ① 用格子节点算（**第一优先**）：「最左格中心 − SW/2」「最右格中心 + SW/2」
@@ -2685,8 +2686,8 @@ function gpnFartPushTick(z, dt, C, deps) {
             try { log('[巴豆屁·边界] 用=' + rec.src + ' ｜ 左=' + Math.round(rec.x) + ' ｜ 右=' + Math.round(rec.y) + ' ｜ lawnRec=' + (rec.alt ? (Math.round(rec.alt.x) + '~' + Math.round(rec.alt.y)) : '无') + ' ｜ 当前x=' + Math.round(z.worldPositionX)); } catch (e) { /* 忽略 */ }
         }
         if (rec) {
-            /* ★ 用户 2026-10-20：**只在场中格子内才能吹退**；最多推到「最右格最右边 / 最左格最左边」。
-             *   已经在边界外 ⇒ 这一帧结束推退（否则会被"夹回来"形成反向位移）。 */
+            /* **只在场中格子内才能吹退**；最多推到「最右格最右边 / 最左格最左边」。
+             * 已经在边界外 ⇒ 这一帧结束推退（否则会被"夹回来"形成反向位移）。 */
             if (dir > 0) {
                 if (z.worldPositionX >= rec.y - 0.01) { z.__gpnFartPush = 0; z.__gpnFartPushTiles = 0; z.__gpnFartStacks = 0; return true; }
                 if (target > rec.y) target = rec.y;
@@ -2707,14 +2708,14 @@ function gpnFartPushTick(z, dt, C, deps) {
     } catch (e) { warn('巴豆屁：吹退出错', e); return false; }
 }
 /** 跨行补扫：对"尸体所在行的上下各 (rows-1)/2 行"用**与原版相同的方向条件**再扫一遍。
- *  · 邻行：`setChiliStun(t)`（有薄荷毒再 `setPoison`）+ 打 `CarriedSporeShroom`
- *  · 本行：引擎已经眩晕/中毒过了，这里**只补标记**（否则"三行里中间行不感染"很怪）
- *  返回被"邻行新增"处理的数量（探针/日志用）。 */
+ * · 邻行：`setChiliStun(t)`（有薄荷毒再 `setPoison`）+ 打 `CarriedSporeShroom`
+ * · 本行：引擎已经眩晕/中毒过了，这里**只补标记**（否则"三行里中间行不感染"很怪）
+ * 返回被"邻行新增"处理的数量（探针/日志用）。 */
 function gpnFartCrossRows(it, Square, C) {
     let n = 0;
     try {
         const z = it.z, lane = it.lane;
-        if (!z || !lane) return n;   // ⚠️ 不要求尸体自己有 setChiliStun（只对【目标】调用）
+        if (!z || !lane) return n;   // 不要求尸体自己有 setChiliStun（只对【目标】调用）
         const SW = (Square && Square.SquareWidth) ? Square.SquareWidth : 68;
         const o = (z._bodyRec && typeof z._bodyRec.prjX === 'function') ? z._bodyRec.prjX() : null;
         if (!o) return n;
@@ -2761,10 +2762,10 @@ function gpnFartCrossRows(it, Square, C) {
 }
 
 /** 视觉：等引擎把气体节点生成出来（音效之后紧跟着 instantiate）→ 只改 **Y 轴**放大 + 淡紫 tint。
- *  · 探针实测：行间位移 = (0,-81)（纯 Y），节点 `angle=0` ⇒ **Y 就是行高方向** ✓
- *  · ⚠️ 颜色/缩放**不能**依赖全局 `cc`（实机里它是 SystemJS 模块）⇒ 这里：
- *      缩放优先 `node.setScale(x,y,z)`；颜色优先**克隆组件自己的 Color**，其次 `deps.cc.Color`，最后普通对象。
- *  · 全流程打诊断（verboseLog 时），用来判断"没变化"到底卡在哪一步。 */
+ * · 探针实测：行间位移 = (0,-81)（纯 Y），节点 `angle=0` ⇒ **Y 就是行高方向** ✓
+ * · 颜色/缩放**不能**依赖全局 `cc`（实机里它是 SystemJS 模块）⇒ 这里：
+ * 缩放优先 `node.setScale(x,y,z)`；颜色优先**克隆组件自己的 Color**，其次 `deps.cc.Color`，最后普通对象。
+ * · 全流程打诊断（verboseLog 时），用来判断"没变化"到底卡在哪一步。 */
 function gpnFartScheduleVisual(it, C, probeOn, deps) {
     try {
         const parent = it.parent;
@@ -2799,8 +2800,8 @@ function gpnFartScheduleVisual(it, C, probeOn, deps) {
                 if (!node) { if (probeOn()) log('[巴豆屁] ⚠️ 30ms 内没找到气体节点（本次跳过视觉改造）'); return; }
                 try { node.__gpnFartTouchedAt = now; } catch (e) { /* 忽略 */ }
                 /* ③ 层级置顶：引擎挂点时 `setSiblingIndex(僵尸的索引)` ⇒ 同行后生成的僵尸会**盖住气体**
-                 *    （用户反馈"气体被僵尸挡住"）。放到该层最上层 ⇒ 气体盖住僵尸。
-                 *    池化安全：引擎每次 spawn 都会重设 siblingIndex ⇒ 不会残留。 */
+                 * （实测发现"气体被僵尸挡住"）。放到该层最上层 ⇒ 气体盖住僵尸。
+                 * 池化安全：引擎每次 spawn 都会重设 siblingIndex ⇒ 不会残留。 */
                 let zHow = 'none';
                 try {
                     if (typeof node.setSiblingIndex === 'function') {
@@ -2853,8 +2854,8 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
         const patched = function (stunDuration, poison) {
             try {
                 const marked = this && this.CarriedSporeShroom === true;
-                /* ★ 记录"这只正在放屁/即将死亡"：跨行补扫时**跳过所有这种尸体**
-                 *   （否则反向屁的气体条件会把"被巴豆击杀的尸体"也一起吹退 —— 用户 2026-10-20 反馈） */
+                /* 记录"这只正在放屁/即将死亡"：跨行补扫时**跳过所有这种尸体**
+                 * （否则反向屁的气体条件会把"被巴豆击杀的尸体"也一起吹退 —— 反馈） */
                 try { this.__gpnFartDyingAt = (new Date()).getTime(); } catch (e) { /* 忽略 */ }
                 const on = feat() && marked;
                 if (probeOn()) {
@@ -2870,12 +2871,12 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
             } catch (e) { warn('巴豆屁：入口出错', e); }
             return rec.original.apply(this, arguments);
         };
-        patched.__gpnGated = 'sporeshroom';   // ★ 身份守卫（见 chilibean 的 isImmune）
+        patched.__gpnGated = 'sporeshroom';   // 身份守卫（见 chilibean 的 isImmune）
         Zombie.prototype.chilibeanFart = patched;
         recs.push(rec);
     }
 
-    // ---- ①b 吹退 tick：借 `dealHurrikale`（引擎每帧对"活着的、在行内"的僵尸都会调它）----
+    // ---- ①b 吹退 tick：借 `dealHurrikale`（引擎每帧对"活着的、在行内"的僵尸都会调它） ----
     if (Zombie && Zombie.prototype && typeof Zombie.prototype.dealHurrikale === 'function') {
         const recH = methodRecord(Zombie, 'dealHurrikale');
         Zombie.prototype.dealHurrikale = function (dt) {
@@ -2904,12 +2905,12 @@ function makeFartLinkPatch(Zombie, SoundRescourses, Square, deps) {
         recs.push(recC);
     }
 
-    // ---- ② 音效：只留探针计数（不接管音量）----
+    // ---- ② 音效：只留探针计数（不接管音量） ----
     if (SoundRescourses && SoundRescourses.prototype && typeof SoundRescourses.prototype.playZombieFart === 'function') {
         const rec2 = methodRecord(SoundRescourses, 'playZombieFart');
         SoundRescourses.prototype.playZombieFart = function () {
-            /* ⚠️ 只做探针计数：**不再接管音量**（2026-10-20 用户实测 1.5 倍无变化 ⇒ 放弃）。
-             *    原因猜测：引擎 `play()` 对同一 clip 有冷却/去重，我们另起一次 1.5 播放会被吞掉。 */
+            /* 只做探针计数：**不再接管音量**（实测 1.5 倍无变化 ⇒ 放弃）。
+             * 原因猜测：引擎 `play()` 对同一 clip 有冷却/去重，我们另起一次 1.5 播放会被吞掉。 */
             try {
                 if (probeOn()) {
                     st.sounds++;
@@ -2940,7 +2941,7 @@ function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn, deps) 
         const fire = function () {
             try {
                 if (!it.z || it.z.dead) return;
-                // ★ 触发时**复查**：这 2 秒里开关可能被关掉 / MOD 可能被卸载 ⇒ 不能再扩行
+                // 触发时**复查**：这 2 秒里开关可能被关掉 / MOD 可能被卸载 ⇒ 不能再扩行
                 if (typeof gpnDisposed !== 'undefined' && gpnDisposed) return;
                 if (typeof featOn === 'function' && !featOn('sporeshroom')) return;
                 const added = gpnFartCrossRows(it, Square, C);
@@ -2959,13 +2960,13 @@ function gpnFartScheduleLink(z, stunDuration, poison, Square, C, probeOn, deps) 
 }
 /* =========================================================================
  * 5. 暗影龙葵
- *   5a. _shoot：抄自 0.14.0 的 NightShade._shoot，逻辑等价，额外给弹道打「暗影态」标记
- *   5b. commonShot.objdata setter：把私有字段从原始数据里捞出来
- *   5c. commonShot.detectEnemy：穿透（僵尸侧 + 障碍物 +【被弹反后的植物侧】）
+ * 5a. _shoot：抄自 0.14.0 的 NightShade._shoot，逻辑等价，额外给弹道打「暗影态」标记
+ * 5b. commonShot.objdata setter：把私有字段从原始数据里捞出来
+ * 5c. commonShot.detectEnemy：穿透（僵尸侧 + 障碍物 +【被弹反后的植物侧】）
  *
- *   ⚠ 植物侧那一段是必须的：原版 detectEnemyNormal 在 enemyType == plant 时
- *     （= 被小丑 / 三节棍弹反之后）会走 detectPlant() 打植物，
- *     而我们的穿透分支是【整个替换】detectEnemy 的 ⇒ 不自己补上就永远打不到植物。
+ * 植物侧那一段是必须的：原版 detectEnemyNormal 在 enemyType == plant 时
+ * （= 被小丑 / 三节棍弹反之后）会走 detectPlant() 打植物，
+ * 而我们的穿透分支是【整个替换】detectEnemy 的 ⇒ 不自己补上就永远打不到植物。
  * =======================================================================*/
 
 /** 5a. 重写 _shoot —— 原版不返回弹道，所以必须在发射点自己标记 */
@@ -3008,9 +3009,9 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
                 shot.damageScale = scale;
                 // 暗影态发射的弹道才允许穿透（普攻 / 大招都算，只要是暗影态发的）
                 shot.__gpnShadow = !!self.ShadowPowered;
-                // ★ 命中特效（那片会飘落的紫叶 = 引擎 commonShot 的 PopParticle）：
-                //   这一发只在【最后命中一个目标】时才出叶子。标记只打在暗影龙葵的弹上 ——
-                //   星星果 A2 追击弹（__gpnPierceAlways）、原版仙人掌刺都不受影响。
+                // 命中特效（那片会飘落的紫叶 = 引擎 commonShot 的 PopParticle）：
+                // 这一发只在【最后命中一个目标】时才出叶子。标记只打在暗影龙葵的弹上 ——
+                // 星星果 A2 追击弹（__gpnPierceAlways）、原版仙人掌刺都不受影响。
                 shot.__gpnFxLastOnly = true;
                 // 击退也只在暗影态生效（非暗影态 = 原版：没有击退）
                 // 引擎在 commonShot 里提供了现成 setter：this.knockbackDistance = v
@@ -3027,19 +3028,19 @@ function makeNightShadePatch(NightShadePlant, PrjFunctions, Vec2, CharacterType)
     return { Cls: NightShadePlant, name: '_shoot', original };
 }
 
-/** ★ 这一发要用【哪个矩形】判这个目标 —— 【命中判定】和「已命中名单」的清理必须拿同一个结果。
+/** 这一发要用【哪个矩形】判这个目标 —— 【命中判定】和「已命中名单」的清理必须拿同一个结果。
  *
- *  为什么必须收成一个函数：这两个地方一旦用不同的矩形，就会出问题 ——
- *    · 引擎里植物的 `bodyRec` 在"隐身"时是**空矩形**（PlanternHidden / sheepend / bodyRecHiddenCD / leapTween），
- *      而 `realBodyRec` 才是真判定框；
- *    · 命中判定用 `realBodyRec`、清理却用 `bodyRec` ⇒ 打中的植物**每帧都被从名单里放出去**
- *      ⇒ 下一帧又打它 ⇒ 穿透名额**全砸在同一株身上**（v1.0.0 修的 BUG）。
- *  所以两边统一走这里；将来原版改了语义，两边也会**同时**跟着变，不会再错位。
+ * 为什么必须收成一个函数：这两个地方一旦用不同的矩形，就会出问题 ——
+ * · 引擎里植物的 `bodyRec` 在"隐身"时是**空矩形**（PlanternHidden / sheepend / bodyRecHiddenCD / leapTween），
+ * 而 `realBodyRec` 才是真判定框；
+ * · 命中判定用 `realBodyRec`、清理却用 `bodyRec` ⇒ 打中的植物**每帧都被从名单里放出去**
+ * ⇒ 下一帧又打它 ⇒ 穿透名额**全砸在同一株身上**（v1.0.0 修的 BUG）。
+ * 所以两边统一走这里；将来原版改了语义，两边也会**同时**跟着变，不会再错位。
  *
- *  口径：
- *    · 植物侧（isZombieSide=false）：realBodyRec；处于冰块状态时用 bodyRecForSnowball（与引擎 detectPlant 一致）
- *    · 僵尸侧 / 障碍物（isZombieSide=true）：bodyRec（与我们自己的命中判定一致）
- *    · 兜底：植物侧拿不到前两个时退回 bodyRec（**两边同时退**，绝不在半路临时换另一套矩形）
+ * 口径：
+ * · 植物侧（isZombieSide=false）：realBodyRec；处于冰块状态时用 bodyRecForSnowball（与引擎 detectPlant 一致）
+ * · 僵尸侧 / 障碍物（isZombieSide=true）：bodyRec（与我们自己的命中判定一致）
+ * · 兜底：植物侧拿不到前两个时退回 bodyRec（**两边同时退**，绝不在半路临时换另一套矩形）
  */
 function gpnTargetRec(shot, t, isZombieSide) {
     if (!t) return null;
@@ -3052,16 +3053,16 @@ function gpnTargetRec(shot, t, isZombieSide) {
 }
 
 /** 三种"护盾实体"（引擎里它们**全都是按 ID 认**的：`ZombieBlockers`、`onPlantHit`、三节棍推人、
- *  僵尸黑名单…… 都是按这几个 ID 判断，所以我们也照这个惯例走 —— **不要**用 `isRealZombie`，
- *  那个标志还有好几类别的实体（僵尸机甲零件、食脑者、Zomboss 部件…）共用）：
- *    · future_protector_shield   力场盾僵尸的力场盾 —— 僵尸方（在 `zombiePool`）
- *    · future_infinut_shield     全息坚果【大招】盾 —— 植物方（`hypnotized` ⇒ 在 `hypnoZombiePool`）
- *    · modern_moonflower_shield  月光花【大招】盾 —— 植物方（同上）
- *  原版仙人掌刺（官方穿透弹）打这三种盾时**不消失、继续飞**（因为 `cactusThorn.splat` 被覆写成不 pop），
- *  我们这里把同一口径补回来（唯一差别：我们要扣 1 个穿透名额）。
+ * 僵尸黑名单…… 都是按这几个 ID 判断，所以我们也照这个惯例走 —— **不要**用 `isRealZombie`，
+ * 那个标志还有好几类别的实体（僵尸机甲零件、食脑者、Zomboss 部件…）共用）：
+ * · future_protector_shield 力场盾僵尸的力场盾 —— 僵尸方（在 `zombiePool`）
+ * · future_infinut_shield 全息坚果【大招】盾 —— 植物方（`hypnotized` ⇒ 在 `hypnoZombiePool`）
+ * · modern_moonflower_shield 月光花【大招】盾 —— 植物方（同上）
+ * 原版仙人掌刺（官方穿透弹）打这三种盾时**不消失、继续飞**（因为 `cactusThorn.splat` 被覆写成不 pop），
+ * 我们这里把同一口径补回来（唯一差别：我们要扣 1 个穿透名额）。
  *
- *  ⚠️ 保险：`ZombieEnum` 是引擎 `Zombies.ts` 的导出。万一原版**改了 ID 名**（或 `Zombies.ts` 载入失败），
- *  这里会**限流告警一次**（只打一条），提示"护盾会退回被吸收的老口径"，好第一时间发现、同步白名单。 */
+ * 保险：`ZombieEnum` 是引擎 `Zombies.ts` 的导出。万一原版**改了 ID 名**（或 `Zombies.ts` 载入失败），
+ * 这里会**限流告警一次**（只打一条），提示"护盾会退回被吸收的老口径"，好第一时间发现、同步白名单。 */
 let gpnShieldIdWarned = false;
 function gpnWarnShieldIdsOnce(ZombieEnum) {
     if (gpnShieldIdWarned) return;
@@ -3083,27 +3084,27 @@ function gpnIsShieldZombie(z, ZombieEnum) {
         || z.ID === ZombieEnum.modern_moonflower_shield;
 }
 
-/** ★ 让这发穿透弹"体面地消亡"：先把引擎可能为 null 的字段补好，再调 pop()，最后兜底。
+/** 让这发穿透弹"体面地消亡"：先把引擎可能为 null 的字段补好，再调 pop()，最后兜底。
  *
- *  【为什么要这个】引擎 `commonShot.pop()` 的**最后一步**是
- *      this.ZombieListenersOnPop.forEach(function (e) { e.onCommonShotFinishPoping(w) })
- *  （通知那些"监听这发子弹消亡"的僵尸，例如小丑 / 三节棍弹反时登记的）。
- *  这个列表正常是 `[]`（类构造里就是 `[]`，`initialize()` 里也置 `[]`）—— 但 `initialize()`
- *  是由 `characterOnEnable()` 调的，而引擎 `Character.onEnable` 里写的是
- *  `if (isInGame) { ...; this.disabled || (this.characterOnEnable(), ...) }`
- *  ⇒ **enable 那一刻 `isInGame === false`（或 `disabled` 为真）的子弹会跳过 `initialize()`**，
- *    列表就保持成**预制体反序列化进来的 `null`** ⇒ `forEach` 抛
- *      TypeError: Cannot read properties of null (reading 'forEach')
- *  更糟的是它抛在 pop() 的**最后一步**：伤害 / 粒子 / 音效都已生效，但
- *  `this.fade()` 与 `this.popWaiting = false` 被跳过 ⇒ **子弹不会被标记死亡**，会继续飞、
- *  继续打，直到飞出屏幕（那条路直接调 `fade()`，不经过 pop）。
- *  玩家实测日志里这一条错误刷了 1194 次（1189 条堆栈里就是我们的 `gpnPierceDetect`）。
+ * 【为什么要这个】引擎 `commonShot.pop()` 的**最后一步**是
+ * this.ZombieListenersOnPop.forEach(function (e) { e.onCommonShotFinishPoping(w) })
+ * （通知那些"监听这发子弹消亡"的僵尸，例如小丑 / 三节棍弹反时登记的）。
+ * 这个列表正常是 `[]`（类构造里就是 `[]`，`initialize()` 里也置 `[]`）—— 但 `initialize()`
+ * 是由 `characterOnEnable()` 调的，而引擎 `Character.onEnable` 里写的是
+ * `if (isInGame) { ...; this.disabled || (this.characterOnEnable(), ...) }`
+ * ⇒ **enable 那一刻 `isInGame === false`（或 `disabled` 为真）的子弹会跳过 `initialize()`**，
+ * 列表就保持成**预制体反序列化进来的 `null`** ⇒ `forEach` 抛
+ * TypeError: Cannot read properties of null (reading 'forEach')
+ * 更糟的是它抛在 pop() 的**最后一步**：伤害 / 粒子 / 音效都已生效，但
+ * `this.fade()` 与 `this.popWaiting = false` 被跳过 ⇒ **子弹不会被标记死亡**，会继续飞、
+ * 继续打，直到飞出屏幕（那条路直接调 `fade()`，不经过 pop）。
+ * 玩家实测日志里这一条错误刷了 1194 次（1189 条堆栈里就是我们的 `gpnPierceDetect`）。
  *
- *  【我们的做法】语义等价、最小侵入：
- *   ① 调 pop() 前把 null 补成 `[]` —— 空数组 = "没有僵尸需要通知"，正是引擎本意；
- *   ② 整段 try/catch：将来引擎再冒出别的空字段，也至少把子弹 `fade()` 掉、绝不把异常抛给引擎；
- *   ③ pop() 是 async，还要挂 `.catch` —— 否则错误会变成 "Uncaught (in promise)" 刷屏；
- *   ④ 告警限流（5 秒一条），免得一次会话刷几十条。
+ * 【我们的做法】语义等价、最小侵入：
+ * ① 调 pop() 前把 null 补成 `[]` —— 空数组 = "没有僵尸需要通知"，正是引擎本意；
+ * ② 整段 try/catch：将来引擎再冒出别的空字段，也至少把子弹 `fade()` 掉、绝不把异常抛给引擎；
+ * ③ pop() 是 async，还要挂 `.catch` —— 否则错误会变成 "Uncaught (in promise)" 刷屏；
+ * ④ 告警限流（5 秒一条），免得一次会话刷几十条。
  */
 let gpnPopWarnAt = 0;
 let gpnPopDiagAt = 0;
@@ -3126,9 +3127,9 @@ let gpnAlmApplyCalls = 0;      // dataPatch.apply() 被调用次数
 let gpnAlmAppendCalls = 0;     // appendLoc() 进入次数（= 命中并走到写入分支）
 let gpnAlmAppendWrites = 0;    // 其中"判据通过、真的写了 zh"的次数
 const gpnAlmAppendLog = [];    // 前若干条明细
-// ⚠️【临时诊断开关】排查"图鉴文案重复 50 次"期间置 true ⇒ 每次 apply() 后打一次记账+dump。
-//   **2026/10/10 已查清**：那段代码每次 apply 都会执行 ⇒ 日志刷 ~50 行，但判据可靠、文本不重复
-//   （用户实机确认图鉴文案正常）⇒ 现改回 false（静默）。要再排查时置回 true 即可。
+// 【临时诊断开关】排查"图鉴文案重复 50 次"期间置 true ⇒ 每次 apply() 后打一次记账+dump。
+// **已查清**：那段代码每次 apply 都会执行 ⇒ 日志刷 ~50 行，但判据可靠、文本不重复
+// （实机验证图鉴文案正常）⇒ 现改回 false（静默）。要再排查时置回 true 即可。
 let gpnAlmTempVerbose = false;
 const GPN_NULL_WRITE_DETAIL_MAX = 2;           // 前几条打详细；之后只累计（要全量时把这个数字调大）
 /** 现场诊断用：把一个字段"长什么样"压缩成短字符串 */
@@ -3140,13 +3141,13 @@ function gpnShape(v) {
 }
 
 /** 「安全消亡」：自己做引擎 pop() 里**不需要遍历监听列表**的那几步 —— 等价、但**不会撞上那个竞态**。
- *  引擎 pop() 的顺序是：
- *    playParticle / playPopSound → (plantToSpawn / zombieToSpawn / plantHeat / tileLiquid / ProjectileEmissions)
- *    → await onPop(inLnC) → dealZombiesPoint → ZombieListenersOnPop.forEach(通知) → fade → popWaiting=false
- *  我们只有在【没有子子弹、没有监听者、也没有那几个"生成物"】时才走这条路（调用方才判），此时：
- *    · 子子弹循环为空 ⇒ 跳过等价；· forEach 列表为空 ⇒ 跳过等价；· 那几个生成物都没有 ⇒ 跳过等价。
- *  其余步骤（粒子、音效、onPop、dealZombiesPoint、fade、复位）**一步不落**地照做。
- *  `popWaiting` 已经在 pop 流程里（重复调用）时，就不再补粒子/音效（与引擎"跳过到 case 34"一致）。 */
+ * 引擎 pop() 的顺序是：
+ * playParticle / playPopSound → (plantToSpawn / zombieToSpawn / plantHeat / tileLiquid / ProjectileEmissions)
+ * → await onPop(inLnC) → dealZombiesPoint → ZombieListenersOnPop.forEach(通知) → fade → popWaiting=false
+ * 我们只有在【没有子子弹、没有监听者、也没有那几个"生成物"】时才走这条路（调用方才判），此时：
+ * · 子子弹循环为空 ⇒ 跳过等价；· forEach 列表为空 ⇒ 跳过等价；· 那几个生成物都没有 ⇒ 跳过等价。
+ * 其余步骤（粒子、音效、onPop、dealZombiesPoint、fade、复位）**一步不落**地照做。
+ * `popWaiting` 已经在 pop 流程里（重复调用）时，就不再补粒子/音效（与引擎"跳过到 case 34"一致）。 */
 function gpnShotPopSafe(shot) {
     const already = !!shot.popWaiting;
     if (!already) {
@@ -3165,7 +3166,7 @@ function gpnShotPopSafe(shot) {
 }
 
 /** 这条子弹【能不能】走"安全消亡"（= 引擎 pop() 里除了上面那几步之外没别的事要做）。
- *  任何一项不满足都返回 false ⇒ 老老实实调引擎 pop()（外面还有护栏 + 兜底）。 */
+ * 任何一项不满足都返回 false ⇒ 老老实实调引擎 pop()（外面还有护栏 + 兜底）。 */
 function gpnCanSafePop(shot) {
     if (!shot) return false;
     if (shot.ProjectileEmissions && shot.ProjectileEmissions.length > 0) return false;  // 有子子弹
@@ -3176,8 +3177,8 @@ function gpnCanSafePop(shot) {
 }
 
 /** 这条子弹已经证明"引擎 pop() 用不了" -> 给实例装一个替身 pop：
- *   - 平时走 gpnShotPopSafe（安全消亡）；
- *   - 万一它后来恢复正常、而且**真的有监听者**（列表非空）-> 立刻删掉替身、交回引擎原版（不漏通知）。 */
+ * - 平时走 gpnShotPopSafe（安全消亡）；
+ * - 万一它后来恢复正常、而且**真的有监听者**（列表非空）-> 立刻删掉替身、交回引擎原版（不漏通知）。 */
 function gpnInstallStandinPop(shot) {
     if (!shot || shot.__gpnPopStandin) return;
     try {
@@ -3204,7 +3205,7 @@ function gpnPopFallback(shot, e) {
     const now = Date.now();
     if (now - gpnPopWarnAt > 5000) {                 // 限流：同一条 5 秒内最多打一条
         gpnPopWarnAt = now;
-        // ★ 诊断行：把"可能是 null 的那几个字段"当场打出来（下次日志一看就知道是哪个）
+        // 诊断行：把"可能是 null 的那几个字段"当场打出来（下次日志一看就知道是哪个）
         let info = '(诊断失败)';
         try {
             info = 'listeners=' + gpnShape(shot.ZombieListenersOnPop)
@@ -3226,12 +3227,12 @@ function gpnPopFallback(shot, e) {
 }
 
 /** 给"监听列表"装**永不返回 null** 的护栏访问器；返回**是否已经能安全调引擎 pop()**（true = 是数组）。
- *  为什么**即使现在是数组也要装**：实测日志显示，这条子弹的字段在我们调 pop() 之前是好的，
- *  但引擎 pop() 内部有 `await`，期间它可能被**子弹池的销毁/回收**顺手清成 `null`
- *  （`NodePools`：同预制体闲置 > 100 颗就整池 `clear()` → `destroy()`；销毁会把可序列化字段清 null）。
- *  装了访问器之后：`set` 只接受数组、**忽略 null/undefined** ⇒ 之后谁再写 null 都不生效。
- *  正常子弹**语义不变**（读到的还是同一个数组，里面的监听者照样会收到通知）。
- *  另外这就是"陷阱"：谁尝试写 null，我们就把**它的调用栈**打出来（限流），用于定位/反馈上游。 */
+ * 为什么**即使现在是数组也要装**：实测日志显示，这条子弹的字段在我们调 pop() 之前是好的，
+ * 但引擎 pop() 内部有 `await`，期间它可能被**子弹池的销毁/回收**顺手清成 `null`
+ * （`NodePools`：同预制体闲置 > 100 颗就整池 `clear()` → `destroy()`；销毁会把可序列化字段清 null）。
+ * 装了访问器之后：`set` 只接受数组、**忽略 null/undefined** ⇒ 之后谁再写 null 都不生效。
+ * 正常子弹**语义不变**（读到的还是同一个数组，里面的监听者照样会收到通知）。
+ * 另外这就是"陷阱"：谁尝试写 null，我们就把**它的调用栈**打出来（限流），用于定位/反馈上游。 */
 function gpnFixListenerList(shot) {
     if (!shot) return false;
     const cur = shot.ZombieListenersOnPop;
@@ -3243,7 +3244,7 @@ function gpnFixListenerList(shot) {
         }
         return true;                                     // 已经护住 -> 什么都不用做
     }
-    let arr = Array.isArray(cur) ? cur : [];             // ★ 保留已有监听者（通知不能丢）
+    let arr = Array.isArray(cur) ? cur : [];             // 保留已有监听者（通知不能丢）
     let how = 'none';
     try {
         Object.defineProperty(shot, 'ZombieListenersOnPop', {
@@ -3251,7 +3252,7 @@ function gpnFixListenerList(shot) {
             get() { return arr; },
             set(v) {
                 if (Array.isArray(v)) { arr = v; return; }
-                if (v == null) {                          // ★ 有人想写 null/undefined —— 拦下并记一笔
+                if (v == null) {                          // 有人想写 null/undefined —— 拦下并记一笔
                     gpnNullWriteTotal += 1;
                     if (gpnNullWriteDetail < GPN_NULL_WRITE_DETAIL_MAX) {
                         gpnNullWriteDetail += 1;
@@ -3296,14 +3297,14 @@ function gpnSafePop(shot) {
     }
     let ok = false;
     try {
-        ok = gpnFixListenerList(shot);                                    // ★ 先护住监听列表（即使现在是好的）
-        if (!ok) {                                                        // ★ 护不住就绝不调 pop（调了必炸）
+        ok = gpnFixListenerList(shot);                                    // 先护住监听列表（即使现在是好的）
+        if (!ok) {                                                        // 护不住就绝不调 pop（调了必炸）
             try { shot.__gpnPopBroken = true; } catch (e) { }
             gpnInstallStandinPop(shot);
             gpnShotPopSafe(shot);
             return null;
         }
-        if (gpnCanSafePop(shot)) {                                        // ★ 引擎 pop() 没别的事要做 -> 自己做（不撞竞态）
+        if (gpnCanSafePop(shot)) {                                        // 引擎 pop() 没别的事要做 -> 自己做（不撞竞态）
             gpnShotPopSafe(shot);
             return null;
         }
@@ -3332,7 +3333,7 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
     const isZombieSide = !CharacterType || shot.enemyType === CharacterType.zombie;
 
     // (1) 清理：已经不在场上、或已经和判定框分开的，从「已命中」名单里放出去
-    //     !! 这里【必须】用 gpnTargetRec（= 和命中判定同一个矩形），否则隐身植物会被反复放出来
+    // !! 这里【必须】用 gpnTargetRec（= 和命中判定同一个矩形），否则隐身植物会被反复放出来
     st.hit = st.hit.filter((t) => {
         if (!t || typeof t.isAlive !== 'function' || !t.isAlive()) return false;
         const r = gpnTargetRec(shot, t, isZombieSide);
@@ -3354,12 +3355,12 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
     }
 
     if (best) {
-        // ★ 三种"护盾实体"：当【可穿透的障碍物】处理 —— 这是原版仙人掌刺的口径
-        //   （原版 cactusThorn 自己覆写了 `splat` 成"只放音效/粒子、不 pop" ⇒ 打盾不消失、继续飞）。
-        //   照同一效果：① 盾吃伤害（照盾自己的口径 = 非直接）② 放溅射
-        //              ③ 记入"已命中" ④ 扣 1 个名额（用户要求）后继续飞，名额满才 pop。
-        //   双向都生效：正常弹 × 力场盾（僵尸方，zombiePool）
-        //             反射弹 × 全息坚果盾 / 月光花盾（植物方，hypnotized ⇒ hypnoZombiePool）
+        // 三种"护盾实体"：当【可穿透的障碍物】处理 —— 这是原版仙人掌刺的口径
+        // （原版 cactusThorn 自己覆写了 `splat` 成"只放音效/粒子、不 pop" ⇒ 打盾不消失、继续飞）。
+        // 照同一效果：① 盾吃伤害（照盾自己的口径 = 非直接）② 放溅射
+        // ③ 记入"已命中" ④ 扣 1 个名额（要求：）后继续飞，名额满才 pop。
+        // 双向都生效：正常弹 × 力场盾（僵尸方，zombiePool）
+        // 反射弹 × 全息坚果盾 / 月光花盾（植物方，hypnotized ⇒ hypnoZombiePool）
         if (gpnIsShieldZombie(best, ZombieEnum)) {
             shot.dealDamageToZombie(best, false);   // 盾吃伤害（不触发"直伤溅射"，下面显式放）
             shot.onZombieHit(best);
@@ -3378,8 +3379,8 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
         }
         shot.beforeZombieHit(best);
         // !! 不要在这里自己调 dealSplashDamage —— 引擎的 dealDamageToZombie(z, isDirect=true)
-        //    内部已经会调 this.dealSplashDamage(z) 了。再调一次 = 溅射放两遍 = 周围僵尸吃
-        //    2 x 50% = 100%（v2.5.0 的 BUG：看起来"溅射完全按子弹原伤害来"）。
+        // 内部已经会调 this.dealSplashDamage(z) 了。再调一次 = 溅射放两遍 = 周围僵尸吃
+        // 2 x 50% = 100%（v2.5.0 的 BUG：看起来"溅射完全按子弹原伤害来"）。
         shot.dealDamageToZombie(best, true);
         shot.onZombieHit(best);
         st.dealt++;
@@ -3391,11 +3392,11 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
     }
 
     // (4) 障碍物分支（v2.7.5 起：穿透弹【穿过】障碍物；v2.7.6 起：和僵尸【共用穿透名额】）
-    //     墓碑 / 冰块(GridIcecube) / 冲浪板(TombSurfboard) / 冰岩 / 帐篷…… 在引擎里
-    //     全都是 Tomb 的子类，都躺在 lane.tombPool() 里。原版是"打中一个就 pop"；
-    //     现在改成：打它 + 放溅射，然后【继续往前飞】。
-    //     !! 但绝不是无限穿透：障碍物和僵尸【共用同一份名额 maxPierce】——
-    //        打中 1 个障碍物就少 1 个名额，名额打满立刻 pop，和打在僵尸身上完全一致。
+    // 墓碑 / 冰块(GridIcecube) / 冲浪板(TombSurfboard) / 冰岩 / 帐篷…… 在引擎里
+    // 全都是 Tomb 的子类，都躺在 lane.tombPool() 里。原版是"打中一个就 pop"；
+    // 现在改成：打它 + 放溅射，然后【继续往前飞】。
+    // !! 但绝不是无限穿透：障碍物和僵尸【共用同一份名额 maxPierce】——
+    // 打中 1 个障碍物就少 1 个名额，名额打满立刻 pop，和打在僵尸身上完全一致。
     if (!(shot.objdataOwn && shot.objdataOwn.IgnoreTombstones)) {
         const tombs = shot.inLane.tombPool(isZombieSide ? 0 : 1);
         for (const e of (tombs ? tombs : [])) {
@@ -3418,14 +3419,14 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
     }
 
     // (5) 植物侧 —— 【只对"被弹反的弹道"生效】（enemyType 被翻成 plant 的那些）
-    //     引擎原版 detectEnemyNormal 在 enemyType == plant 时，最后会调 detectPlant()：
-    //         plantPool() -> realBodyRec 判定 -> dealDamageToPlant(plant)
-    //         命中就 dealSplashDamage(null, null, plant) + pop()
-    //     这里除了"命中即 pop"换成"扣 1 个穿透名额"（其余逐行照抄引擎），别的什么都不改。
-    //     !! 这一段就是"暗影龙葵 / 星星果被弹反后打不到植物"的修复：
-    //        旧版的穿透分支只找僵尸池 + 障碍物，压根没有植物这一段 ⇒ 弹反后在空池子里空转。
-    //     顺带：命中用的是引擎自己的 dealDamageToPlant ⇒ 伞叶 / 无敌 / 推植物那些全自动保留；
-    //           plantPool 里本来也没有"被催眠的僵尸"（那些在 hypnoZombiePool，上面已经处理过）。
+    // 引擎原版 detectEnemyNormal 在 enemyType == plant 时，最后会调 detectPlant()：
+    // plantPool() -> realBodyRec 判定 -> dealDamageToPlant(plant)
+    // 命中就 dealSplashDamage(null, null, plant) + pop()
+    // 这里除了"命中即 pop"换成"扣 1 个穿透名额"（其余逐行照抄引擎），别的什么都不改。
+    // !! 这一段就是"暗影龙葵 / 星星果被弹反后打不到植物"的修复：
+    // 旧版的穿透分支只找僵尸池 + 障碍物，压根没有植物这一段 ⇒ 弹反后在空池子里空转。
+    // 顺带：命中用的是引擎自己的 dealDamageToPlant ⇒ 伞叶 / 无敌 / 推植物那些全自动保留；
+    // plantPool 里本来也没有"被催眠的僵尸"（那些在 hypnoZombiePool，上面已经处理过）。
     if (!isZombieSide) {
         const plants = (typeof shot.inLane.plantPool === 'function') ? shot.inLane.plantPool() : null;
         let target = null;
@@ -3440,9 +3441,9 @@ function gpnPierceDetect(shot, dt, maxPierce, CharacterType, ZombieDamageDetails
             if (forward ? (k < bestKey) : (k > bestKey)) { target = p; bestKey = k; }
         }
         if (target) {
-            // ★ 兜底：植物侧要用引擎自己的 dealDamageToPlant（它内部会走 onCommonshotHit / 伞叶 / 无敌…）。
-            //   万一将来原版把它改名或删掉，就【整个回落到原版 detectEnemy】——
-            //   保住"能打到植物"（只是没有我们的穿透），并且只告警一次，绝不崩、也不静默失效。
+            // 兜底：植物侧要用引擎自己的 dealDamageToPlant（它内部会走 onCommonshotHit / 伞叶 / 无敌…）。
+            // 万一将来原版把它改名或删掉，就【整个回落到原版 detectEnemy】——
+            // 保住"能打到植物"（只是没有我们的穿透），并且只告警一次，绝不崩、也不静默失效。
             if (typeof shot.dealDamageToPlant !== 'function') {
                 if (originalDetect && !shot.__gpnWarnedNoPlantHit) {
                     shot.__gpnWarnedNoPlantHit = true;
@@ -3542,7 +3543,7 @@ function makePiercePatch(CommonShot, CharacterType, ZombieDamageDetails, ZombieE
 
 /* =========================================================================
  * 6. 甜薯：受到的治疗 ×N + 每秒自回血
- *    （两个都挂 Plant 基类，用 Plant_Type 判定）
+ * （两个都挂 Plant 基类，用 Plant_Type 判定）
  * =======================================================================*/
 function makeSweetPotatoPatch(Plant) {
     if (!Plant || !Plant.prototype) { warn('跳过甜薯：拿不到 Plant 类'); return null; }
@@ -3559,7 +3560,7 @@ function makeSweetPotatoPatch(Plant) {
     const KEY_N = normalizeType(KEY);
     Plant.prototype.heal = function (amount) {
         if (!featOn('sweetpotato')) return recHeal.original.apply(this, arguments);   // 【运行期开关】
-        /* ★ 用 normalizeType：部分关卡 `Plant_Type` 是 `RTID(sweetpotato@PlantTypes)`（实机日志证过） */
+        /* 用 normalizeType：部分关卡 `Plant_Type` 是 `RTID(sweetpotato@PlantTypes)`（实机日志证过） */
         if (normalizeType(this.Plant_Type) === KEY_N) {
             const mult = CFG.sweetpotato.healReceivedMultiplier;
             if (mult > 0 && mult !== 1 && typeof amount === 'number') amount *= mult;
@@ -3568,7 +3569,7 @@ function makeSweetPotatoPatch(Plant) {
         return recHeal.original.call(this, amount);
     };
 
-    // ---- B. 每秒自回血（挂在基类 characterUpdate 上，甜薯没有重写它）----
+    // ---- B. 每秒自回血（挂在基类 characterUpdate 上，甜薯没有重写它） ----
     Plant.prototype.characterUpdate = function (dt) {
         if (!featOn('sweetpotato')) return recUpdate.original.apply(this, arguments);   // 【运行期开关】
         const r = recUpdate.original.call(this, dt);
@@ -3604,23 +3605,23 @@ function makeSweetPotatoPatch(Plant) {
 
 /* =========================================================================
  * 7. 白萝卜：受伤间隔（同一帧内只结算一次伤害）
- *    同样挂在 Plant 基类上，用 Plant_Type 判定。
+ * 同样挂在 Plant 基类上，用 Plant_Type 判定。
  * =======================================================================*/
 function makeTurnipPatch(Plant) {
     if (!Plant || !Plant.prototype) { warn('跳过白萝卜：拿不到 Plant 类'); return null; }
     const KEY = CFG.turnip.plantType;
     // !! 必须挂在 defaultDealNormalDamage（真正扣 this.health 的那片叶子），
-    //    【不能】挂在 dealDamage —— dealDamage 是「按格路由」的：
-    //      僵尸咬这一格 -> 某一株的 dealDamage 入口 -> 转发给同格最上层那株的 dealNormalDamage
-    //    挂在路由入口 = 给整个格子装闸门，套上南瓜壳/竹篮/藤蔓时会把它们一起限流（旧版的 BUG）。
-    //    挂在叶子上 = 只有白萝卜自己的实例命中判定，覆盖层互不影响。
+    // 【不能】挂在 dealDamage —— dealDamage 是「按格路由」的：
+    // 僵尸咬这一格 -> 某一株的 dealDamage 入口 -> 转发给同格最上层那株的 dealNormalDamage
+    // 挂在路由入口 = 给整个格子装闸门，套上南瓜壳/竹篮/藤蔓时会把它们一起限流（旧版的 BUG）。
+    // 挂在叶子上 = 只有白萝卜自己的实例命中判定，覆盖层互不影响。
     const rec = methodRecord(Plant, 'defaultDealNormalDamage');
     if (typeof rec.original !== 'function') { warn('跳过白萝卜：Plant 上没有 defaultDealNormalDamage'); return null; }
 
     const KEY_N = normalizeType(KEY);
     Plant.prototype.defaultDealNormalDamage = function (dmg, type) {
         if (!featOn('turnip')) return rec.original.apply(this, arguments);   // 【运行期开关】
-        if (normalizeType(this.Plant_Type) === KEY_N) {   // ★ 兼容 RTID(...) 形式
+        if (normalizeType(this.Plant_Type) === KEY_N) {   // 兼容 RTID(...) 形式
             if (this.__gpnHitLocked) return this.health;      // 锁没解开：这次伤害整体作废
             this.__gpnHitLocked = true;
             const self = this;
@@ -3635,9 +3636,9 @@ function makeTurnipPatch(Plant) {
 
 /* =========================================================================
  * 8. 心蕊 DEBUFF -> 对心蕊 / 甜薯 / 热辣海枣的啃食伤害减免
- *    DEBUFF 存在僵尸身上（zombie.BloomingHeartDefenceRateList），是「永久的」：
- *    引擎里那个数组只有构造函数和 push 两处，没有任何计时/清除。
- *    只在【啃食】这一条路上生效（爆炸/火焰类拿不到攻击者引用，做不了）。
+ * DEBUFF 存在僵尸身上（zombie.BloomingHeartDefenceRateList），是「永久的」：
+ * 引擎里那个数组只有构造函数和 push 两处，没有任何计时/清除。
+ * 只在【啃食】这一条路上生效（爆炸/火焰类拿不到攻击者引用，做不了）。
  * =======================================================================*/
 function makeBloomingHeartVictimPatch(Plant) {
     if (!Plant || !Plant.prototype) { warn('跳过心蕊啃食减伤：拿不到 Plant 类'); return null; }
@@ -3652,8 +3653,8 @@ function makeBloomingHeartVictimPatch(Plant) {
     // 引擎：Plant.eat(dmg, zombie) -> this.dealDamage(dmg, 0)
     Plant.prototype.eat = function (dmg, zombie) {
         // 【运行期开关】关掉 ⇒ 原版啃食
-        //   ⚠️ 必须是 `rec.original`（作用域里没有 `original` 这个名字）。
-        //   曾写成 `original.call(...)` ⇒ 每次啃食都抛 ReferenceError ⇒ **所有植物无敌**（实机 203 次报错）。
+        // 必须是 `rec.original`（作用域里没有 `original` 这个名字）。
+        // 曾写成 `original.call(...)` ⇒ 每次啃食都抛 ReferenceError ⇒ **所有植物无敌**（实机 203 次报错）。
         if (!featOn('bloomingheart')) return rec.original.call(this, dmg, zombie);
         const mult = SCALE[normalizeType(this.Plant_Type)];
         if (mult !== undefined && typeof dmg === 'number' && dmg > 0
@@ -3672,16 +3673,16 @@ function makeBloomingHeartVictimPatch(Plant) {
 
 /* =========================================================================
  * 9. 香水菇：香水火持续 13.5 秒（原版 9）+ 对本行僵尸施加 6 层心蕊 DEBUFF（带减防特效）
- *    钩子：PerfumeFire.updateAsJalapenoFire(dt, rect) —— GroundFiresManager 每帧逐火调用。
- *    粒度：（香水火实例 x 僵尸）—— 同一只僵尸被同一片火只施加一次；
- *          再种一次香水菇 = 新的一片火 = 能再叠 6 层。
- *    !! 私有标记，绝不能拿 BloomingHeartDefenceRateList.length 当「已施加」判据，
- *       否则心蕊先命中的僵尸会被整片火跳过。
+ * 钩子：PerfumeFire.updateAsJalapenoFire(dt, rect) —— GroundFiresManager 每帧逐火调用。
+ * 粒度：（香水火实例 x 僵尸）—— 同一只僵尸被同一片火只施加一次；
+ * 再种一次香水菇 = 新的一片火 = 能再叠 6 层。
+ * !! 私有标记，绝不能拿 BloomingHeartDefenceRateList.length 当「已施加」判据，
+ * 否则心蕊先命中的僵尸会被整片火跳过。
  * =======================================================================*/
 /** 香水菇：把「香水火」的持续时间改成 CFG（原版 9 秒是【硬编码】的）。
- *  引擎事实：PerfumeShroomPlant 的 _objdataOwn 是 JalapenoProps 的子类，构造时写死 `Duration=9`；
- *  它的 explode() 里读 `this._objdataOwn.Duration` 传给 burnFromLnC（决定火铺多久）⇒
- *  我们只要在 explode() 之前把这个字段改掉即可，别的什么都不用碰（不改类、不改数据表）。 */
+ * 引擎事实：PerfumeShroomPlant 的 _objdataOwn 是 JalapenoProps 的子类，构造时写死 `Duration=9`；
+ * 它的 explode() 里读 `this._objdataOwn.Duration` 传给 burnFromLnC（决定火铺多久）⇒
+ * 我们只要在 explode() 之前把这个字段改掉即可，别的什么都不用碰（不改类、不改数据表）。 */
 function makePerfumeDurationPatch(PerfumeShroomPlant) {
     const want = CFG.perfumeshroom.fireDuration;
     if (!(want > 0)) return null;
@@ -3722,14 +3723,14 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
     let fireSeq = 0, applied = 0;
 
     // ！！一次香水菇会生成【十几片】火：addLaneFire 以中心格为原点、左右各铺 9 格
-    //    （split 风格：1 + 9 左 + 9 右 = 最多 19 片），而 GroundFiresManager.update 每帧对
-    //    【每一片】火都调一次 updateAsJalapenoFire。所以「已施加」的标记必须按【一次施放】
-    //    而不是按【一片火】—— 否则一只僵尸会被 19 片火各叠 7 层 = 95 层，
-    //    受伤倍率 (1/0.9)^95 ≈ 23000 倍，一颗豌豆秒一切。（这就是实测到的 BUG）
+    // （split 风格：1 + 9 左 + 9 右 = 最多 19 片），而 GroundFiresManager.update 每帧对
+    // 【每一片】火都调一次 updateAsJalapenoFire。所以「已施加」的标记必须按【一次施放】
+    // 而不是按【一片火】—— 否则一只僵尸会被 19 片火各叠 7 层 = 95 层，
+    // 受伤倍率 (1/0.9)^95 ≈ 23000 倍，一颗豌豆秒一切。（这就是实测到的 BUG）
     //
-    //    一次施放 = 一个 jalapenoFire 对象，它创建完所有火之后会调
-    //    GroundFiresManager.registerJalapenoFire(jf) 把这一批 groundFires 一起注册进来，
-    //    就在这里给这批火打上同一个 cast id。
+    // 一次施放 = 一个 jalapenoFire 对象，它创建完所有火之后会调
+    // GroundFiresManager.registerJalapenoFire(jf) 把这一批 groundFires 一起注册进来，
+    // 就在这里给这批火打上同一个 cast id。
     if (GroundFiresManager && GroundFiresManager.prototype
         && typeof GroundFiresManager.prototype.registerJalapenoFire === 'function') {
         const recReg = methodRecord(GroundFiresManager, 'registerJalapenoFire');
@@ -3812,7 +3813,7 @@ function makePerfumeShroomPatch(Fire, Square, Zombie, GroundFiresManager, buff) 
 
 /* =========================================================================
  * 10. 减防特效 prefab：从 resources bundle 按路径取心蕊普攻子弹，
- *     再读它组件上的 BloomingHeartBuffPar。这样【不依赖心蕊出过手】。
+ * 再读它组件上的 BloomingHeartBuffPar。这样【不依赖心蕊出过手】。
  * =======================================================================*/
 function findPropInNode(node, prop) {
     if (!node) return null;
@@ -3870,9 +3871,9 @@ function loadBloomingHeartBuffPrefab(cc, buff) {
 
 /* =========================================================================
  * 11. 高坚果：同原始坚果 —— 每次砸击扣 25% 最大血，能扛住 3 次巨人砸击
- *     TallNut.ts 自己没有 normalSmash，继承自 WallNut.ts 的「一砸就死」版；
- *     原始坚果 PrimalWallNut 就是靠重写 normalSmash 实现「扛 3 次」，直接复用它的逻辑。
- *     挂在 WallNut 基类 + Plant_Type 判定，不会波及坚果/全息坚果/花生等。
+ * TallNut.ts 自己没有 normalSmash，继承自 WallNut.ts 的「一砸就死」版；
+ * 原始坚果 PrimalWallNut 就是靠重写 normalSmash 实现「扛 3 次」，直接复用它的逻辑。
+ * 挂在 WallNut 基类 + Plant_Type 判定，不会波及坚果/全息坚果/花生等。
  * =======================================================================*/
 function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
     if (!WallNut || !WallNut.prototype) { warn('跳过高坚果：拿不到 WallnutPlant'); return null; }
@@ -3886,8 +3887,8 @@ function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
         && typeof PrimalWallNut.prototype.normalSmash === 'function')
         ? PrimalWallNut.prototype.normalSmash : null;
     const dbg = () => !!(CFG.tallnut && CFG.tallnut.debugLog);
-    /* ★ 按【类】匹配（`instanceof TallNutPlant`）为主、`Plant_Type` 字符串为辅：
-     *   用户反馈"镜面坚果挑战第 4 关高坚果扛砸失效、其他关正常" ⇒ 关卡内可能给的不是 'tallnut' 字符串。 */
+    /* 按【类】匹配（`instanceof TallNutPlant`）为主、`Plant_Type` 字符串为辅：
+     * 实测发现"镜面坚果挑战第 4 关高坚果扛砸失效、其他关正常" ⇒ 关卡内可能给的不是 'tallnut' 字符串。 */
     const isTall = function (p) {
         if (!p) return false;
         try { if (TallNutClass && (p instanceof TallNutClass)) return true; } catch (e) { /* 忽略 */ }
@@ -3940,24 +3941,28 @@ function makeTallnutPatch(WallNut, PrimalWallNut, TallNutClass) {
     return rec;
 }
 /* =========================================================================
- * 卷心菜投手：子弹**首次命中后再弹一次**（用户 2026/10/22 指定）
- *   · 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后，
- *     向**子弹当时的前进方向**再弹 **1 格**（正常向右、被反弹后向左）；
- *   · **不索敌**：落点 = 命中点 ± bounceCells 格（允许落在草坪外）；
- *   · 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
- *   · **只弹一次**（第二发的标记 done=true；不会链式）；
- *   · 炸药桶（ID 17）不触发（与 MOD 现有障碍物白名单同口径）；
- *   · 命中特效/音效 = 引擎原生（同一条弹道类型，照样触发）。
- *  实现：
- *   ① 在 `CabbagePultPlant._lobToZombie/_lobToTomb/_lobToPos` 的**返回弹道**上打标记
- *      （只对 Plant_Type 归一化 = cabbagepult 生效 —— 心蕊等也继承这个类，必须按类型排除）；
- *   ② 在 `CommonShot.onZombieHit/onTombHit/onPlantHit` 里查标记 ⇒ 用
- *      `lobOneCabbageOnPos` 生成"固定落点"的第二发，并打 done=true。
+ * 卷心菜投手：子弹**首次命中后再弹一次**
+ * · 普攻 / 大招的卷心菜，**首次命中**（僵尸 / 障碍物 / 被弄臣·三节棍反弹后打中植物）后，
+ * 向**子弹当时的前进方向**再弹 **1 格**（正常向右、被反弹后向左）；
+ * · **不索敌**：落点 = 命中点 ± bounceCells 格（允许落在草坪外）；
+ * · 伤害与首弹**相同**（复用同一条弹道类型 ⇒ 40 / 300 / 薄荷 120 天然一致）；
+ * · **只弹一次**（第二发的标记 done=true；不会链式）；
+ * · 炸药桶（ID 17）不触发（与 MOD 现有障碍物白名单同口径）；
+ * · 命中特效/音效 = 引擎原生（同一条弹道类型，照样触发）。
+ * 实现：
+ * ① 在 `CabbagePultPlant._lobToZombie/_lobToTomb/_lobToPos` 的**返回弹道**上打标记
+ * （只对 Plant_Type 归一化 = cabbagepult 生效 —— 心蕊等也继承这个类，必须按类型排除）；
+ * ② 在 `CommonShot.onZombieHit/onTombHit/onPlantHit` 里查标记 ⇒ 用
+ * `lobOneCabbageOnPos` 生成"固定落点"的第二发，并打 done=true。
  * =======================================================================*/
-/* ★ 弹簧豆落地音效：窝瓜 smashSounds 的**模块级**缓存
- *   来源二选一：① 运行时从 prefab 加载（A）；② 场上种过窝瓜后从其实例 soundRes 捕获（C）。
- *   注：AudioClip 是运行时对象，不跨进程持久化；同一次游戏会话内有效。 */
+/* 弹簧豆落地音效：窝瓜 smashSounds 的**模块级**缓存
+ * 来源二选一：① 运行时从 prefab 加载（A）；② 场上种过窝瓜后从其实例 soundRes 捕获（C）。
+ * 注：AudioClip 是运行时对象，不跨进程持久化；同一次游戏会话内有效。 */
 let GPN_SB_SMASH = null, GPN_SB_SMASH_LOADING = false, GPN_SB_SMASH_FAILED = false, GPN_SB_SMASH_FROM = '';
+let GPN_SB_SMASH_URLS = [];   // 音频文件的 nativeUrl（跨场景/资源释放后仍可播）
+let GPN_SB_SMASH_PENDING = false;   // 落地时音效还没加载好 ⇒ 加载完成后补播一次
+let GPN_SB_SMASH_TRIES = 0;         // 失败后最多重试几次（避免每帧刷警告）
+let GPN_SB_LAST_SOUND_AT = 0;       // 落地音效上次播放时间（全局最小间隔，防大招全屏连响）
 function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
     const D = deps || {};
     const recs = [];
@@ -3976,7 +3981,7 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
     const ZDD = D.ZombieDamageDetails;
     const ZDT = D.ZombieDamageType;
     const ST = D.SquareType;                 // 引擎 SquareType 枚举（sea = 3）
-    /* ---- 落地音效（A 方案）：运行时从**窝瓜** prefab 取 `squashSound.smashSounds`，不兜底 ---- */
+    /* ---- 落地音效：运行时从窝瓜 prefab 的 SquashPlant.soundRes 取 smashSounds ---- */
     const CC = D.cc;
     const SND = D.sounds;
 
@@ -3992,6 +3997,18 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
             try {
                 const c = (typeof n.getComponent === 'function') ? n.getComponent(want) : null;
                 if (c && Array.isArray(c.smashSounds) && c.smashSounds.length) return c;
+            } catch (e) { /* 忽略 */ }
+            try {
+                /* 不依赖组件类名：直接扫节点上的组件，找带 smashSounds 的那个
+                 * 窝瓜的 `squashSound` 不是挂在节点上的组件，而是 `SquashPlant.soundRes`
+                 * 这个【属性】的实例（Squash.ts 里 `soundRes` 的 initializer = new squashSound()）
+                 * ⇒ 组件列表里只有 `SquashPlant`，音效数组在 `comp.soundRes.smashSounds`。 */
+                const cs = n.components || n._components || [];
+                for (let k = 0; k < cs.length; k++) {
+                    const c2 = cs[k];
+                    if (c2 && Array.isArray(c2.smashSounds) && c2.smashSounds.length) return c2;
+                    if (c2 && c2.soundRes && Array.isArray(c2.soundRes.smashSounds) && c2.soundRes.smashSounds.length) return c2.soundRes;
+                }
             } catch (e) { /* 忽略 */ }
             try {
                 const ch = n.children || [];
@@ -4011,8 +4028,8 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
                 return;
             }
             GPN_SB_SMASH_LOADING = true;
-            const primary = String(C.landSoundPrefab || 'resouce_prefabs/PlantsRP');
-            const paths = [primary, primary + '/Squash', primary + '/squash'];
+            const primary = String(C.landSoundPrefab || 'plants/SquashPLANT');
+            const paths = [primary, 'plants/SquashDIS', 'resouce_prefabs/PlantsRP'];
             const tryAt = function (idx) {
                 if (idx >= paths.length) {
                     GPN_SB_SMASH_LOADING = false; GPN_SB_SMASH_FAILED = true;
@@ -4020,20 +4037,72 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
                     return;
                 }
                 const p = paths[idx];
-                try {
-                    res.load(p, CC.Prefab, function (err, prefab) {
-                        if (err || !prefab) { tryAt(idx + 1); return; }
-                        const comp = findSquashComp(prefab, C.landSoundNode);
-                        if (comp) {
-                            GPN_SB_SMASH = comp.smashSounds.slice();
-                            GPN_SB_SMASH_FROM = p;
-                            GPN_SB_SMASH_LOADING = false;
-                            log('弹簧豆落地音效：已从「' + p + '」加载窝瓜 smashSounds × ' + GPN_SB_SMASH.length);
-                        } else {
-                            tryAt(idx + 1);
+                const compNamesOf = function (n) {
+                    try {
+                        const cs = n.components || n._components || [];
+                        return Array.prototype.map.call(cs, function (c) { return (c && (c.__classname__ || (c.constructor && c.constructor.name))) || '?'; });
+                    } catch (e) { return []; }
+                };
+                const handlePrefab = function (prefab) {
+                    const root = prefab && (prefab.data || prefab);
+                    if (root) {
+                        log('弹簧豆落地音效[诊断] ' + p + ' root=' + (root.name || '?')
+                            + ' children=' + ((root.children && root.children.length) || 0)
+                            + ' comps=' + compNamesOf(root).join(','));
+                    }
+                    let comp = findSquashComp(prefab, C.landSoundNode);
+                    if (!comp) log('弹簧豆落地音效[诊断] 组件没找到；instantiate 类型=' + (typeof (CC && CC.instantiate)));
+                    if (!comp && CC && typeof CC.instantiate === 'function') {
+                        let node = null;
+                        try {
+                            node = CC.instantiate(prefab);
+                            log('弹簧豆落地音效[诊断] instantiate ok comps=' + compNamesOf(node).join(','));
+                            comp = findSquashComp(node, C.landSoundNode);
+                        } catch (e) { log('弹簧豆落地音效[诊断] instantiate 出错: ' + (e && e.message)); }
+                        finally { try { if (node && node.destroy) node.destroy(); } catch (e) { /* 忽略 */ } }
+                    }
+                    if (comp && Array.isArray(comp.smashSounds) && comp.smashSounds.length) {
+                        GPN_SB_SMASH = comp.smashSounds.slice();
+                        GPN_SB_SMASH_URLS = GPN_SB_SMASH.map(function (c) { return (c && (c.nativeUrl || (c._nativeAsset && c._nativeAsset.src))) || ''; }).filter(Boolean);
+                        GPN_SB_SMASH_FROM = p;
+                        GPN_SB_SMASH_LOADING = false;
+                        log('弹簧豆落地音效：已从「' + p + '」加载窝瓜 smashSounds × ' + GPN_SB_SMASH.length);
+                        /* 首次落地时音效是懒加载的：这次加载完成就补播一次，避免"第一次没声" */
+                        if (GPN_SB_SMASH_PENDING) {
+                            GPN_SB_SMASH_PENDING = false;
+                            try { playLandingSound(); } catch (e) { /* 忽略 */ }
                         }
-                    });
-                } catch (e) { tryAt(idx + 1); }
+                    } else {
+                        log('弹簧豆落地音效：prefab 已加载但没找到 ' + C.landSoundNode + '（' + p + '）');
+                        tryAt(idx + 1);
+                    }
+                };
+                const fail = function (why, err) {
+                    log('弹簧豆落地音效：加载失败 ' + p + '（' + why + '）err=' + (err && (err.message || err)));
+                    tryAt(idx + 1);
+                };
+                try {
+                    const onLoaded = function (err, prefab) {
+                        if (err || !prefab) {
+                            /* 二级：按 uuid 用 assetManager.loadAny 再试（绕开 path 解析） */
+                            try {
+                                const info = (res && typeof res.getInfoWithPath === 'function') ? res.getInfoWithPath(p) : null;
+                                const am = CC && CC.assetManager;
+                                if (info && info.uuid && am && typeof am.loadAny === 'function') {
+                                    am.loadAny({ uuid: info.uuid }, CC.Prefab, function (e2, a2) {
+                                        if (e2 || !a2) { fail('loadAny', e2 || err); return; }
+                                        handlePrefab(a2);
+                                    });
+                                    return;
+                                }
+                            } catch (e) { /* 忽略 */ }
+                            fail('load', err);
+                            return;
+                        }
+                        handlePrefab(prefab);
+                    };
+                    res.load(p, onLoaded);
+                } catch (e1) { fail('throw', e1); }
             };
             tryAt(0);
         } catch (e) {
@@ -4046,14 +4115,36 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
             const C = CFG.springbean || {};
             const vol = (typeof C.landSoundVolume === 'number') ? C.landSoundVolume : 1;
             if (!(vol > 0)) return;
-            if (!GPN_SB_SMASH) { loadSquashSounds(); return; }
+            if (!GPN_SB_SMASH && !GPN_SB_SMASH_URLS.length) {
+                /* 音效还没加载好：记下"这次落地要补播"，并在失败后允许重试（最多 3 次） */
+                GPN_SB_SMASH_PENDING = true;
+                if (GPN_SB_SMASH_FAILED && GPN_SB_SMASH_TRIES < 3) {
+                    GPN_SB_SMASH_FAILED = false;
+                    GPN_SB_SMASH_TRIES += 1;
+                }
+                loadSquashSounds();
+                return;
+            }
+            /* 优先按 nativeUrl 走 HTMLAudio：场景切换后 cocos 会释放 AudioClip（再 playOneShot 就报 Invalid audio clip）；
+             * nativeUrl 是文件 URL，跨场景仍能播。 */
+            if (GPN_SB_SMASH_URLS.length && typeof Audio === 'function') {
+                const url = GPN_SB_SMASH_URLS[Math.floor(Math.random() * GPN_SB_SMASH_URLS.length)];
+                try {
+                    const a = new Audio(url);
+                    a.volume = Math.max(0, Math.min(1, vol));
+                    const p = a.play();
+                    if (p && typeof p.catch === 'function') p.catch(function () { /* 忽略自动播放限制 */ });
+                    if (dbg()) log('弹簧豆落地音效：HTMLAudio 播放 ' + url);
+                    return;
+                } catch (e) { /* 退回 cocos */ }
+            }
             if (SND && typeof SND.playArray === 'function') SND.playArray(GPN_SB_SMASH, vol, 0.1);
             else if (CC && CC.audioEngine && typeof CC.audioEngine.playOneShot === 'function') CC.audioEngine.playOneShot(GPN_SB_SMASH[0], vol);
             if (dbg()) log('弹簧豆落地音效：播放 smashSounds（' + GPN_SB_SMASH.length + ' 个，音量 ' + vol + '）');
         } catch (e) { /* 音效失败不影响玩法 */ }
     };
 
-    /* ---- C 方案：场上种过窝瓜 ⇒ 直接抓其实例的 `soundRes.smashSounds`（最可靠） ---- */
+    /* ---- 场上种过窝瓜时，直接抓其实例的 soundRes.smashSounds ---- */
     const SquashPlantCls = D.SquashPlant;
     if (SquashPlantCls && SquashPlantCls.prototype && typeof SquashPlantCls.prototype.specialPlantOnEnable === 'function') {
         const origSquashEnable = SquashPlantCls.prototype.specialPlantOnEnable;
@@ -4062,11 +4153,16 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
                 const sr = this && this.soundRes;
                 if (sr && Array.isArray(sr.smashSounds) && sr.smashSounds.length) {
                     GPN_SB_SMASH = sr.smashSounds.slice();
+                    GPN_SB_SMASH_URLS = GPN_SB_SMASH.map(function (c) { return (c && (c.nativeUrl || (c._nativeAsset && c._nativeAsset.src))) || ''; }).filter(Boolean);
                     const firstCapture = (GPN_SB_SMASH_FROM !== 'squash-instance');
                     GPN_SB_SMASH_FROM = 'squash-instance';
                     GPN_SB_SMASH_FAILED = false;
                     GPN_SB_SMASH_LOADING = false;
                     if (firstCapture) log('弹簧豆落地音效：已从场上的窝瓜取得 smashSounds × ' + GPN_SB_SMASH.length);
+                    if (GPN_SB_SMASH_PENDING) {
+                        GPN_SB_SMASH_PENDING = false;
+                        try { playLandingSound(); } catch (e) { /* 忽略 */ }
+                    }
                 }
             } catch (e) { /* 忽略 */ }
             return origSquashEnable.apply(this, arguments);
@@ -4146,6 +4242,20 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
         } catch (e) { return false; }
     };
 
+    /* 音效防吵：① 同一「击退组」只播一次（弹簧豆大招 = 一组，全屏僵尸只响一声）；
+     * ② 全局最小间隔 landSoundCD（两组落地挨太近时也只响一次）。 */
+    const tryPlayLandingSound = function (group) {
+        try {
+            if (group && group.soundPlayed) return;
+            const cd = (typeof CFG.springbean.landSoundCD === 'number') ? CFG.springbean.landSoundCD : 0.35;
+            const now = Date.now();
+            if (now - GPN_SB_LAST_SOUND_AT < Math.max(0, cd) * 1000) return;
+            GPN_SB_LAST_SOUND_AT = now;
+            if (group) group.soundPlayed = true;
+            playLandingSound();
+        } catch (e) { /* 忽略 */ }
+    };
+
     /* ---- 落地：50 穿甲伤害 + 屏幕震动 + 3×3 眩晕 1s +（组外）原地小跳 1 格 ---- */
     const applyLanding = function (z, group) {
         const N = nums();
@@ -4156,7 +4266,7 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
             }
         } catch (e) { warn('弹簧豆：落地伤害出错', e); }
         const sh = shake();
-        playLandingSound();
+        tryPlayLandingSound(group);
         try {
             const lane = z.inLane || null;
             const laneIdx = (lane && typeof lane.LaneIndex === 'number') ? lane.LaneIndex : -1;
@@ -4209,8 +4319,8 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
             const laneIsSea = !!(lane && lane.isSea);
             const cIndex = (z.inLnC && typeof z.inLnC.cIndex === 'number') ? z.inLnC.cIndex : -1;
             const N = nums();
-            /* ★ 弹入海里：高度/时长/滞空眩晕**对齐新值**；但**不 joinGroup**
-             *   ⇒ 不结算落地伤害/3×3/震动（入海本就是秒杀，用户 2026/10/22）。 */
+            /* 弹入海里：高度/时长/滞空眩晕**对齐新值**；但**不 joinGroup**
+             * ⇒ 不结算落地伤害/3×3/震动（入海本就是秒杀）。 */
             if (!laneIsSea && cIndex >= 4 && lane && lane.UpperLane && lane.UpperLane.isSea) {
                 z.leapBy(new Vec2(1, -1), true, N.leapDur, N.leapHeight, true, true);
                 if (dbg()) log('[弹簧豆] 弹入海面（上）高 ' + N.leapHeight + 'px / ' + N.leapDur + 's（不结算落地）');
@@ -4271,9 +4381,9 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
                     return ret;
                 }
             } catch (e) { /* 忽略 */ }
-            /* ★ 以下情况不结算落地效果（用户 2026/10/22 补充）：
-             *   ① 滞空时被三叶草 / 飓风甘蓝吹走（已死 / blew）
-             *   ② 落点正好是海面格（入海即秒杀） */
+            /* 以下情况不结算落地效果（补充）：
+             * ① 滞空时被三叶草 / 飓风甘蓝吹走（已死 / blew）
+             * ② 落点正好是海面格（入海即秒杀） */
             let skipReason = null;
             try {
                 if (typeof this.isAlive === 'function' && !this.isAlive()) skipReason = 'notAlive';
@@ -4294,6 +4404,8 @@ function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
         warn('弹簧豆：拿不到 Zombie.onLeapEnd（落地伤害/眩晕不会生效）');
     }
 
+    /* 启动就预加载窝瓜音效：这样"第一次落地"也能立刻有声音（加载失败也不影响，落地时还会重试） */
+    try { loadSquashSounds(); } catch (e) { /* 忽略 */ }
     log('[弹簧豆] 补丁已装（群体击退 / 弹起 ' + CFG.springbean.leapHeight + 'px / 落地 ' + CFG.springbean.landDamage + ' 穿甲 + 震动 + 3×3 眩晕 ' + CFG.springbean.aoeStunDuration + 's + 休息 ' + CFG.springbean.restTime + 's，' + recs.length + ' 个钩子）');
     return recs;
 }
@@ -4321,8 +4433,8 @@ function makeCabbagePultPatch(CommonShot, deps) {
         } catch (e) { /* 忽略 */ }
     };
 
-    /* ★ 打标点：PrjFunctions.lobOneCabbageOnPos（_lobTo* 是 async 且不返回弹道；
-     *   这里是所有投掷的最终出口、且会返回弹道）。按弹道类型过滤（只有卷心菜用 cabbage*）。 */
+    /* 打标点：PrjFunctions.lobOneCabbageOnPos（_lobTo* 是 async 且不返回弹道；
+     * 这里是所有投掷的最终出口、且会返回弹道）。按弹道类型过滤（只有卷心菜用 cabbage*）。 */
     let savedLobPos = null;
     let savedAcc = null;
     if (Pf && typeof Pf.lobOneCabbageOnPos === 'function') {
@@ -4346,7 +4458,7 @@ function makeCabbagePultPatch(CommonShot, deps) {
     const bounceFrom = function (shot, target) {
         const st = shot && shot.__gpnCabbageBounce;
         if (!st || st.done || !st.type) return;
-        st.done = true;                                  // ★ 先落闸：只会弹一次
+        st.done = true;                                  // 先落闸：只会弹一次
         const C = CFG.cabbagepult || {};
         const cells = (typeof C.bounceCells === 'number' && C.bounceCells > 0) ? C.bounceCells : 1;
         const blSec = (typeof C.blacklistSeconds === 'number' && C.blacklistSeconds > 0) ? C.blacklistSeconds : 0.5;
@@ -4359,17 +4471,17 @@ function makeCabbagePultPatch(CommonShot, deps) {
         let dir = (vx < -0.001) ? -1 : 1;                 // 被反射后向左飞 ⇒ 向左弹
         if (Math.abs(vx) <= 0.001 && D.CharacterType) dir = (shot.enemyType === D.CharacterType.plant) ? -1 : 1;
         const fromX = (typeof shot.worldPositionX === 'number') ? shot.worldPositionX : 0;
-        const targetX = fromX + dir * cells * SW;         // ★ 落点 = 命中点 ± 1 格（允许出草坪）
+        const targetX = fromX + dir * cells * SW;         // 落点 = 命中点 ± 1 格（允许出草坪）
         const targetY = (lane && typeof lane.floorY === 'number') ? lane.floorY : shot.worldPositionY;
         const layer = (shot.node && shot.node.parent) ? shot.node.parent : (lane && lane.prjLayer);
-        const startPos = shot.worldPosition || { x: fromX, y: targetY };   // ★ 起点 = 命中点（原位置，无瞬移）
+        const startPos = shot.worldPosition || { x: fromX, y: targetY };   // 起点 = 命中点（原位置，无瞬移）
         const height = Math.max(0, (typeof shot.height === 'number') ? shot.height : 0);   // 起始高度**不变**（保持视觉连续）
-        /* ★ 普攻弹道 1/2、大招弹道（cabbage_pf）恢复 1 倍（用户 2026/10/22） */
+        /* 普攻弹道 1/2、大招弹道（cabbage_pf）恢复 1 倍 */
         const isPF = (st.type === 'cabbage_pf');
         const gScale = isPF
             ? ((typeof C.bounceGravityScalePlantfood === 'number' && C.bounceGravityScalePlantfood > 0) ? C.bounceGravityScalePlantfood : 1)
             : ((typeof C.bounceGravityScale === 'number' && C.bounceGravityScale > 0) ? C.bounceGravityScale : 0.7);
-        /* ★ 弹起高度由续飞重力决定（弧峰 ∝ 重力）：重力 ×1/2 ⇒ 弧线高度 ≈ 1/2，飞行时间/落点不变 */
+        /* 弹起高度由续飞重力决定（弧峰 ∝ 重力）：重力 ×1/2 ⇒ 弧线高度 ≈ 1/2，飞行时间/落点不变 */
         const grav = ((typeof shot.gravity === 'number' && shot.gravity > 0) ? shot.gravity : 0.4444) * gScale;
         if (dbg()) {
             log('[卷心菜弹跳] 类型=' + st.type + ' 方向=' + (dir > 0 ? '右' : '左')
@@ -4378,7 +4490,7 @@ function makeCabbagePultPatch(CommonShot, deps) {
         }
         try {
             if (savedAcc) {
-                /* ★ 同一颗子弹续飞：位置/高度/重力/节点全不变（无瞬移），落点 ±1 格 */
+                /* 同一颗子弹续飞：位置/高度/重力/节点全不变（无瞬移），落点 ±1 格 */
                 shot.__gpnCabbageSkipPop = true;          // 紧跟其后的引擎 pop() 会被吞掉（不销毁）
                 savedAcc.call(Pf, shot, startPos, height, layer,
                     new Vec2(targetX, targetY), grav, shot.enemyType, 60, 0, false);
@@ -4407,7 +4519,7 @@ function makeCabbagePultPatch(CommonShot, deps) {
         }
     };
 
-    /* ★ pop 拦截：续飞后引擎会立刻 pop()，这里**只吞一次**（并补放命中粒子/音效） */
+    /* pop 拦截：续飞后引擎会立刻 pop()，这里**只吞一次**（并补放命中粒子/音效） */
     const recPop = methodRecord(CommonShot, 'pop');
     CommonShot.prototype.pop = function () {
         try {
@@ -4424,7 +4536,7 @@ function makeCabbagePultPatch(CommonShot, deps) {
     };
     recs.push(recPop);
 
-    /* ★ 检测层黑名单：0.5 秒内不把"刚被首弹命中"的目标算进来（也不会因此 pop） */
+    /* 检测层黑名单：0.5 秒内不把"刚被首弹命中"的目标算进来（也不会因此 pop） */
     if (typeof CommonShot.prototype.detectEnemyNormal === 'function') {
         const recDetect = methodRecord(CommonShot, 'detectEnemyNormal');
         CommonShot.prototype.detectEnemyNormal = function () {
@@ -4488,12 +4600,12 @@ function makeCabbagePultPatch(CommonShot, deps) {
 }
 /* =========================================================================
  * 13. 暗影油桃：毒气时长 x2 / 攻击 x0.5
- *     这几个值在 props 类的【构造函数】里（不是 JSON 数据），所以要在实例上重写。
- *     最稳的时机是 explode() 之前 —— explode() 就是读这些值去生成毒气云的。
- *     注意：Lifespan 同时驱动"3x3 范围植物获得影子 buff"的持续时间，所以影子 buff 也会一起翻倍。
+ * 这几个值在 props 类的【构造函数】里（不是 JSON 数据），所以要在实例上重写。
+ * 最稳的时机是 explode() 之前 —— explode() 就是读这些值去生成毒气云的。
+ * 注意：Lifespan 同时驱动"3x3 范围植物获得影子 buff"的持续时间，所以影子 buff 也会一起翻倍。
  * =======================================================================*/
 /** 毒气云的每跳伤害再钳一道：不管是谁建的云、谁来设的数值，出手时都按 CFG 取。
- *  这样即使 explode() 没被调到（或顺序不对），伤害也一定是我们想要的值。 */
+ * 这样即使 explode() 没被调到（或顺序不对），伤害也一定是我们想要的值。 */
 function makeNoctarineGasPatch(Particle) {
     if (!Particle || !Particle.prototype || typeof Particle.prototype._attack !== 'function') {
         warn('跳过暗影油桃毒气钳制：拿不到 _attack');
@@ -4539,11 +4651,11 @@ function makeNoctarinePatch(NoctarinePlant) {
 
 /* =========================================================================
  * 14. 腐尸豆荚：召唤权重（新增城堡头僵尸 / 超新星巨尸）
- *     权重表不在 JSON 里，在 ZoybeanPodProps 的【构造函数】里，是实例字段：
- *         SummonType        = [{Weight:50,zoybean},{Weight:30,armor1},{Weight:20,armor2}]
- *         SummonTypePlantfood = [{Weight:1, zoybean_gargantuar}]
- *     summon() 每次召唤前会读 this.objdataOwn.SummonType(Plantfood)，所以钩 summon 最稳
- *     （对象池复用也照样生效）。
+ * 权重表不在 JSON 里，在 ZoybeanPodProps 的【构造函数】里，是实例字段：
+ * SummonType = [{Weight:50,zoybean},{Weight:30,armor1},{Weight:20,armor2}]
+ * SummonTypePlantfood = [{Weight:1, zoybean_gargantuar}]
+ * summon() 每次召唤前会读 this.objdataOwn.SummonType(Plantfood)，所以钩 summon 最稳
+ * （对象池复用也照样生效）。
  * =======================================================================*/
 function makeZoybeanPatch(ZoybeanPodPlant) {
     if (!ZoybeanPodPlant || !ZoybeanPodPlant.prototype) { warn('跳过腐尸豆荚：拿不到 ZoybeanPodPlant'); return null; }
@@ -4571,26 +4683,26 @@ function makeZoybeanPatch(ZoybeanPodPlant) {
 /* =========================================================================
  * 15. 蒲公英：索敌优化 + 额外子弹 + 对飞行/BOSS 加成
  *
- *   引擎事实（0.14.0）：
- *     - 三种弹道：dandelion（普攻）/ dandelion_blew（吹风反应）/ dandelion_pf（大招空投）。
- *     - 普攻 "Shoot" -> this._shoot(PeaType, this.getEnemyLane())；
- *       引擎原本的 getEnemyLane 是「把 3 个探测框 shuffle 后取第一个有僵尸/墓碑的」⇒ 随机行。
- *     - detectEnemy() 决定「开不开火」：3 个探测框里有僵尸或墓碑就开火。
- *     - _shoot(pea, off)：只有 |off| == 1 才做跨行抛物线，0 / -2 都是直射。
- *     - blew（吹风恢复期）里 getEnemyLane 直接返回 -2（保留引擎语义）。
+ * 引擎事实（0.14.0）：
+ * - 三种弹道：dandelion（普攻）/ dandelion_blew（吹风反应）/ dandelion_pf（大招空投）。
+ * - 普攻 "Shoot" -> this._shoot(PeaType, this.getEnemyLane())；
+ * 引擎原本的 getEnemyLane 是「把 3 个探测框 shuffle 后取第一个有僵尸/墓碑的」⇒ 随机行。
+ * - detectEnemy() 决定「开不开火」：3 个探测框里有僵尸或墓碑就开火。
+ * - _shoot(pea, off)：只有 |off| == 1 才做跨行抛物线，0 / -2 都是直射。
+ * - blew（吹风恢复期）里 getEnemyLane 直接返回 -2（保留引擎语义）。
  *
- *   本 MOD 的规则：
- *     ① 第一子弹：本行活僵尸 > 相邻行"最靠房子"的活僵尸 > 本行可见障碍
- *                 > 相邻行"最靠房子"的可见障碍 > 不开火。
- *        僵尸优先于障碍；都不比较行号，只比"最靠房子"（x 最小）；并列随机。
- *     ② 第二颗子弹：候选（含本行）里"最靠房子"的活僵尸 > "最靠房子"的可见障碍 > 不发。
- *        延迟 CFG.dandelion.extraDelay（0.4 秒），开火那一刻才重新挑行。
- *     ③ 对飞行僵尸 / 指定 BOSS 的加成：按「被这发子弹伤害到的每一只僵尸」逐个判定
- *        （直击 + 爆炸/溅射都算）：
- *          · flying（z.flying === true，临时 flying 也算）且非 BOSS -> 伤害 ×2 + 眩晕
- *            （普攻/吹风 1 秒、大招 5 秒）
- *          · bossTypes 名单里的 BOSS -> 伤害 ×2、不眩晕
- *          · 其它 BOSS -> 原样（不 ×2、不眩晕）
+ * 本 MOD 的规则：
+ * ① 第一子弹：本行活僵尸 > 相邻行"最靠房子"的活僵尸 > 本行可见障碍
+ * > 相邻行"最靠房子"的可见障碍 > 不开火。
+ * 僵尸优先于障碍；都不比较行号，只比"最靠房子"（x 最小）；并列随机。
+ * ② 第二颗子弹：候选（含本行）里"最靠房子"的活僵尸 > "最靠房子"的可见障碍 > 不发。
+ * 延迟 CFG.dandelion.extraDelay（0.4 秒），开火那一刻才重新挑行。
+ * ③ 对飞行僵尸 / BOSS 的加成：按「被这发子弹伤害到的每一只僵尸」逐个判定
+ * （直击 + 爆炸/溅射都算）：
+ * · flying（z.flying === true，临时 flying 也算）且非 BOSS -> 伤害 ×2 + 眩晕
+ * （普攻/吹风 1 秒、大招 5 秒）
+ * · bossTypes 名单里的 BOSS -> 伤害 ×2、不眩晕
+ * · 其它 BOSS -> 原样（不 ×2、不眩晕）
  * =======================================================================*/
 
 /** 取目标的世界 x（拿不到返回 NaN） */
@@ -4609,7 +4721,7 @@ function gpnTargetX(o) {
 }
 
 /** 蒲公英：把引擎的 3 个探测框（本行/上行/下行）整理成候选行
- *  僵尸：isAlive() + bodyRecForShooter 与框相交；障碍：isAlive() + 非 hidden/_hidden + bodyRec 相交 */
+ * 僵尸：isAlive() + bodyRecForShooter 与框相交；障碍：isAlive() + 非 hidden/_hidden + bodyRec 相交 */
 function gpnDandelionCandidates(plant) {
     const out = [];
     if (!plant || !Array.isArray(plant.detectors)) return out;
@@ -4736,7 +4848,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
         warn('跳过蒲公英索敌：没有 getEnemyLane');
     }
 
-    // ---- ② 开火门：和挑行用同一套过滤（活僵尸 / 可见障碍）----
+    // ---- ② 开火门：和挑行用同一套过滤（活僵尸 / 可见障碍） ----
     if (typeof DandelionPlant.prototype.detectEnemy === 'function') {
         const recDet = methodRecord(DandelionPlant, 'detectEnemy');
         DandelionPlant.prototype.detectEnemy = function () {
@@ -4780,7 +4892,7 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
     };
     out.push(rec);
 
-    // ---- ④ 飞行 / 指定 BOSS：伤害 ×2 + 眩晕（按"被这发子弹伤害到的每一只僵尸"判定）----
+    // ---- ④ 飞行 / BOSS：伤害 ×2 + 眩晕（按"被这发子弹伤害到的每一只僵尸"判定） ----
     if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const recD = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect, details, o) {
@@ -4816,13 +4928,13 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
         warn('跳过蒲公英加成：commonShot 上没有 dealDamageToZombie');
     }
 
-    // ---- ⑨ 大招：驱离运兵艇（`sky_dropship`，云端堡垒）—— 用户 2026/10/16 指定：等同电离红掌 ----
-    //   挂 `specialPlantFood`（**每次大招只调一次**）；不挂 `animationListener` 的 `foodShoot`
-    //   （那个事件一次大招触发 3+ 次，会重复执行还要额外去重）。
+    // ---- ⑨ 大招：驱离运兵艇（`sky_dropship`，云端堡垒）—— 等同电离红掌 ----
+    // 挂 `specialPlantFood`（**每次大招只调一次**）；不挂 `animationListener` 的 `foodShoot`
+    // （那个事件一次大招触发 3+ 次，会重复执行还要额外去重）。
     if (typeof DandelionPlant.prototype.specialPlantFood === 'function') {
         const recFood = methodRecord(DandelionPlant, 'specialPlantFood');
         DandelionPlant.prototype.specialPlantFood = function () {
-            const r = recFood.original.apply(this, arguments);     // ★ 先原样调用（播 Food / 归零计数器）
+            const r = recFood.original.apply(this, arguments);     // 先原样调用（播 Food / 归零计数器）
             if (!featOn('dandelion') || !CFG.dandelion.pbDriveDropShip) return r;   // 【运行期开关】
             const run = function () {
                 // 到点时再检查一次：万一这期间模组被卸载/重载，或者开关被关掉 ⇒ 不动手
@@ -4832,8 +4944,8 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
                     gpnDandelionDriveDropShips(deps || {});
                 } catch (e) { warn('蒲公英：大招驱离运兵艇出错（已忽略）', e); }
             };
-            // ★ 延时（用户 2026/10/16：1.5 秒）—— 让"空投落地"的动画先演完，再把运兵艇赶走。
-            //   用植物自己的 `scheduleOnce`（引擎原生调度；植物被销毁时它会自动取消）。
+            // 延时（1.5 秒）—— 让"空投落地"的动画先演完，再把运兵艇赶走。
+            // 用植物自己的 `scheduleOnce`（引擎原生调度；植物被销毁时它会自动取消）。
             const delay = Number(CFG.dandelion.pbDriveDelay) || 0;
             if (delay > 0) {
                 let scheduled = false;
@@ -4855,22 +4967,22 @@ function makeDandelionPatch(DandelionPlant, Square, CommonShot, deps) {
 }
 
 /* ==========================================================================
- * 蒲公英大招「驱离运兵艇」(`sky_dropship`) —— 用户 2026/10/16 指定「等同电离红掌」
+ * 蒲公英大招「驱离运兵艇」(`sky_dropship`) —— 「等同电离红掌」
  *
- *  ★ 红掌的效果在引擎里是什么（逐字核对，见设计稿 §1.2）：
- *      闪电 = `PlantfoodDamage **1200**`（electricity）×（最多）`PlantfoodLightningCount **3**`，
- *      直接对 `cm.zombiePool` 的僵尸 `dealDamage`；而运兵艇 `Toughness **1200**` ⇒ **一发致死**
- *      ⇒ 死亡即"离场"（它掉完小鬼也走 `playDie`）⇒ **剩余小鬼不再掉** = 用户实机看到的现象。
- *    ⇒ 我们走**同一条**「伤害→死亡」路（`pbDriveMode:'kill'`，含击杀结算）；
- *      `pbDriveMode:'leave'` 保留"纯离场"作保险（若实机发现击杀结算影响波次，一行切换）。
+ * 红掌的效果在引擎里是什么（逐字核对，见设计稿 §1.2）：
+ * 闪电 = `PlantfoodDamage **1200**`（electricity）×（最多）`PlantfoodLightningCount **3**`，
+ * 直接对 `cm.zombiePool` 的僵尸 `dealDamage`；而运兵艇 `Toughness **1200**` ⇒ **一发致死**
+ * ⇒ 死亡即"离场"（它掉完小鬼也走 `playDie`）⇒ **剩余小鬼不再掉** = 实机看到的现象。
+ * ⇒ 我们走**同一条**「伤害→死亡」路（`pbDriveMode:'kill'`，含击杀结算）；
+ * `pbDriveMode:'leave'` 保留"纯离场"作保险（若实机发现击杀结算影响波次，一行切换）。
  *
- *  ⚠️ 三条硬约束：
- *    · 运兵艇 `bodyRecReal` 是**退化框**（-1e4）⇒ 普通弹道打不到它，**不能靠"打中"触发**；
- *    · 它的 `setStun/setChill/setFreeze/setPoison/setPerfume/dealHurrikale/knockBack*` **全是空函数** ⇒ 绝不碰；
- *    · `damageType` 必须 `physicle`：`ray` + `canPlayAshNow()` ⇒ **化灰**，而化灰不走常规离场 ⇒ 观感会变。
+ * 三条硬约束：
+ * · 运兵艇 `bodyRecReal` 是**退化框**（-1e4）⇒ 普通弹道打不到它，**不能靠"打中"触发**；
+ * · 它的 `setStun/setChill/setFreeze/setPoison/setPerfume/dealHurrikale/knockBack*` **全是空函数** ⇒ 绝不碰；
+ * · `damageType` 必须 `physicle`：`ray` + `canPlayAshNow()` ⇒ **化灰**，而化灰不走常规离场 ⇒ 观感会变。
  *
- *  识别：主判据 `Zombie_Type === 'sky_dropship'`（引擎里 `Zombie_Type = objdata.CODENAME`），
- *        次判据 `instanceof SkyDropShipZombie`（模块有导出；导入失败自动跳过）。
+ * 识别：主判据 `Zombie_Type === 'sky_dropship'`（引擎里 `Zombie_Type = objdata.CODENAME`），
+ * 次判据 `instanceof SkyDropShipZombie`（模块有导出；导入失败自动跳过）。
  * ========================================================================== */
 
 /** 是不是运兵艇（`sky_dropship`） */
@@ -4936,58 +5048,58 @@ function gpnDandelionDriveDropShips(deps) {
 /* =========================================================================
  * 16. 甜椒投手：命中目标 / 命中障碍物 / 触地后，在落点铺一片 3x3、1 秒的灼烧
  *
- *    引擎里的"地面火"是分三层用的：
- *      LnC.addGroundFire(duration, height, color, spawnDelay, prefab)
- *          -> 在【这一格】生成一片 GroundFire。prefab 传 null 时会按颜色取默认粒子，
- *             所以不用自己去挖资源。
- *      jalapenoFire { groundFires, damage, duration, isDPS, ... }  <- 一批火 + 伤害
- *      GroundFiresManager.registerJalapenoFire(jf)                <- 注册进去，每帧结算
+ * 引擎里的"地面火"是分三层用的：
+ * LnC.addGroundFire(duration, height, color, spawnDelay, prefab)
+ * -> 在【这一格】生成一片 GroundFire。prefab 传 null 时会按颜色取默认粒子，
+ * 所以不用自己去挖资源。
+ * jalapenoFire { groundFires, damage, duration, isDPS, ... } <- 一批火 + 伤害
+ * GroundFiresManager.registerJalapenoFire(jf) <- 注册进去，每帧结算
  *
- *    GroundFiresManager.update 里对每片火都会：
- *        new ZombieDamageDetails(i.damage * (i.isDPS ? dt : 1), ..., 伤害类型 = fire)
- *    也就是说 isDPS = true 时引擎按【每秒】结算，而伤害类型天生就是 fire。
- *    注意：我们配置里的 40% 是【单次火焰总伤害】占攻击力的比例（不是每秒 40%），
- *          所以下面会用 总伤害 / burnSeconds 折算出交给引擎的每秒值。
- *    （正好满足"带 fire"）。
+ * GroundFiresManager.update 里对每片火都会：
+ * new ZombieDamageDetails(i.damage * (i.isDPS ? dt : 1), ..., 伤害类型 = fire)
+ * 也就是说 isDPS = true 时引擎按【每秒】结算，而伤害类型天生就是 fire。
+ * 注意：我们配置里的 40% 是【单次火焰总伤害】占攻击力的比例（不是每秒 40%），
+ * 所以下面会用 总伤害 / burnSeconds 折算出交给引擎的每秒值。
+ * （正好满足"带 fire"）。
  *
- *    3x3 = 落点所在格子的 get3x3()（9 格各来一片火），合成一个 jalapenoFire。
+ * 3x3 = 落点所在格子的 get3x3()（9 格各来一片火），合成一个 jalapenoFire。
  *
- *    ★ 两套阵营（照引擎自己的"僵尸方火焰"写法分家）：
- *      · 正常甜椒弹（enemyType == zombie）-> 上面那套【僵尸阵营火】：注册 jalapenoFire 批次，
- *        走 GroundFiresManager 每帧结算（烧僵尸 + 被催眠僵尸，不烧植物）。
- *      · 【被弹反】的甜椒弹（enemyType == plant）-> 【植物阵营火】：不注册批次，
- *        改由 gpnPlantFireAt / gpnTickPlantFires 自己每帧结算（烧植物 + 被催眠僵尸，
- *        绝不碰普通僵尸；照样化冰面 + 清零冻结进度）。见 gpnPepperBurnAt 里的 plantSide。
+ * 两套阵营（照引擎自己的"僵尸方火焰"写法分家）：
+ * · 正常甜椒弹（enemyType == zombie）-> 上面那套【僵尸阵营火】：注册 jalapenoFire 批次，
+ * 走 GroundFiresManager 每帧结算（烧僵尸 + 被催眠僵尸，不烧植物）。
+ * · 【被弹反】的甜椒弹（enemyType == plant）-> 【植物阵营火】：不注册批次，
+ * 改由 gpnPlantFireAt / gpnTickPlantFires 自己每帧结算（烧植物 + 被催眠僵尸，
+ * 绝不碰普通僵尸；照样化冰面 + 清零冻结进度）。见 gpnPepperBurnAt 里的 plantSide。
  * =======================================================================*/
 function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareType, GroundFireColorEnum, JalapenoFire, GroundFiresManager } = deps;
     if (shot.__gpnBurned) return;
     const dur = CFG.pepperpult.burnSeconds;
     // 私有标记里存的是【总伤害比例】：
-    //   先算出这一发火焰的【总伤害】= 攻击力 x 比例，
-    //   再摊到持续时间上，得到引擎需要"每秒"结算的值。
-    //   ⇒ 不管 burnSeconds 改成几秒，【单次火焰总伤害】始终 = 攻击力 x 比例。
+    // 先算出这一发火焰的【总伤害】= 攻击力 x 比例，
+    // 再摊到持续时间上，得到引擎需要"每秒"结算的值。
+    // ⇒ 不管 burnSeconds 改成几秒，【单次火焰总伤害】始终 = 攻击力 x 比例。
     const total = (shot.damage || 0) * (shot.__gpnBurnRatio || 0);
     if (!(total > 0) || !(dur > 0)) return;
     const dps = total / dur;
 
-    // ★ 阵营：这一发是不是【被弹反】的甜椒弹？
-    //   —— 被小丑 / 三节棍弹反后，弹道的 enemyType 会被翻成 plant（目标变成植物），
-    //      这时候铺的火也必须是"植物阵营的火"：烧植物、不烧普通僵尸（见 gpnPlantFireAt）。
-    //   伤害口径（总伤害 = 攻击力 x 40%、1 秒）和外观（3x3 地面火）两边完全一样。
+    // 阵营：这一发是不是【被弹反】的甜椒弹？
+    // —— 被小丑 / 三节棍弹反后，弹道的 enemyType 会被翻成 plant（目标变成植物），
+    // 这时候铺的火也必须是"植物阵营的火"：烧植物、不烧普通僵尸（见 gpnPlantFireAt）。
+    // 伤害口径（总伤害 = 攻击力 x 40%、1 秒）和外观（3x3 地面火）两边完全一样。
     const plantSide = !!(deps.CharacterType && shot.enemyType === deps.CharacterType.plant);
 
-    // ★★ 伞叶 / 回旋镖射手 对"被反弹的甜椒弹"的判定（**按弹反来源区分**，2026/10/10 用户口径）：
-    //    · **弄臣僵尸**（dark_juggler / birthday_juggler）反弹的 ⇒ **不再算投掷物** ⇒
-    //      **不该**被伞叶 / 回旋镖挡下（也就不该被"按位置"弹开）；
-    //    · **三节棍僵尸**（abbot_3section_staff）反弹的 ⇒ **仍算投掷物** ⇒ 照旧可被挡（保持原行为）。
-    //   两条判定的由来（当初为"补引擎漏判"而加，逐字核对过引擎）：
-    //     ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开
-    //        （只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）；
-    //     ② 按植物：由调用方（dealDamageToPlant 钩子）查"目标植物 3×3 内有没有 umbrella()"。
-    //   为什么需要 ② 之外的引擎兜底：`Plant.dealDamage` 那条"伞叶吸收"只在【伤害类型 1】时才走
-    //   —— 而类型是 `bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
-    //   ⚠️ 所以"弄臣反弹的弹不被挡"必须【主动】做到：见 gpnPepperEnforceReflect（把它的
-    //      bodyLinearVelocity 钉成 0 ⇒ 引擎判不出"下落" ⇒ 不吸收；同时也跳过我们的 ①②）。
+    // 伞叶 / 回旋镖射手 对"被反弹的甜椒弹"的判定（**按弹反来源区分**，规则）：
+    // · **弄臣僵尸**（dark_juggler / birthday_juggler）反弹的 ⇒ **不再算投掷物** ⇒
+    // **不该**被伞叶 / 回旋镖挡下（也就不该被"按位置"弹开）；
+    // · **三节棍僵尸**（abbot_3section_staff）反弹的 ⇒ **仍算投掷物** ⇒ 照旧可被挡（保持原行为）。
+    // 两条判定的由来（当初为"补引擎漏判"而加，逐字核对过引擎）：
+    // ① 按位置：子弹落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开
+    // （只有伞叶会注册，回旋镖不注册 ⇒ 削弱版）；
+    // ② 按植物：由调用方（dealDamageToPlant 钩子）查"目标植物 3×3 内有没有 umbrella()"。
+    // 为什么需要 ② 之外的引擎兜底：`Plant.dealDamage` 那条"伞叶吸收"只在【伤害类型 1】时才走
+    // —— 而类型是 `bodyLinearVelocity < 0 ? 1 : 2`（只有"正在下落"才算投掷物）。
+    // 所以"弄臣反弹的弹不被挡"必须【主动】做到：见 gpnPepperEnforceReflect（把它的
+    // bodyLinearVelocity 钉成 0 ⇒ 引擎判不出"下落" ⇒ 不吸收；同时也跳过我们的 ①②）。
     if (plantSide && !(shot.__gpnReflectBy === 'juggler')) {
         const byPos = gpnUmbrellaBlocksByPos(shot, deps.Umbrellas);
         if (byPos || shot.__gpnUmbrellaBlocked) {
@@ -5001,18 +5113,18 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
 
     // 落点：优先用「被打中的那个障碍物所在的格子」（墓碑/冰块/冲浪板都是一格一物），
     // 其次用子弹当前所在格，最后按坐标查格。
-    // ★ 但**场外**要特殊处理（见下）：那时上面的三种都拿不到可用的实体格。
+    // 但**场外**要特殊处理（见下）：那时上面的三种都拿不到可用的实体格。
     let cell = (cellOverride && typeof cellOverride.get3x3 === 'function') ? cellOverride : shot.inLnC;
     if (!cell && Square && typeof Square.getLnC === 'function'
         && shot.lIndex >= 0 && shot.cIndex >= 0) {
         cell = Square.getLnC(shot.lIndex, shot.cIndex);
     }
 
-    // ★★ 场外右侧（打的是「最右列更右侧」的目标）：**改成最右列的 3×1**（用户口径 2026/10/14）
-    //   为什么不能用原来的 3x3：场外格 `LnCRight` 是**全场共用的假格**，`get3x3()` 拿不到实体格；
-    //   而兜底 `gpnBurnCellsByCoord` 里 `shot.lIndex = -2 < 0` ⇒ 直接返回空 ⇒ **一片火都不生成**
-    //   （那条「甜椒灼烧：一片火都没生成」的刷屏就是这么来的）。
-    //   现在：行号按 **Y 坐标**求（不能用 lIndex）、只在**最右列**铺，行超出草坪的**不铺**。
+    // 场外右侧（打的是「最右列更右侧」的目标）：**改成最右列的 3×1**（规则：）
+    // 为什么不能用原来的 3x3：场外格 `LnCRight` 是**全场共用的假格**，`get3x3()` 拿不到实体格；
+    // 而兜底 `gpnBurnCellsByCoord` 里 `shot.lIndex = -2 < 0` ⇒ 直接返回空 ⇒ **一片火都不生成**
+    // （那条「甜椒灼烧：一片火都没生成」的刷屏就是这么来的）。
+    // 现在：行号按 **Y 坐标**求（不能用 lIndex）、只在**最右列**铺，行超出草坪的**不铺**。
     const offRight = gpnIsOffFieldRight(cell) || (typeof shot.lIndex === 'number' && shot.lIndex < 0);
     let cells = null;
     if (offRight) {
@@ -5024,9 +5136,9 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
         if (!cells || !cells.length) cells = gpnBurnCellsByCoord(shot, Square);
     }
     const fires = [];       // 要铺火的格子：
-                            //   正常     = 落点格的 get3x3()（9 格）
-                            //   场外右侧 = 最右列的 3×1（见上面的 offRight 分支）
-                            //   其它拿不到 = 按子弹坐标铺 3x3（gpnBurnCellsByCoord）
+                            // 正常 = 落点格的 get3x3()（9 格）
+                            // 场外右侧 = 最右列的 3×1（见上面的 offRight 分支）
+                            // 其它拿不到 = 按子弹坐标铺 3x3（gpnBurnCellsByCoord）
     let skipped = 0;
     for (const c of cells) {
         if (!c || typeof c.addGroundFire !== 'function') continue;
@@ -5037,10 +5149,10 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
         if (f) fires.push(f);
     }
     if (!fires.length) {
-        // ★ 噪音治理（2026/10/14 用户要求）：这两句原来**没有门**，而"打场外目标"每发都会走到这里
-        //   ⇒ `verboseLog` 关着也照样刷屏。
-        //   现在：**天空/海面关卡属于正常地形**（不是异常）⇒ 降为 verbose 日志；
-        //        「一片火都没生成」保留为真警告，但**加去重**（同一帧/同种原因只报一次）。
+        // 噪音治理（要求：）：这两句原来**没有门**，而"打场外目标"每发都会走到这里
+        // ⇒ `verboseLog` 关着也照样刷屏。
+        // 现在：**天空/海面关卡属于正常地形**（不是异常）⇒ 降为 verbose 日志；
+        // 「一片火都没生成」保留为真警告，但**加去重**（同一帧/同种原因只报一次）。
         if (skipped) {
             if (verboseOn()) log('甜椒灼烧：' + skipped + ' 格是天空/海面（该地形本就不出火）'
                 + (offRight ? '，场外目标：本次不铺火' : '，剩下拿不到格子'));
@@ -5050,10 +5162,10 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
         return;
     }
 
-    // ★ 植物阵营的火：【不注册地面火批次】—— 引擎的批次只有「烧植物 / 烧普通僵尸 /
-    //   烧被催眠僵尸」三档，没有"只烧植物、完全不碰僵尸"这一档。
-    //   所以照引擎自己的"僵尸方火焰"写法（住持火把僵尸的喷火、埃及探险家的火把）：
-    //   火只当外观，伤害由我们每帧自己结算 —— 见 gpnPlantFireAt / gpnTickPlantFires。
+    // 植物阵营的火：【不注册地面火批次】—— 引擎的批次只有「烧植物 / 烧普通僵尸 /
+    // 烧被催眠僵尸」三档，没有"只烧植物、完全不碰僵尸"这一档。
+    // 所以照引擎自己的"僵尸方火焰"写法（住持火把僵尸的喷火、埃及探险家的火把）：
+    // 火只当外观，伤害由我们每帧自己结算 —— 见 gpnPlantFireAt / gpnTickPlantFires。
     if (plantSide) {
         gpnPlantFireAt(fires, dps, dur);
         shot.__gpnBurned = true;
@@ -5074,9 +5186,9 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
     jf.burnsFlying = true;
     jf.plantsIncluded = false;
     // !! 语义是反的：armorProtection = true 才是「护甲正常生效（不穿甲）」，
-    //    false 是「无视护甲（穿甲）」。jalapenoFire 类的默认值恰好是 false，
-    //    所以 v2.7.2 直接沿用了默认值 → 甜椒的火一直在穿甲。
-    //    这里显式按配置来；只动我们自己这一份火批次对象，其他火焰一律不碰。
+    // false 是「无视护甲（穿甲）」。jalapenoFire 类的默认值恰好是 false，
+    // 所以 v2.7.2 直接沿用了默认值 → 甜椒的火一直在穿甲。
+    // 这里显式按配置来；只动我们自己这一份火批次对象，其他火焰一律不碰。
     jf.armorProtection = CFG.pepperpult.burnArmorProtection;
     jf.hypnoIncluded = 0;
     jf.zombieWhiteList = [];
@@ -5087,7 +5199,7 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
     } else {
         // v2.7.0/2.7.1 的「有火没伤害」就是走到这里：火粒子已经铺出去了（上面那步），
         // 但没有任何火批次被注册 ⇒ 每帧结算的伤害一次都不会发生。
-        // ★ 噪音治理：这是**环境级异常**（每次都一样），一句话只报一次就够。
+        // 噪音治理：这是**环境级异常**（每次都一样），一句话只报一次就够。
         if (gpnWarnOnce('pepperNoMgr')) warn('甜椒灼烧：拿不到 GroundFiresManager.component（火已铺出，但不会有伤害）');
         return;
     }
@@ -5101,12 +5213,12 @@ function gpnPepperBurnAt(shot, deps, cellOverride) {    const { Square, SquareTy
 }
 
 /** 这一格能不能铺火。
- *  规则（v2.8.4）：【天空】和【海盗港湾的海面】不铺 —— 正好就是引擎自己的 isSkyOrSea()。
- *  !! 注意【不包括】water：那是【巨浪沙滩】的海面，那边要正常出火。
- *     四个值的来历（引擎里查证过）：
- *       sky   = 1  云端堡垒的天空            -> 不出火
- *       water = 2  巨浪沙滩的海面            -> 【照常出火】（BeachSnorkelZombie 用它判潜水）
- *       sea   = 3  海盗港湾的海面            -> 不出火（栈道是 deck=4，照常出火）
+ * 规则（v2.8.4）：【天空】和【海盗港湾的海面】不铺 —— 正好就是引擎自己的 isSkyOrSea()。
+ * !! 注意【不包括】water：那是【巨浪沙滩】的海面，那边要正常出火。
+ * 四个值的来历（引擎里查证过）：
+ * sky = 1 云端堡垒的天空 -> 不出火
+ * water = 2 巨浪沙滩的海面 -> 【照常出火】（BeachSnorkelZombie 用它判潜水）
+ * sea = 3 海盗港湾的海面 -> 不出火（栈道是 deck=4，照常出火）
  * 优先用引擎自带方法，拿不到再比枚举，保证跟版本走。 */
 function gpnCellCanBurn(cell, SquareType) {
     if (!cell) return false;
@@ -5120,8 +5232,8 @@ function gpnCellCanBurn(cell, SquareType) {
 }
 
 /** 按子弹坐标取 3x3 的格子（用于「落点格拿不到」的场外情况）。
- *  引擎的 addGroundFire 自己对场外格返回 undefined，所以这里不用过滤，
- *  只把拿得到的格子交给它 —— 结果就是「3x3 里场内那部分出火」。 */
+ * 引擎的 addGroundFire 自己对场外格返回 undefined，所以这里不用过滤，
+ * 只把拿得到的格子交给它 —— 结果就是「3x3 里场内那部分出火」。 */
 function gpnBurnCellsByCoord(shot, Square) {
     const out = [];
     if (!Square || typeof Square.getLnC !== 'function') return out;
@@ -5137,24 +5249,24 @@ function gpnBurnCellsByCoord(shot, Square) {
     return out;
 }
 
-/** ★ 场外判定 + 位置修补（修「最右列之外的场外目标，范围效果失效」，2026/10/14 用户报告）
+/** 场外判定 + 位置修补（修「最右列之外的场外目标，范围效果失效」，实测发现）
 
- *  引擎事实（已逐字核对 1.5.5 bundle）：
- *    · `Square.judgeCIndex(x)`：`x > 草坪右边界 + 9*SquareWidth` ⇒ 返回 **9**
- *      （**最右列（cIndex 8）的更右侧** ⇒ cIndex = 9）；左侧场外 ⇒ -1。
- *    · `Square.getLnC(l, c)`：`c === 9` ⇒ 返回 **`LnCRight`** —— 它是**全场唯一一个**格对象，
- *      初始化时被设成 `inLane = getLane(-2)`、**`lIndex = -2`**、`cIndex = 9`。
- *    · 于是**场外**的弹道/僵尸：`inLnC === LnCRight`、**`lIndex === -2`**。
- *    ⚠️ 而引擎的通用范围通道 `defaultDealSplashDamage` 有一道守卫
- *      `if (!(!this.inLane || this.lIndex > 4 || this.lIndex < 0)) { … }`
- *      ⇒ **场外（lIndex = -2）时整段范围效果被跳过**，看起来就像"范围失效、变成单体"。
- *      （`dealSplashDamageForEach` 里还依赖 `inLane.midY` 与 `lIndex`，场外同样拿不到。）
- *  所以场外必须**绕开这条通道**，照原版「寒冰辣椒 `_chillLane`」的模板自己做：
- *    **按 Y 求行（行池）→ 自算判定框 → 直接对僵尸施加效果**。
+ * 引擎事实（已逐字核对 1.5.5 bundle）：
+ * · `Square.judgeCIndex(x)`：`x > 草坪右边界 + 9*SquareWidth` ⇒ 返回 **9**
+ * （**最右列（cIndex 8）的更右侧** ⇒ cIndex = 9）；左侧场外 ⇒ -1。
+ * · `Square.getLnC(l, c)`：`c === 9` ⇒ 返回 **`LnCRight`** —— 它是**全场唯一一个**格对象，
+ * 初始化时被设成 `inLane = getLane(-2)`、**`lIndex = -2`**、`cIndex = 9`。
+ * · 于是**场外**的弹道/僵尸：`inLnC === LnCRight`、**`lIndex === -2`**。
+ * 而引擎的通用范围通道 `defaultDealSplashDamage` 有一道守卫
+ * `if (!(!this.inLane || this.lIndex > 4 || this.lIndex < 0)) { … }`
+ * ⇒ **场外（lIndex = -2）时整段范围效果被跳过**，看起来就像"范围失效、变成单体"。
+ * （`dealSplashDamageForEach` 里还依赖 `inLane.midY` 与 `lIndex`，场外同样拿不到。）
+ * 所以场外必须**绕开这条通道**，照原版「寒冰辣椒 `_chillLane`」的模板自己做：
+ * **按 Y 求行（行池）→ 自算判定框 → 直接对僵尸施加效果**。
  */
 
 /** 「同一类警告只报一次」——用于**每次触发都会重复**的警告（避免刷屏）。
- *  与 `verboseOn()` 的区别：这类是**真警告**（有问题、要让人看见），只是不需要重复 N 遍。 */
+ * 与 `verboseOn()` 的区别：这类是**真警告**（有问题、要让人看见），只是不需要重复 N 遍。 */
 const GPN_WARN_ONCE = {};
 function gpnWarnOnce(key) {
     if (GPN_WARN_ONCE[key]) return false;
@@ -5177,10 +5289,10 @@ function gpnIsOffField(obj) {
 }
 
 /** 按 Y 坐标求草坪行号（0..4）。
- *  为什么不用 `obj.lIndex`：**场外时它是 -2**；而 `getLane(-2)` 也不是"它所在的那一行"。
- *  行号 = 让 `lane.midY` 最接近 `y` 的那一行。
- *  ⚠️ 用 `Square.getAllLane()`（引擎返回 5 条真实车道的数组）而不是 `getLane(i)`——
- *     两者在引擎里等价，但前者是**一次性数组**、语义更明确（自检里 `getLane(i)` 会被 mock 覆写）。 */
+ * 为什么不用 `obj.lIndex`：**场外时它是 -2**；而 `getLane(-2)` 也不是"它所在的那一行"。
+ * 行号 = 让 `lane.midY` 最接近 `y` 的那一行。
+ * 用 `Square.getAllLane()`（引擎返回 5 条真实车道的数组）而不是 `getLane(i)`——
+ * 两者在引擎里等价，但前者是**一次性数组**、语义更明确（自检里 `getLane(i)` 会被 mock 覆写）。 */
 function gpnLaneByY(y, Square) {
     try {
         if (!Square || typeof y !== 'number' || isNaN(y)) return -1;
@@ -5212,23 +5324,23 @@ function gpnLaneObj(i, Square) {
 }
 
 /** 最右列的 3×1 格子（以 `lane` 行为中心、取草坪最右列 cIndex = 8）。
- *  用户口径（2026/10/14）：**行号超出 0..4 时不铺**（只铺场内那两行）。 */
+ * 规则：**行号超出 0..4 时不铺**（只铺场内那两行）。 */
 function gpnRightmostCells3x1(lane, Square) {
     const out = [];
     if (!Square || typeof Square.getLnC !== 'function' || typeof lane !== 'number' || lane < 0) return out;
     for (let dl = -1; dl <= 1; dl++) {
         const l = lane + dl;
-        if (l < 0 || l > 4) continue;                 // ★ 超出草坪的行不铺
-        const sq = Square.getLnC(l, 8);               // ★ 最右列
+        if (l < 0 || l > 4) continue;                 // 超出草坪的行不铺
+        const sq = Square.getLnC(l, 8);               // 最右列
         if (sq) out.push(sq);
     }
     return out;
 }
 
 /** 造一个引擎同款的 jalapenoFire 批次对象。
- *  GroundFiresManager.update 每帧都会读 dealtZombies / dealtTombs / dealtPlants 等字段，
- *  少任何一个都会在结算时抛异常 —— 表现出来就是「有火，但一点伤害都没有」。
- *  拿不到引擎类时用等价普通对象兜底。 */
+ * GroundFiresManager.update 每帧都会读 dealtZombies / dealtTombs / dealtPlants 等字段，
+ * 少任何一个都会在结算时抛异常 —— 表现出来就是「有火，但一点伤害都没有」。
+ * 拿不到引擎类时用等价普通对象兜底。 */
 function gpnMakeJalapenoFire(JalapenoFire) {
     if (typeof JalapenoFire === 'function') {
         try { return new JalapenoFire(); } catch (e) {
@@ -5244,25 +5356,25 @@ function gpnMakeJalapenoFire(JalapenoFire) {
     };
 }
 
-/* ---------------- 伞叶 / 回旋镖射手 的两套判定（照抄引擎） ----------------
- *  引擎里"投掷物被伞叶挡下"其实有两条路，而且强弱不同：
+/* ---- ---- ---- ---- 伞叶 / 回旋镖射手 的两套判定（照抄引擎） ---- ---- ---- ----
+ * 引擎里"投掷物被伞叶挡下"其实有两条路，而且强弱不同：
  *
- *  ① 【按植物】`Plant.dealDamage(伤害, 类型 1)` 里那一段：
- *         this.inLnC.get3x3().forEach(cell => cell.plantInSquare?.forEach(p => p.umbrella() && (挡下 = true)));
- *         if (挡下) return;        // 伤害被完全吸收
- *     它查的是【被打的那株植物所在格 3×3 内有没有 umbrella()】，所以
- *     **伞叶和回旋镖射手都算**（两者都实现 isUmbrella() / umbrella()）⇒ 回旋镖的"隐藏机制"就是这条。
- *     !! 引擎只在【伤害类型 1】（= bodyLinearVelocity < 0，正在下落的投掷物）时才走这一段。
+ * ① 【按植物】`Plant.dealDamage(伤害, 类型 1)` 里那一段：
+ * this.inLnC.get3x3().forEach(cell => cell.plantInSquare?.forEach(p => p.umbrella() && (挡下 = true)));
+ * if (挡下) return; // 伤害被完全吸收
+ * 它查的是【被打的那株植物所在格 3×3 内有没有 umbrella()】，所以
+ * **伞叶和回旋镖射手都算**（两者都实现 isUmbrella() / umbrella()）⇒ 回旋镖的"隐藏机制"就是这条。
+ * !! 引擎只在【伤害类型 1】（= bodyLinearVelocity < 0，正在下落的投掷物）时才走这一段。
  *
- *  ② 【按位置】`Umbrellas.umbrellas` 注册表（CharacterManager 上的全局数组）：
- *         敌人投掷物 / 冲浪板 / 章鱼 / 沙袋 / 墓碑… 落地或出手前会遍历它，
- *         命中就 `owner.umbrella()`（播格挡动画）+ 把投掷物弹开。
- *     **只有伞叶会把自己注册进去**（UmbrellaLeaf.specialPlantOnEnable 里 push 自己的 3×3 检测框），
- *     回旋镖射手完全没碰这个表 ⇒ 它挡不了这类攻击 ⇒ 这就是"削弱版伞叶"的引擎依据。
- * ------------------------------------------------------------------ */
+ * ② 【按位置】`Umbrellas.umbrellas` 注册表（CharacterManager 上的全局数组）：
+ * 敌人投掷物 / 冲浪板 / 章鱼 / 沙袋 / 墓碑… 落地或出手前会遍历它，
+ * 命中就 `owner.umbrella()`（播格挡动画）+ 把投掷物弹开。
+ * **只有伞叶会把自己注册进去**（UmbrellaLeaf.specialPlantOnEnable 里 push 自己的 3×3 检测框），
+ * 回旋镖射手完全没碰这个表 ⇒ 它挡不了这类攻击 ⇒ 这就是"削弱版伞叶"的引擎依据。
+ * ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- -- */
 
 /** ① 按植物：目标植物所在格 3×3 内，只要有植物 umbrella() 返回 true ⇒ 这一下被完全吸收。
- *  注意引擎就是靠调用 `p.umbrella()` 来【播格挡动画 + 音效】的，所以这里照调即可。 */
+ * 注意引擎就是靠调用 `p.umbrella()` 来【播格挡动画 + 音效】的，所以这里照调即可。 */
 function gpnUmbrellaAbsorbs(plant) {
     const cell = plant && plant.inLnC;
     if (!cell || typeof cell.get3x3 !== 'function') return false;
@@ -5280,7 +5392,7 @@ function gpnUmbrellaAbsorbs(plant) {
 }
 
 /** ② 按位置：子弹当前位置落在【注册进 Umbrellas 的伞叶】检测框内 ⇒ 整发被弹开。
- *  回旋镖射手不在注册表里 ⇒ 这里永远拦不到它（与引擎一致 = 削弱版）。 */
+ * 回旋镖射手不在注册表里 ⇒ 这里永远拦不到它（与引擎一致 = 削弱版）。 */
 function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
     const list = Umbrellas && Umbrellas.umbrellas;
     if (!list || !list.length || !shot || !shot.node) return false;
@@ -5304,9 +5416,9 @@ function gpnUmbrellaBlocksByPos(shot, Umbrellas) {
 
 
 /* 寒冰射手金卡：把"数据层"改金卡的动作抽成可重复调用的函数（开=金卡，关=还原）
- *  · 数据层 = PlantFeatures[].OBTAINWORLD（引擎卡面 getPlantBGSpriteByObtainWorld 读它）
- *  · 显示层 = Plants.getBGAnm 钩子（运行期现查 featOn('snowpea')）
- *  用户在配置界面切换 snowpea ⇒ 立刻调用本函数（数据立即生效）；卡面在"进入关卡/重开图鉴"重建卡面时随之变化。 */
+ * · 数据层 = PlantFeatures[].OBTAINWORLD（引擎卡面 getPlantBGSpriteByObtainWorld 读它）
+ * · 显示层 = Plants.getBGAnm 钩子（运行期现查 featOn('snowpea')）
+ * 在配置界面切换 snowpea ⇒ 立刻调用本函数（数据立即生效）；卡面在"进入关卡/重开图鉴"重建卡面时随之变化。 */
 let gpnSnowPeaGoldApply = null;
 
 /* 【临时诊断】阶段⓪ 可行性验证用的按键处理与"数据补丁引用"（调查结束整段删除） */
@@ -5318,18 +5430,18 @@ let gpnApplyDataPatch = null;
  * 【修 BUG 的核心】弄臣反弹的甜椒弹 —— 让它"不再算投掷物"
  *
  * 引擎的伞叶吸收只认"投掷物"，而"是不是投掷物"是这么算的（`CommonShot.detectPlant`）：
- *     var n = o.bodyLinearVelocity < 0 && e.haveUmbrellaNearby();
- *     o.dealDamageToPlant(e) && ( n || o.dealSplashDamage(...), o.pop() )
+ * var n = o.bodyLinearVelocity < 0 && e.haveUmbrellaNearby();
+ * o.dealDamageToPlant(e) && ( n || o.dealSplashDamage(...), o.pop() )
  * 其中 `bodyLinearVelocity` 会被"反弹"改掉（弄臣抛接 / 三节棍翻速度）⇒ 判定飘忽。
  *
- * 用户口径：**弄臣僵尸反弹的弹不再算投掷物** ⇒ 我们把它钉成 `0`：
- *     bodyLinearVelocity = 0  ⇒  `0 < 0` 为假 ⇒ 引擎判定"不是投掷物" ⇒ 伞叶不吸收。
+ * 规则：**弄臣僵尸反弹的弹不再算投掷物** ⇒ 我们把它钉成 `0`：
+ * bodyLinearVelocity = 0 ⇒ `0 < 0` 为假 ⇒ 引擎判定"不是投掷物" ⇒ 伞叶不吸收。
  * 这样：
- *   · 伞叶 / 回旋镖**挡不住**弄臣反弹的甜椒弹（要的效果）；
- *   · **普通**甜椒弹（仍是 zombie 阵营、正常下落）完全不受影响；
- *   · **三节棍**反弹的弹（`__gpnReflectBy === 'staff'`）**照样**是投掷物 ⇒ 可被挡（保持原行为）。
- * ⚠️ 只动这一发的 `bodyLinearVelocity`（它只用于"抛接/下落"的观感与上面那条判定），
- *    不改速度、伤害、火焰、阵营 —— 反弹弹该有的伤害与铺火一律保留。
+ * · 伞叶 / 回旋镖**挡不住**弄臣反弹的甜椒弹（要的效果）；
+ * · **普通**甜椒弹（仍是 zombie 阵营、正常下落）完全不受影响；
+ * · **三节棍**反弹的弹（`__gpnReflectBy === 'staff'`）**照样**是投掷物 ⇒ 可被挡（保持原行为）。
+ * 只动这一发的 `bodyLinearVelocity`（它只用于"抛接/下落"的观感与上面那条判定），
+ * 不改速度、伤害、火焰、阵营 —— 反弹弹该有的伤害与铺火一律保留。
  * ========================================================================== */
 function gpnPepperEnforceReflect(shot) {
     try {
@@ -5338,21 +5450,21 @@ function gpnPepperEnforceReflect(shot) {
     } catch (e) { /* 绝不影响游戏 */ }
 }
 
-/* ---------------- 植物阵营的火（被弹反的甜椒弹专用） ----------------
- *  引擎里的"僵尸方火焰"是怎么写的（逐行核对过 0.14.0 的引擎）：
- *    · 住持火把僵尸 AbbotTorchZombie.detectPlant（喷火）：
- *        rect = 身前 FlameAttackDistance(3) 格宽 -> plant.dealDamage(FireDPS x dt, 3)
- *    · 埃及探险家僵尸 EgyptExplorerZombie.detectPlantWithTorch（手里的火把）：
- *        plant.burn()（那个是【瞬杀】，我们不用）
- *  它们的共同点：【完全不注册 GroundFiresManager】—— 火只当外观，伤害自己每帧结算。
- *  这里照同一套写法做"植物阵营的火"：烧植物 +【被催眠的僵尸】（引擎口径：被催眠僵尸算植物阵营），
- *  绝不碰普通僵尸 ⇒ 被弹反的甜椒弹打出来的火，是"玩家挨打"的火。
+/* ---- ---- ---- ---- 植物阵营的火（被弹反的甜椒弹专用） ---- ---- ---- ----
+ * 引擎里的"僵尸方火焰"是怎么写的（逐行核对过 0.14.0 的引擎）：
+ * · 住持火把僵尸 AbbotTorchZombie.detectPlant（喷火）：
+ * rect = 身前 FlameAttackDistance(3) 格宽 -> plant.dealDamage(FireDPS x dt, 3)
+ * · 埃及探险家僵尸 EgyptExplorerZombie.detectPlantWithTorch（手里的火把）：
+ * plant.burn()（那个是【瞬杀】，我们不用）
+ * 它们的共同点：【完全不注册 GroundFiresManager】—— 火只当外观，伤害自己每帧结算。
+ * 这里照同一套写法做"植物阵营的火"：烧植物 +【被催眠的僵尸】（引擎口径：被催眠僵尸算植物阵营），
+ * 绝不碰普通僵尸 ⇒ 被弹反的甜椒弹打出来的火，是"玩家挨打"的火。
  *
- *  另外照抄引擎火批次在每片火格子上顺手做的两件事（= 火焰按默认行为处理冻结进度）：
- *    · cell.iceTile.die()            —— 化掉那一格的冰面
- *    · cell.iceblockPrepareLevel = 0 —— 清零"冻结进度"
- *  只有我们自己这一份火会这么走，引擎自己的火批次一律不碰。
- * ------------------------------------------------------------------ */
+ * 另外照抄引擎火批次在每片火格子上顺手做的两件事（= 火焰按默认行为处理冻结进度）：
+ * · cell.iceTile.die() —— 化掉那一格的冰面
+ * · cell.iceblockPrepareLevel = 0 —— 清零"冻结进度"
+ * 只有我们自己这一份火会这么走，引擎自己的火批次一律不碰。
+ * ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- -- */
 const gpnPlantFires = [];
 
 /** 在落点 9 格上登记一份"植物阵营的火"（外观已经在 gpnPepperBurnAt 里铺好了） */
@@ -5390,7 +5502,7 @@ function gpnTickPlantFires(dt, deps) {
                 if (cell.iceTile && typeof cell.iceTile.die === 'function') cell.iceTile.die();
                 cell.iceblockPrepareLevel = 0;
             } catch (e) { /* 单格失败不连累其它格 */ }
-            // ---- 植物：照引擎火批次那一行（getAllPlants + dealDamage(每秒值 x dt, 3)）----
+            // ---- 植物：照引擎火批次那一行（getAllPlants + dealDamage(每秒值 x dt, 3)） ----
             // 3 = 火焰伤害类型；引擎自己在"火焰伤害把植物打到血量归零"时会走 burn()（烧成灰）
             try {
                 const plants = (typeof cell.getAllPlants === 'function') ? cell.getAllPlants() : null;
@@ -5400,7 +5512,7 @@ function gpnTickPlantFires(dt, deps) {
                     }
                 }
             } catch (e) { warn('甜椒灼烧【植物阵营】：烧植物出错', e); }
-            // ---- 被催眠的僵尸（引擎口径：算植物阵营）----
+            // ---- 被催眠的僵尸（引擎口径：算植物阵营） ----
             try {
                 const lane = cell.inLane;
                 const pool = (lane && typeof lane.hypnoZombiePool === 'function') ? lane.hypnoZombiePool() : null;
@@ -5438,7 +5550,7 @@ function makePlantFireTickPatch(GroundFiresManager, deps) {
 
 function makePepperBurnPatch(CommonShot, deps) {
     if (!CommonShot || !CommonShot.prototype) { warn('跳过甜椒灼烧：拿不到 commonShot'); return null; }
-    gpnPepperDeps = deps;      // ★ 自检/诊断用：把依赖存下来（`_pepperBurnAt` 靠它）
+    gpnPepperDeps = deps;      // 自检/诊断用：把依赖存下来（`_pepperBurnAt` 靠它）
     const recs = [];
 
     // 命中目标 -> 烧
@@ -5461,18 +5573,18 @@ function makePepperBurnPatch(CommonShot, deps) {
     }
 
     // ---- 【修 BUG】记录"是谁反弹的"：弄臣 vs 三节棍，两者行为要求【不同】 ----
-    //   用户口径（2026/10/10 补充）：
-    //     · **弄臣僵尸**（`dark_juggler` 及其节日变种 `birthday_juggler`）反弹的子弹
-    //       ⇒ **不再算投掷物** ⇒ 不该被伞叶 / 回旋镖射手挡下；
-    //     · **三节棍僵尸**（`abbot_3section_staff`）反弹的子弹 ⇒ **仍算投掷物** ⇒ 该被挡（保持现状，不动它）。
-    //   为什么必须打标记：**两者在引擎里都只是把 `enemyType` 翻成 `plant`**
-    //   （`DarkJesterZombie` / `Abbot3SectionStaffZombie.reverseCSs`），光看阵营分不出来。
-    //   两条路径完全不同（逐字核对 1.5.5 bundle）：
-    //     · 弄臣：`DarkJesterZombie.commonShotPopOnTouch(shot)` 先把子弹"接住抛接"（返回 false 阻止 pop）；
-    //     · 三节棍：`Abbot3SectionStaffZombie.reverseCSs()`（该类独有，无 commonShotPopOnTouch）直接翻速度+阵营。
-    //   ⚠️ 两处都是"调用原函数【之后】补一个我们自己的标记"，**不改变引擎任何行为**。
-    //   ⚠️ 这两个类是【独立模块】（`chunks:///_virtual/DarkJesterZombie.ts` 等），所以从 setup 的
-    //      IMPORTS 里导入后传进来（见 `deps.DarkJesterZombieCls` / `Abbot3SectionStaffCls`）。
+    // 规则（补充）：
+    // · **弄臣僵尸**（`dark_juggler` 及其节日变种 `birthday_juggler`）反弹的子弹
+    // ⇒ **不再算投掷物** ⇒ 不该被伞叶 / 回旋镖射手挡下；
+    // · **三节棍僵尸**（`abbot_3section_staff`）反弹的子弹 ⇒ **仍算投掷物** ⇒ 该被挡（保持现状，不动它）。
+    // 为什么必须打标记：**两者在引擎里都只是把 `enemyType` 翻成 `plant`**
+    // （`DarkJesterZombie` / `Abbot3SectionStaffZombie.reverseCSs`），光看阵营分不出来。
+    // 两条路径完全不同（逐字核对 1.5.5 bundle）：
+    // · 弄臣：`DarkJesterZombie.commonShotPopOnTouch(shot)` 先把子弹"接住抛接"（返回 false 阻止 pop）；
+    // · 三节棍：`Abbot3SectionStaffZombie.reverseCSs()`（该类独有，无 commonShotPopOnTouch）直接翻速度+阵营。
+    // 两处都是"调用原函数【之后】补一个我们自己的标记"，**不改变引擎任何行为**。
+    // 这两个类是【独立模块】（`chunks:///_virtual/DarkJesterZombie.ts` 等），所以从 setup 的
+    // IMPORTS 里导入后传进来（见 `deps.DarkJesterZombieCls` / `Abbot3SectionStaffCls`）。
     const _gpnSpShort = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     /** 拿一个对象的类名（Cocos 的 cc.js.getClassName；拿不到就返回空串） */
     const _gpnSpClassName = (o) => {
@@ -5484,10 +5596,10 @@ function makePepperBurnPatch(CommonShot, deps) {
     };
     /**
      * 判定"这一发是被谁反弹的"。
-     * ⚠️ 必须**双条件**（2026/10/10 用户指出：弄臣还有**复活节变体**，而它的代号里【没有】juggler）：
-     *    · 主判据 = **类名**：`DarkJesterZombie`（弄臣系，含节日/复活节等换装变体）/ `Abbot3SectionStaffZombie`（三节棍）；
-     *    · 兜底 = **Zombie_Type 名字**：含 juggler ⇒ 弄臣；含 3section ⇒ 三节棍。
-     *   两个都拿不到就返回 null（不打标记 ⇒ 维持引擎原样，宁可漏也不误判）。
+     * 必须**双条件**（指出：弄臣还有**复活节变体**，而它的代号里【没有】juggler）：
+     * · 主判据 = **类名**：`DarkJesterZombie`（弄臣系，含节日/复活节等换装变体）/ `Abbot3SectionStaffZombie`（三节棍）；
+     * · 兜底 = **Zombie_Type 名字**：含 juggler ⇒ 弄臣；含 3section ⇒ 三节棍。
+     * 两个都拿不到就返回 null（不打标记 ⇒ 维持引擎原样，宁可漏也不误判）。
      */
     const gpnReflectOwner = (z) => {
         try {
@@ -5570,7 +5682,7 @@ function makePepperBurnPatch(CommonShot, deps) {
     // 打中【障碍物】-> 烧（第四道钩子）
     // 墓碑 / 冰块(GridIcecube) / 冲浪板(TombSurfboard) / 冰岩(GlacierBlock) / 帐篷(LostcityTent)……
     // 在引擎里【全都是 Tomb 的子类】，统一走 detectEnemyNormal 的墓碑分支：
-    //     p.dealDamage(d), this.onTombHit(p), this.dealSplashDamage(null, p), this.pop()
+    // p.dealDamage(d), this.onTombHit(p), this.dealSplashDamage(null, p), this.pop()
     // 这条路径不会调 dealDamageToZombie / specialOnGroundHit / hitFloor ——
     // 所以 v2.7.3 之前，子弹打在障碍物上火光有伤害没有、火一片都不铺。
     // onTombHit 是这条路径唯一的钩子点（mod 自己的穿透分支也会调它，所以一并覆盖）。
@@ -5595,19 +5707,19 @@ function makePepperBurnPatch(CommonShot, deps) {
     // 引擎打植物走的是 detectEnemyNormal -> detectPlant -> dealDamageToPlant(plant)，
     // 上面那四条钩子【全在僵尸侧】—— 所以弹反后命中植物时是"有伤害、没火"。
     // 注意：不用在这里判阵营 —— 普通甜椒弹根本走不到这个入口（enemyType 是 zombie），
-    //      真正决定"铺哪种火"的是 gpnPepperBurnAt 里的 enemyType 判定。
+    // 真正决定"铺哪种火"的是 gpnPepperBurnAt 里的 enemyType 判定。
     //
-    // ★ 这里还负责【伞叶 / 回旋镖射手 的"按植物"判定】（见 gpnUmbrellaAbsorbs）：
-    //   被弹反的甜椒弹是投掷物 ⇒ 打向被保护植物时应该被完全吸收（原版该有的行为）。
-    //   引擎那条判定只在【伤害类型 1】时走，而弹反把 bodyLinearVelocity 取反 ⇒ 类型变成 2 ⇒ 判定被跳过。
-    //   所以我们在这里先补一次；被吸收时【不调原函数】= 不打伤害，并且不放火（Q2/Q3 的结论）。
+    // 这里还负责【伞叶 / 回旋镖射手 的"按植物"判定】（见 gpnUmbrellaAbsorbs）：
+    // 被弹反的甜椒弹是投掷物 ⇒ 打向被保护植物时应该被完全吸收（原版该有的行为）。
+    // 引擎那条判定只在【伤害类型 1】时走，而弹反把 bodyLinearVelocity 取反 ⇒ 类型变成 2 ⇒ 判定被跳过。
+    // 所以我们在这里先补一次；被吸收时【不调原函数】= 不打伤害，并且不放火（Q2/Q3 的结论）。
     if (typeof CommonShot.prototype.dealDamageToPlant === 'function') {
         const rec5 = methodRecord(CommonShot, 'dealDamageToPlant');
         CommonShot.prototype.dealDamageToPlant = function (plant) {
             gpnPepperEnforceReflect(this);   // 【修 BUG】弄臣反弹的弹先"去投掷物化"，再让引擎判伞叶（这条始终保留）
             if (!featOn('pepperpult')) return rec5.original.apply(this, arguments);   // 【运行期开关】关掉 ⇒ 不做伞叶/铺火判定
             // 只对【被弹反的投掷物】生效：enemyType 翻成 plant 且带灼烧标记（= 我们的甜椒弹）
-            // ⚠️ 但**弄臣僵尸反弹的**不算投掷物 ⇒ 完全不走我们这两条伞叶判定（也不播格挡动画）
+            // 但**弄臣僵尸反弹的**不算投掷物 ⇒ 完全不走我们这两条伞叶判定（也不播格挡动画）
             const jugglerReflected = (this.__gpnReflectBy === 'juggler');
             const isLobbedHostile = !jugglerReflected && this.__gpnBurnRatio > 0 && deps.CharacterType
                 && this.enemyType === deps.CharacterType.plant;
@@ -5631,12 +5743,12 @@ function makePepperBurnPatch(CommonShot, deps) {
     }
 
     // 被【护盾 / 三节棍 / 冲浪板 / 铲子】吸收 -> 也要铺火（第六道钩子）
-    //   `commonShot.splat()` 是引擎里"弹道被吸收"的统一信号（这些单位都在自己的
-    //   commonShotPopOnTouch / 挡弹逻辑里调 `shot.splat(this)`），而它们的挡弹回调走的是
-    //   `dealDamageToZombie(this, false)`（isDirect=false）—— 上面那条钩子**故意**跳过 false
-    //   （那是为了"溅射伤害不重复烧"）。所以单靠上面几条，被护盾吸掉的那一发是**不会铺火**的。
-    //   这里补上：被吸收时按【弹道当前格】（= 护盾所在格）铺 3×3，阵营仍由 gpnPepperBurnAt 按
-    //   enemyType 判定（普通弹 = 僵尸阵营火；被弹反的弹 = 植物阵营火）。
+    // `commonShot.splat()` 是引擎里"弹道被吸收"的统一信号（这些单位都在自己的
+    // commonShotPopOnTouch / 挡弹逻辑里调 `shot.splat(this)`），而它们的挡弹回调走的是
+    // `dealDamageToZombie(this, false)`（isDirect=false）—— 上面那条钩子**故意**跳过 false
+    // （那是为了"溅射伤害不重复烧"）。所以单靠上面几条，被护盾吸掉的那一发是**不会铺火**的。
+    // 这里补上：被吸收时按【弹道当前格】（= 护盾所在格）铺 3×3，阵营仍由 gpnPepperBurnAt 按
+    // enemyType 判定（普通弹 = 僵尸阵营火；被弹反的弹 = 植物阵营火）。
     if (typeof CommonShot.prototype.splat === 'function') {
         const rec6 = methodRecord(CommonShot, 'splat');
         CommonShot.prototype.splat = function () {
@@ -5661,29 +5773,29 @@ function makePepperBurnPatch(CommonShot, deps) {
 /* =========================================================================
  * 12. 推植物：被「不可推」的植物挡住时跳过它，而不是把植物扔出屏幕
  *
- *    引擎原版 CharacterManager.footballmech.pushPlantLeft / pushPlantRight 的落点搜索：
- *        c = 左邻格; loop {
- *            if (c 放得下) {
- *                if (c 里有植物) 递归把它们往左推;
- *                推不动  ->  把【我们】throwAway()          ← 飞出屏幕
- *                推得动  ->  我们 leapTo(c)
- *            }
- *            c = c.lefter;
- *            if (!c.isInLawn()) 把【我们】throwAway()        ← 左侧真的没空位
- *        }
- *    高坚果免疫位移之后，它就成了那个「推不动」的邻居 —— 于是气功一吸，
- *    它旁边的植物就直接被扔出场外。
+ * 引擎原版 CharacterManager.footballmech.pushPlantLeft / pushPlantRight 的落点搜索：
+ * c = 左邻格; loop {
+ * if (c 放得下) {
+ * if (c 里有植物) 递归把它们往左推;
+ * 推不动 -> 把【我们】throwAway() ← 飞出屏幕
+ * 推得动 -> 我们 leapTo(c)
+ * }
+ * c = c.lefter;
+ * if (!c.isInLawn()) 把【我们】throwAway() ← 左侧真的没空位
+ * }
+ * 高坚果免疫位移之后，它就成了那个「推不动」的邻居 —— 于是气功一吸，
+ * 它旁边的植物就直接被扔出场外。
  *
- *    改法只有一处：推不动 -> 【跳过这一格继续往左找】，只有左侧真的一个空位都没有才 throwAway。
- *    （选项 B）
+ * 改法只有一处：推不动 -> 【跳过这一格继续往左找】，只有左侧真的一个空位都没有才 throwAway。
+ * （选项 B）
  * =======================================================================*/
 function makePushSkipPatch(FootballMech) {
     if (!CFG.pushPlant.skipBlockers) { log('推植物修正已按配置关闭'); return null; }
     if (!FootballMech) { warn('跳过推植物修正：拿不到 footballmech'); return null; }
 
     const recs = [];
-    // ★ 先把两个原方法存到类上（必须在包裹之前）—— 供"运行期门禁"原样回退用
-    //   注意别写成 __gpn* 之外的名字：引擎/别的 mod 不会用到这种带前缀的键。
+    // 先把两个原方法存到类上（必须在包裹之前）—— 供"运行期门禁"原样回退用
+    // 注意别写成 __gpn* 之外的名字：引擎/别的 mod 不会用到这种带前缀的键。
     try {
         FootballMech.__gpnOrigLeft = FootballMech.pushPlantLeft;
         FootballMech.__gpnOrigRight = FootballMech.pushPlantRight;
@@ -5758,22 +5870,22 @@ function makePushSkipPatch(FootballMech) {
 /* =========================================================================
  * 17. A2 星星果追击攻击
  *
- *   触发：天使星星果 / 流星果 的子弹【打中目标】—— 僵尸或障碍物都算。
- *   响应：所有"能打到那个目标"的【基础星星果】立刻补发一轮 5 方向齐射。
- *         追击弹：打中 3 个目标（= 穿透 2 个）、伤害 = 基础星星果这一发的 50%、溅射 45%、眩晕 0.075 秒。
+ * 触发：天使星星果 / 流星果 的子弹【打中目标】—— 僵尸或障碍物都算。
+ * 响应：所有"能打到那个目标"的【基础星星果】立刻补发一轮 5 方向齐射。
+ * 追击弹：打中 3 个目标（= 穿透 2 个）、伤害 = 基础星星果这一发的 50%、溅射 45%、眩晕 0.075 秒。
  *
- *   为什么能精确给每一发打标记：
- *     引擎 PeashooterPlant._shoot(...) 本身是 async，但它 resolve 出来的【就是那颗子弹】，
- *     所以逐发 .then() 打标记即可 —— 不需要"开火窗口 + 计数"那套猜测。
+ * 为什么能精确给每一发打标记：
+ * 引擎 PeashooterPlant._shoot(...) 本身是 async，但它 resolve 出来的【就是那颗子弹】，
+ * 所以逐发 .then() 打标记即可 —— 不需要"开火窗口 + 计数"那套猜测。
  *
- *   为什么不会变成 10 发：
- *     我们自己发完 5 发后，还要让植物播 Shoot 动画（要完整的开火动作）；
- *     而动画的 Shoot 事件回调 animationListener 里会再调一次 _shootStars()。
- *     所以在播动画前，把【实例上】的 _shootStars 临时掐掉，过一小会儿再还回去
- *     （用 scheduleOnce，植物中途被铲掉也不会漏还原）。
+ * 为什么不会变成 10 发：
+ * 我们自己发完 5 发后，还要让植物播 Shoot 动画（要完整的开火动作）；
+ * 而动画的 Shoot 事件回调 animationListener 里会再调一次 _shootStars()。
+ * 所以在播动画前，把【实例上】的 _shootStars 临时掐掉，过一小会儿再还回去
+ * （用 scheduleOnce，植物中途被铲掉也不会漏还原）。
  *
- *   防连锁：追击弹自己标成 'base'，永远不会再触发追击。
- *   大招中不响应：正在放大招的植株（shootCD === Infinity 或有待发大招子弹）跳过。
+ * 防连锁：追击弹自己标成 'base'，永远不会再触发追击。
+ * 大招中不响应：正在放大招的植株（shootCD === Infinity 或有待发大招子弹）跳过。
  * =======================================================================*/
 
 /** 按弹道别名 / PeaType 判断星星果种类：'base' / 'pink' / 'shooting' / '' */
@@ -5811,14 +5923,14 @@ function gpnLaneOf(obj) {
 
 /** 这株星星果能不能打到这个目标（= 引擎 detectEnemy 的"逐目标版"）
  *
- *  引擎 detectEnemy 的关键在于【用哪个池子去配哪个探测框】：
- *      this.inLane.zombiePool() / tombPool()  -> 只用 laneDetector（同行框）
- *      ZombiePool.pool() / TombPool.pool()    -> 只用 sideDetectors（竖直条 + 两条斜向条）
- *  也就是说【同行框从来不和别行的目标做判定】—— 这就是原版"不会因为贴图溢出而打空枪"的原因。
- *  所以这里必须先判"目标与这株同一行"，再拿 laneDetector 去交。
+ * 引擎 detectEnemy 的关键在于【用哪个池子去配哪个探测框】：
+ * this.inLane.zombiePool() / tombPool() -> 只用 laneDetector（同行框）
+ * ZombiePool.pool() / TombPool.pool() -> 只用 sideDetectors（竖直条 + 两条斜向条）
+ * 也就是说【同行框从来不和别行的目标做判定】—— 这就是原版"不会因为贴图溢出而打空枪"的原因。
+ * 所以这里必须先判"目标与这株同一行"，再拿 laneDetector 去交。
  *
- *  !! 只做"引用引擎自己的矩形 + 相交"，不写死任何几何数字（±2.5 行 / 10 格 / 30° 都不算）。
- *     将来原版修了探测框（比如加长竖直条），这里会自动跟着变。
+ * !! 只做"引用引擎自己的矩形 + 相交"，不写死任何几何数字（±2.5 行 / 10 格 / 30° 都不算）。
+ * 将来原版修了探测框（比如加长竖直条），这里会自动跟着变。
  */
 function gpnStarCanReach(plant, target, bodyRec) {
     if (!plant || !bodyRec || typeof bodyRec.judgeCrossRec !== 'function') return false;
@@ -5859,9 +5971,9 @@ function gpnTagFollowShot(shot, dmgOverride) {
 }
 
 /** 让一株基础星星果补一轮齐射。
- *  merge = { K, sumAtk } 时按「延迟窗口合并」的伤害口径：
- *    每颗弹伤害 = followDamageRatio × Σ(各次触发时该株的攻击力)；
- *    万一本局拿不到攻击力基数（数据缺失）-> 退化成"这一发基数 × K"，绝不静默少伤害。 */
+ * merge = { K, sumAtk } 时按「延迟窗口合并」的伤害口径：
+ * 每颗弹伤害 = followDamageRatio × Σ(各次触发时该株的攻击力)；
+ * 万一本局拿不到攻击力基数（数据缺失）-> 退化成"这一发基数 × K"，绝不静默少伤害。 */
 function gpnStarFollowFire(plant, Square, Vec2, merge) {
     const od = plant && plant._objdataOwn;
     if (!od || !od.PeaType) return false;
@@ -5891,9 +6003,9 @@ function gpnStarFollowFire(plant, Square, Vec2, merge) {
     }
 
     // (2) 动画：只有它【此刻没有在普攻】时才播 —— 普攻动画优先级更高，绝不被追击顶掉。
-    //     正在普攻时这一轮追击就"静默补刀"（子弹照发，不动画，也不碰任何动画状态）。
-    //     引擎里 this.shooting 的语义正好是"正在播开火动画"：
-    //         startShooting() 里置 true，animationOnComplete() 里置 false。
+    // 正在普攻时这一轮追击就"静默补刀"（子弹照发，不动画，也不碰任何动画状态）。
+    // 引擎里 this.shooting 的语义正好是"正在播开火动画"：
+    // startShooting() 里置 true，animationOnComplete() 里置 false。
     const ac = plant.anmControl;
     if (plant.shooting !== true && ac && typeof ac.playAnimation === 'function') {
         const hadOwn = Object.prototype.hasOwnProperty.call(plant, '_shootStars');
@@ -5907,8 +6019,8 @@ function gpnStarFollowFire(plant, Square, Vec2, merge) {
                 else delete plant._shootStars;       // 原本是继承来的 -> 删掉自有属性
             };
             // 动画的 Shoot 事件来了：
-            //   这一刻它要是在普攻（shooting === true）—— 那是【普攻】的那一轮，必须放行；
-            //   否则就是我们自己这轮的 —— 掐掉（否则当前 5 发会变成 10 发）。
+            // 这一刻它要是在普攻（shooting === true）—— 那是【普攻】的那一轮，必须放行；
+            // 否则就是我们自己这轮的 —— 掐掉（否则当前 5 发会变成 10 发）。
             plant._shootStars = function () {
                 const forNormalAttack = this.shooting === true;
                 back();
@@ -5928,14 +6040,14 @@ function gpnStarFollowFire(plant, Square, Vec2, merge) {
 
 /* =========================================================================
  * A2「延迟窗口合并」（独立开关 starfruitFollowMerge）
- *   每株基础星星果各自一个窗口：窗口内每被触发一次就 K+1、并把【那一刻它的攻击力】累加；
- *   窗口到点只补一轮 5 方向齐射，每颗弹伤害 = followDamageRatio × Σ(各次触发攻击力)。
- *   大招期间：不记录，并且取消已开的窗口 + 清空记录（退出大招后自然恢复）。
+ * 每株基础星星果各自一个窗口：窗口内每被触发一次就 K+1、并把【那一刻它的攻击力】累加；
+ * 窗口到点只补一轮 5 方向齐射，每颗弹伤害 = followDamageRatio × Σ(各次触发攻击力)。
+ * 大招期间：不记录，并且取消已开的窗口 + 清空记录（退出大招后自然恢复）。
  * =======================================================================*/
 let gpnFollowWinSeq = 0;
 function gpnFollowMergeOn() {
-    // ★ 依赖：starfruit 关掉 ⇒ 本项一律视为关闭（不管玩家写 true / false / 把那一行删掉）；
-    //   追击总开关关掉同理。这样【唯一入口】就自带依赖，不怕以后重构漏掉。
+    // 依赖：starfruit 关掉 ⇒ 本项一律视为关闭（不管玩家写 true / false / 把那一行删掉）；
+    // 追击总开关关掉同理。这样【唯一入口】就自带依赖，不怕以后重构漏掉。
     return featOn('starfruit')
         && CFG.starfruit.followEnabled
         && CFG.starfruit.followMergeWindow > 0
@@ -6043,7 +6155,7 @@ function makeStarFollowPatch(CommonShot, deps) {
     const recs = [];
     const isTrigger = (kind) => kind === 'pink' || kind === 'shooting';
 
-    // ---- 「延迟窗口合并」：基础星星果一进大招，立刻取消窗口 + 清空记录（退出大招后自然恢复）----
+    // ---- 「延迟窗口合并」：基础星星果一进大招，立刻取消窗口 + 清空记录（退出大招后自然恢复） ----
     const PlantBase = deps && deps.Plant;
     if (PlantBase && PlantBase.prototype && typeof PlantBase.prototype.food === 'function') {
         const recFood = methodRecord(PlantBase, 'food');
@@ -6071,12 +6183,12 @@ function makeStarFollowPatch(CommonShot, deps) {
             const r = rec.original.apply(this, arguments);
             try {
                 // 触发条件（v1.0.0 修缮）：
-                //   ① 正常情况：isDirect !== false（isDirect === false 是溅射伤害，不算"命中"）；
-                //      ★ 另外：打中【僵尸方的护盾实体（力场盾）】也算一次命中 ⇒ 也触发
-                //        （原版力场盾的挡弹回调用的是 isDirect=false，不补这条的话打盾不触发）
-                //   ② 而且【只限植物方子弹】（enemyType == zombie）——
-                //      被弹反的子弹（enemyType == plant）打"被催眠僵尸 / 植物方护盾"时，
-                //      不该反过来替玩家补一轮齐射。
+                // ① 正常情况：isDirect !== false（isDirect === false 是溅射伤害，不算"命中"）；
+                // 另外：打中【僵尸方的护盾实体（力场盾）】也算一次命中 ⇒ 也触发
+                // （原版力场盾的挡弹回调用的是 isDirect=false，不补这条的话打盾不触发）
+                // ② 而且【只限植物方子弹】（enemyType == zombie）——
+                // 被弹反的子弹（enemyType == plant）打"被催眠僵尸 / 植物方护盾"时，
+                // 不该反过来替玩家补一轮齐射。
                 const plantSideShot = !!(deps.CharacterType && this.enemyType !== deps.CharacterType.zombie);
                 const shieldHit = gpnIsShieldZombie(z, deps.ZombieEnum);
                 if (!plantSideShot && (isDirect !== false || shieldHit)
@@ -6115,29 +6227,29 @@ function makeStarFollowPatch(CommonShot, deps) {
 /* =========================================================================
  * 18. 飓风甘蓝：全屏寒风（其他行推 + 减速，力度 50%）+ 全屏吹飞飞行僵尸
  *
- *   引擎原版（已逐行核对）：
- *     HurrikalePlant.animationListener('push')
- *         -> 本行.setHurrikaleDuration(PushDuration × 薄荷倍率)   // Lane 上的秒数计时器
- *         -> 本行 spawn upperParticle / lowerParticle 两个特效
- *     Zombie.dealHurrikale(dt)                                    // 每帧
- *         -> 只看【自己那一行】的 inLane.hurrikaleBlowing()
- *         -> 飞行僵尸 blowAway()；陆地僵尸 推 2 格/秒（引擎里是硬编码）+ setChill(8)
+ * 引擎原版（已逐行核对）：
+ * HurrikalePlant.animationListener('push')
+ * -> 本行.setHurrikaleDuration(PushDuration × 薄荷倍率) // Lane 上的秒数计时器
+ * -> 本行 spawn upperParticle / lowerParticle 两个特效
+ * Zombie.dealHurrikale(dt) // 每帧
+ * -> 只看【自己那一行】的 inLane.hurrikaleBlowing()
+ * -> 飞行僵尸 blowAway()；陆地僵尸 推 2 格/秒（引擎里是硬编码）+ setChill(8)
  *
- *   本模组的扩展（一律"先调原版、再扩写"，原版行为一字不动）：
- *     ② 其他行也 setHurrikaleDuration(同一时长)，并给该行打"力度"标记。
- *        僵尸侧的 hurrikaleBlowing() 是【按行】判定的，所以那几行的僵尸自然会被推 + 减速。
- *        力度 50% = 推速减半：包一层 Zombie.dealHurrikale，把"这一帧被推的距离"乘上力度
- *        （原版推速硬编码，只能这样缩放；【没有标记时 = 原版一字不变】）。
- *     ③④ FrontYard.windy = max(windy, 风时长)
- *        => "全屏吹飞飞行僵尸" 和 "天空之城飞船按 BloverDPS 扣血" 全都交给引擎自己算；
- *           连"天空之城推回最右格 / 沙盒正常吹飞"的差别也自动跟着引擎走（刻意行为，不绕过）。
- *     ⑤ 其他行也 spawn 同样两个特效（位置 = 植物的列 × 该行的中线）。
+ * 本模组的扩展（一律"先调原版、再扩写"，原版行为一字不动）：
+ * ② 其他行也 setHurrikaleDuration(同一时长)，并给该行打"力度"标记。
+ * 僵尸侧的 hurrikaleBlowing() 是【按行】判定的，所以那几行的僵尸自然会被推 + 减速。
+ * 力度 50% = 推速减半：包一层 Zombie.dealHurrikale，把"这一帧被推的距离"乘上力度
+ * （原版推速硬编码，只能这样缩放；【没有标记时 = 原版一字不变】）。
+ * ③④ FrontYard.windy = max(windy, 风时长)
+ * => "全屏吹飞飞行僵尸" 和 "天空之城飞船按 BloverDPS 扣血" 全都交给引擎自己算；
+ * 连"天空之城推回最右格 / 沙盒正常吹飞"的差别也自动跟着引擎走（刻意行为，不绕过）。
+ * ⑤ 其他行也 spawn 同样两个特效（位置 = 植物的列 × 该行的中线）。
  *
- *   时长（B 方案）：全屏风用【三叶草】的 BlowDuration × 薄荷倍率，
- *     这样飞船扣血在任意状态下都与三叶草严格一致；其他行的"推动"用飓风甘蓝自己的时长。
+ * 时长：全屏风用三叶草的 BlowDuration × 薄荷倍率，
+ * 这样飞船扣血在任意状态下都与三叶草严格一致；其他行的"推动"用飓风甘蓝自己的时长。
  * =======================================================================*/
 
-/** 读三叶草的数据，算"全屏风"该持续多久（B 方案） */
+/** 读三叶草的数据，算"全屏风"该持续多久 */
 function gpnBloverWindDuration(plant, deps) {
     let blowDur = 3, mintFactor = 3;
     try {
@@ -6157,7 +6269,7 @@ function gpnBloverWindDuration(plant, deps) {
     return blowDur * (mint ? mintFactor : 1);
 }
 
-/** 在指定行播一组寒风特效（和原版同款：上下两个 prefab） */
+/** 在 行播一组寒风特效（和原版同款：上下两个 prefab） */
 function gpnHurrikaleVfx(plant, lane, deps) {
     const { Vec3, instantiatePooly } = deps;
     if (!instantiatePooly || !plant || !lane || !plant.node) return 0;
@@ -6288,7 +6400,7 @@ function makeHurrikalePatch(HurrikalePlant, Zombie, deps) {
         warn('跳过飓风甘蓝：拿不到 HurrikalePlant.animationListener');
     }
 
-    // ---- (2) 让"推速"能按行缩放（没有标记 = 原版一字不变）----
+    // ---- (2) 让"推速"能按行缩放（没有标记 = 原版一字不变） ----
     if (Zombie && Zombie.prototype && typeof Zombie.prototype.dealHurrikale === 'function') {
         const rec2 = methodRecord(Zombie, 'dealHurrikale');
         Zombie.prototype.dealHurrikale = function (dt) {
@@ -6317,31 +6429,31 @@ function makeHurrikalePatch(HurrikalePlant, Zombie, deps) {
 /* =========================================================================
  * 19. 魔音甜菜（Phat Beet）
  *
- *   ① 普攻：使命中的僵尸（BOSS 除外）眩晕 normalStun（0.075 秒）
- *   ② 普攻：解除【3x3 索敌框】内植物被音响僵尸施加的「安抚」
- *   ③ 索敌范围内有被安抚的植物时，也会发动普攻（普攻本身只打僵尸/障碍物，不伤植物）
- *   ④ 大招：使命中的僵尸（BOSS 除外）眩晕 plantfoodStun（5 秒）+ 原地向上击起
- *   ⑤ 大招：令命中僵尸 jamClearSeconds（25 秒）内不受「音乐（jam）」影响
- *   ⑥ 大招：解除【5x5】内植物被音响僵尸施加的「安抚」
+ * ① 普攻：使命中的僵尸（BOSS 除外）眩晕 normalStun（0.075 秒）
+ * ② 普攻：解除【3x3 索敌框】内植物被音响僵尸施加的「安抚」
+ * ③ 索敌范围内有被安抚的植物时，也会发动普攻（普攻本身只打僵尸/障碍物，不伤植物）
+ * ④ 大招：使命中的僵尸（BOSS 除外）眩晕 plantfoodStun（5 秒）+ 原地向上击起
+ * ⑤ 大招：令命中僵尸 jamClearSeconds（25 秒）内不受「音乐（jam）」影响
+ * ⑥ 大招：解除【5x5】内植物被音响僵尸施加的「安抚」
  *
- *   几个引擎事实（都在 0.14.0 的包里逐条核对过）：
- *   - 音响僵尸的「安抚」= 植物身上的 plant.boomboxCD > 0（+ boomboxPar 粒子）。
- *     Plant.update 里 boomboxCD > 0 且非 ImmuneToBoomBox 时会把动画时间缩放置 0（植物定住）。
- *     ★ 只把 boomboxCD 置 0 是【没用】的：音响僵尸每帧 readHearts() 会把 lovePs 名单里
- *       的植物重新刷成 0.5 —— 所以必须【同时】把这株植物从它的 lovePs 里摘掉。
- *   - 「音乐（jam）」对僵尸只有两处影响：
- *       移速   —— Zombie.defaultShouldSpeedScale 里 switch (FrontYard.getCurrentJam())
- *       特定状态 —— 各八十年代僵尸类的 dancing / isInJam
- *     所以标记期间：调 defaultShouldSpeedScale 时临时把 getCurrentJam 顶成 jam_clear，
- *     并给【这一只】僵尸装 dancing / isInJam 的实例访问器强制 false。
- *     ★ 只作用在本模组标记过的那一只僵尸身上，不改任何原版公式、不动全局音乐。
- *   - 「向上击起」用引擎自己的 leapBy(方向, ?, 时长, 高度)：
- *       方向传 (0,0) => 水平位移 0（原地）；"向上"由内部的 height_depth 上抛回落负责。
- *       它还会自带 setStun(时长 + 0.01)，所以要先 leapBy、再 setStun(plantfoodStun) 覆盖。
- *   - 击起的豁免：BOSS（引擎只在 ZombossMechZombie 等 3 个类里挡了，不能指望）+
- *     「沉重」（暗物质火龙果的 darkmatter）+ 引擎自己的闸门（specialZombieLeapable / 胶水 / 糯米）。
- *     注意横向击退的闸门是 specialZombieKnockbackable，而 defaultLeapBy 在它拦下之后
- *     仍会抬高僵尸 —— 所以"能不能推"和"能不能抬"必须我们自己判。
+ * 几个引擎事实（都在 0.14.0 的包里逐条核对过）：
+ * - 音响僵尸的「安抚」= 植物身上的 plant.boomboxCD > 0（+ boomboxPar 粒子）。
+ * Plant.update 里 boomboxCD > 0 且非 ImmuneToBoomBox 时会把动画时间缩放置 0（植物定住）。
+ * 只把 boomboxCD 置 0 是【没用】的：音响僵尸每帧 readHearts() 会把 lovePs 名单里
+ * 的植物重新刷成 0.5 —— 所以必须【同时】把这株植物从它的 lovePs 里摘掉。
+ * - 「音乐（jam）」对僵尸只有两处影响：
+ * 移速 —— Zombie.defaultShouldSpeedScale 里 switch (FrontYard.getCurrentJam())
+ * 特定状态 —— 各八十年代僵尸类的 dancing / isInJam
+ * 所以标记期间：调 defaultShouldSpeedScale 时临时把 getCurrentJam 顶成 jam_clear，
+ * 并给【这一只】僵尸装 dancing / isInJam 的实例访问器强制 false。
+ * 只作用在本模组标记过的那一只僵尸身上，不改任何原版公式、不动全局音乐。
+ * - 「向上击起」用引擎自己的 leapBy(方向, ?, 时长, 高度)：
+ * 方向传 (0,0) => 水平位移 0（原地）；"向上"由内部的 height_depth 上抛回落负责。
+ * 它还会自带 setStun(时长 + 0.01)，所以要先 leapBy、再 setStun(plantfoodStun) 覆盖。
+ * - 击起的豁免：BOSS（引擎只在 ZombossMechZombie 等 3 个类里挡了，不能指望）+
+ * 「沉重」（暗物质火龙果的 darkmatter）+ 引擎自己的闸门（specialZombieLeapable / 胶水 / 糯米）。
+ * 注意横向击退的闸门是 specialZombieKnockbackable，而 defaultLeapBy 在它拦下之后
+ * 仍会抬高僵尸 —— 所以"能不能推"和"能不能抬"必须我们自己判。
  * =======================================================================*/
 
 /** 沿原型链找属性描述符（isInJam 这类 getter 可能定义在祖先类上） */
@@ -6357,22 +6469,22 @@ function gpnFindDesc(obj, key) {
 
 /** 屏蔽一只僵尸身上「音乐」的影响（实例级，只影响这一只；标记到期自动恢复）
  *
- *  ★ 关键（踩过的坑）：dancing 在四个八十年代僵尸类里是【带副作用的 getter/setter】——
- *    setter 负责建 / 销毁专属状态的贴图与动画：
- *      EightiesGlitterZombie（闪耀）      -> 建 / 销毁身后的彩虹节点
- *      EightiesBreakDancerZombie（霹雳舞）-> 切专属动画贴图
- *      EightiesMCZombie / EightiesPunkZombie -> 同上
- *    （EightiesGargantuarZombie 用的是纯 getter 的 isInJam，没有生命周期。）
- *    所以【绝不能】用影子字段把这种字段整个接管：引擎想关掉时不会执行它自己的 setter
- *    ⇒ 贴图卡在专属状态；而且死亡清场（playSpecialZombieDieForced 里的 dancing = false）
- *      也被吞掉 ⇒ 彩虹之类【永远不消散】。
- *    正确做法：写入【原样转发给引擎自己的 setter】，只在解除期间把值改写成 false：
- *      · 解除期间：引擎每帧算出的 true 被改写成 false -> 引擎自己回退贴图 / 动画
- *      · 解除期间死亡：false 正常转发 -> 引擎自己清场（彩虹消散）
- *      · 解除到期：值原样转发 -> 由【引擎自己的判定】决定是否恢复
- *        （场上还在播那段魔音舞台效果就恢复，切走了就保持普通）
- *    getter 必须保持【真实值】：引擎 setter 里那句 `if (t != this.dancing)` 一旦被遮成
- *    false 就会短路，贴图反而永远不会被回退。
+ * 关键（踩过的坑）：dancing 在四个八十年代僵尸类里是【带副作用的 getter/setter】——
+ * setter 负责建 / 销毁专属状态的贴图与动画：
+ * EightiesGlitterZombie（闪耀） -> 建 / 销毁身后的彩虹节点
+ * EightiesBreakDancerZombie（霹雳舞）-> 切专属动画贴图
+ * EightiesMCZombie / EightiesPunkZombie -> 同上
+ * （EightiesGargantuarZombie 用的是纯 getter 的 isInJam，没有生命周期。）
+ * 所以【绝不能】用影子字段把这种字段整个接管：引擎想关掉时不会执行它自己的 setter
+ * ⇒ 贴图卡在专属状态；而且死亡清场（playSpecialZombieDieForced 里的 dancing = false）
+ * 也被吞掉 ⇒ 彩虹之类【永远不消散】。
+ * 正确做法：写入【原样转发给引擎自己的 setter】，只在解除期间把值改写成 false：
+ * · 解除期间：引擎每帧算出的 true 被改写成 false -> 引擎自己回退贴图 / 动画
+ * · 解除期间死亡：false 正常转发 -> 引擎自己清场（彩虹消散）
+ * · 解除到期：值原样转发 -> 由【引擎自己的判定】决定是否恢复
+ * （场上还在播那段魔音舞台效果就恢复，切走了就保持普通）
+ * getter 必须保持【真实值】：引擎 setter 里那句 `if (t != this.dancing)` 一旦被遮成
+ * false 就会短路，贴图反而永远不会被回退。
  */
 function gpnJamMask(z) {
     if (!z || z.__gpnJamMasked) return;
@@ -6384,9 +6496,9 @@ function gpnJamMask(z) {
 }
 
 /** 把一个标记字段换成「解除期间强制 false」的访问器
- *  ① 带 setter 的访问器（4 个八十年代僵尸类）-> 写入转发给引擎 setter，贴图/动画交给引擎
- *  ② 纯 getter（isInJam）-> 只遮读取，补个空 setter 防严格模式赋值报错
- *  ③ 普通数据字段            -> 影子值，解除期间读出来是 false */
+ * ① 带 setter 的访问器（4 个八十年代僵尸类）-> 写入转发给引擎 setter，贴图/动画交给引擎
+ * ② 纯 getter（isInJam）-> 只遮读取，补个空 setter 防严格模式赋值报错
+ * ③ 普通数据字段 -> 影子值，解除期间读出来是 false */
 function gpnMaskFlag(z, key) {
     const d = gpnFindDesc(z, key);
     if (!d) return;
@@ -6429,7 +6541,7 @@ function gpnLiftZombie(z, deps, noStun) {
     return true;
 }
 
-/** 解除一株植物身上的「安抚」。★ 三件事缺一不可（否则下一帧就被刷回来） */
+/** 解除一株植物身上的「安抚」。 三件事缺一不可（否则下一帧就被刷回来） */
 function gpnClearSoothe(p, deps, fx, srcPlant) {
     if (!p || p.dead) return false;
     const od = p.objdataOwn;
@@ -6452,7 +6564,7 @@ function gpnClearSoothe(p, deps, fx, srcPlant) {
             if (i !== -1) { arr.splice(i, 1); did = true; }
         }
     }
-    // ★ ⑦ 真的解除掉了 -> 在这株【被安抚的植物】脚下放一次命中特效（纯视觉，不伤植物）
+    // ⑦ 真的解除掉了 -> 在这株【被安抚的植物】脚下放一次命中特效（纯视觉，不伤植物）
     if (did && fx && CFG.phatbeet.clearFx) {
         try { gpnHitFxSpawn(fx, p, deps, false, srcPlant); }
         catch (e) { warn('魔音甜菜：解除安抚特效出错', e); }
@@ -6500,12 +6612,12 @@ function gpnScanPlants(plant, deps, big, inspect) {
 }
 
 /** 「音乐免疫」的倒数（挂在 FrontYard.update 上，每帧一次）
- *  ★ ⑧ 顺手放"持续特效"：解除期间的僵尸，每 gpnJamFxInterval() 秒在它脚下放一个命中特效
- *     —— 僵尸死 / 期间结束就停（下面两处归零就是停止条件）✓ */
+ * ⑧ 顺手放"持续特效"：解除期间的僵尸，每 gpnJamFxInterval() 秒在它脚下放一个命中特效
+ * —— 僵尸死 / 期间结束就停（下面两处归零就是停止条件）✓ */
 function gpnTickJamClear(Square, dt, fx, deps) {
     if (!(dt > 0) || !Square || typeof Square.getAllLane !== 'function') return;
     const C = CFG.phatbeet;
-    // ★ ⑧ 持续特效只给"大招那 25 秒"，普攻的 1.25 秒**不铺**（__gpnJamFxOn 只在大招路径点亮）
+    // ⑧ 持续特效只给"大招那 25 秒"，普攻的 1.25 秒**不铺**（__gpnJamFxOn 只在大招路径点亮）
     const wantFx = !!(C.jamFx && fx && deps && typeof deps.instantiatePooly === 'function');
     const iv = wantFx ? gpnJamFxInterval(fx) : 0;
     for (const lane of (Square.getAllLane() || [])) {
@@ -6533,13 +6645,13 @@ function gpnTickJamClear(Square, dt, fx, deps) {
 
 /* ==========================================================================
  * 魔音甜菜的「命中特效」（hitPar）—— 纯视觉，不造成任何伤害
- *  引擎事实（PhatBeetPlant.playHitOnCharacter）：
- *    var e = instantiatePooly(this.hitPar);
- *    e.parent = target.inLane.prjLayer;
- *    e.worldPosition = target.worldPosition.toVec3();
- *  ⇒ 我们**一模一样**照抄这三行：实例化 -> 挂到【目标所在行的 prjLayer】-> 位置 = 目标脚下。
- *  预制体自带 ParticleSelfdestroy，会在动画的 "die" 帧事件里 NodePools.destroyPooly 回池，
- *  所以放出去的节点都会自己消失，不会残留（引擎自己就是这么用的）✓
+ * 引擎事实（PhatBeetPlant.playHitOnCharacter）：
+ * var e = instantiatePooly(this.hitPar);
+ * e.parent = target.inLane.prjLayer;
+ * e.worldPosition = target.worldPosition.toVec3();
+ * ⇒ 我们**一模一样**照抄这三行：实例化 -> 挂到【目标所在行的 prjLayer】-> 位置 = 目标脚下。
+ * 预制体自带 ParticleSelfdestroy，会在动画的 "die" 帧事件里 NodePools.destroyPooly 回池，
+ * 所以放出去的节点都会自己消失，不会残留（引擎自己就是这么用的）✓
  * ========================================================================== */
 
 /** 取目标（僵尸/植物）所在行 */
@@ -6576,8 +6688,8 @@ function gpnFxPos(target, lane, ground, deps) {
 }
 
 /** 读命中特效的动画时长（秒）。不写死任何数字：
- *  ParticleSelfdestroy.db 就是 ArmatureDisplay，而引擎自己就是用 totalTime 算播放进度的
- *  （lastAnimationState; 进度 = currentTime / totalTime）✓ */
+ * ParticleSelfdestroy.db 就是 ArmatureDisplay，而引擎自己就是用 totalTime 算播放进度的
+ * （lastAnimationState; 进度 = currentTime / totalTime）✓ */
 function gpnFxTotalTime(node, deps) {
     if (!node) return 0;
     const comps = [];
@@ -6618,16 +6730,16 @@ function gpnJamFxInterval(fx) {
 
 /**
  * 命中特效的「资源来源」：
- *   1) 手上有活体（srcPlant，解除安抚那条一定传）-> 直接用它的 hitPar
- *   2) 扫一遍所有车道，任意一株活着的魔音甜菜（有 hitPar 属性的）
- *   3) ★ 缓存：**在魔音甜菜标记僵尸的那一刻就存下来**（那时它必然活着）+ 场景键 + addRef 钉住
- *      —— 这样"魔音甜菜死掉/被铲之后"的持续特效照样放得出来 ✓
+ * 1) 手上有活体（srcPlant，解除安抚那条一定传）-> 直接用它的 hitPar
+ * 2) 扫一遍所有车道，任意一株活着的魔音甜菜（有 hitPar 属性的）
+ * 3) 缓存：**在魔音甜菜标记僵尸的那一刻就存下来**（那时它必然活着）+ 场景键 + addRef 钉住
+ * —— 这样"魔音甜菜死掉/被铲之后"的持续特效照样放得出来 ✓
  *
- *  ★ 三条硬约束（v1.0.0 的两次教训）：
- *    · 【不能】要求场上有活体 —— 否则魔音甜菜一死，标记僵尸的持续特效就没了（本次修掉的 BUG）；
- *    · 【不能】跨场景用旧资源 —— 换场景时引擎会释放资源，拿旧的 instantiate 会抛
- *      `Cannot read properties of null (reading '_prefab')`（v1.0.0 踩过的坑）；
- *    · 万一还是拿到失效资源 -> gpnHitFxSpawn 里 try/catch 会**清缓存 + 下次重取**，不用大退 ✓
+ * 三条硬约束（v1.0.0 的两次教训）：
+ * · 【不能】要求场上有活体 —— 否则魔音甜菜一死，标记僵尸的持续特效就没了（本次修掉的 BUG）；
+ * · 【不能】跨场景用旧资源 —— 换场景时引擎会释放资源，拿旧的 instantiate 会抛
+ * `Cannot read properties of null (reading '_prefab')`（v1.0.0 踩过的坑）；
+ * · 万一还是拿到失效资源 -> gpnHitFxSpawn 里 try/catch 会**清缓存 + 下次重取**，不用大退 ✓
  */
 function gpnFxSceneKey(deps) {
     const fy = deps && deps.FrontYard;
@@ -6643,8 +6755,8 @@ function gpnFxSceneKey(deps) {
 }
 
 /** 丢掉缓存（换场景 / 出厂清理 / 资源失效时调）—— 记得 decRef 配平
- *  ★ 只有【我们真的 addRef 成功过】（c.refd）才 decRef：这版游戏里没看到 addRef 的调用点，
- *    万一运行时没有 addRef（或抛错），凭空 decRef 会把【原版还在用】的资源引用扣没 ⇒ 贴图/特效被提前释放 ✗ */
+ * 只有【我们真的 addRef 成功过】（c.refd）才 decRef：这版游戏里没看到 addRef 的调用点，
+ * 万一运行时没有 addRef（或抛错），凭空 decRef 会把【原版还在用】的资源引用扣没 ⇒ 贴图/特效被提前释放 ✗ */
 function gpnFxDropCache(fx) {
     const c = fx && fx.cache;
     if (!c) return;
@@ -6689,7 +6801,7 @@ function gpnMkFreshPrefab(srcPlant, deps, fx) {
             }
         }
     }
-    // ★ 缓存兜底：**场景键一致**才用（换场景必变 ⇒ 绝不会拿旧场景的失效资源）
+    // 缓存兜底：**场景键一致**才用（换场景必变 ⇒ 绝不会拿旧场景的失效资源）
     const c = fx && fx.cache;
     if (c && c.prefab && c.sceneKey === gpnFxSceneKey(deps)) return c.prefab;
     return null;
@@ -6704,7 +6816,7 @@ function gpnFxWarn(fx, msg, e) {
 }
 
 /** 在【目标脚下】放一个命中特效；返回节点（拿不到资源/层级时返回 null，绝不抛错）。
- *  srcPlant：可选，优先从它身上取 hitPar（解除安抚那条会传） */
+ * srcPlant：可选，优先从它身上取 hitPar（解除安抚那条会传） */
 function gpnHitFxSpawn(fx, target, deps, ground, srcPlant) {
     if (!fx || !target) return null;
     const inst = deps && deps.instantiatePooly;
@@ -6730,8 +6842,8 @@ function gpnHitFxSpawn(fx, target, deps, ground, srcPlant) {
         node.worldPosition = wp;
         fx.prefab = prefab;                                     // 记一下（调试/统计用）
     } catch (e) {
-        fx.prefab = null;                                       // ★ 失败就丢掉：下次自动重取，不用大退
-        gpnFxDropCache(fx);                                     //   连缓存一起丢（可能是失效资源）
+        fx.prefab = null;                                       // 失败就丢掉：下次自动重取，不用大退
+        gpnFxDropCache(fx);                                     // 连缓存一起丢（可能是失效资源）
         gpnFxWarn(fx, '魔音甜菜：放命中特效出错（资源可能已随场景释放）', e);
         return null;
     }
@@ -6753,8 +6865,8 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
     const Zombie = deps.Zombie, FrontYard = deps.FrontYard;
     const JAM_CLEAR = (deps.JamStyle && deps.JamStyle.jam_clear != null) ? deps.JamStyle.jam_clear : 6;
     // ⑦⑧ 命中特效状态：hitPar 预制体（共享资源，取一次）+ 动画时长（首次用时自动读）
-    //   cache = **场景内的资源缓存**：标记僵尸那一刻存下 hitPar + 场景键 + addRef 钉住
-    //   ⇒ 魔音甜菜死后持续特效照样放得出来；换场景（场景键不一致）则自动作废 ✓
+    // cache = **场景内的资源缓存**：标记僵尸那一刻存下 hitPar + 场景键 + addRef 钉住
+    // ⇒ 魔音甜菜死后持续特效照样放得出来；换场景（场景键不一致）则自动作废 ✓
     const fx = { prefab: null, dur: 0, cache: { prefab: null, sceneKey: null, refd: false } };
     // 卸载模组时把缓存里的引用配平（decRef）
     recs.push({ __onCleanup: function () { gpnFxDropCache(fx); } });
@@ -6766,13 +6878,13 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             const r = rec.original.apply(this, arguments);
             if (!featOn('phatbeet')) return r;   // 【运行期开关】关掉 ⇒ 不做眩晕/击起/解除音乐
             try {
-                // ★ 命中特效资源：在这一刻把本株的 hitPar 存进缓存 —— 此刻它**必然活着**，
-                //   之后就算它死了/被铲了、被标记僵尸的持续特效也照样放得出来 ✓
-                //   （这就是本次修掉的 BUG：以前是"每次现取"，场上没活体就取不到）
+                // 命中特效资源：在这一刻把本株的 hitPar 存进缓存 —— 此刻它**必然活着**，
+                // 之后就算它死了/被铲了、被标记僵尸的持续特效也照样放得出来 ✓
+                // （这就是本次修掉的 BUG：以前是"每次现取"，场上没活体就取不到）
                 if (C.jamFx || C.clearFx) gpnFxCacheHitPar(fx, this, deps);
                 // 只有僵尸有 setStun；障碍物（墓碑/冰块/冲浪板…）没有 -> 天然跳过
                 if (target && typeof target.setStun === 'function') {
-                    // 无敌（闪耀僵尸专属状态的彩虹 / 仙桃给的）不吃眩晕。注意 leapBy 自带
+                    // 无敌（闪耀僵尸专属状态的彩虹 / 仙桃给的）不吃眩晕。注意：leapBy 自带
                     // setStun(时长+0.01)，所以也要把它的自动眩晕关掉，否则会从这儿漏进来。
                     const invin = !!target.invincible;
                     if (this.__gpnFooding) {                          // ---- 大招命中 ----
@@ -6784,15 +6896,15 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
                             gpnJamMask(target);
                             target.__gpnJamClearCD = Math.max(target.__gpnJamClearCD || 0, C.jamClearSeconds);
                             target.__gpnJamFxAcc = 0;   // ⑧ 持续特效从这一发之后重新计时（这一发引擎自己已经放过了）
-                            target.__gpnJamFxOn = !!C.jamFx;   // ★ 只有大招点亮"铺持续特效"（普攻默认不铺）
+                            target.__gpnJamFxOn = !!C.jamFx;   // 只有大招点亮"铺持续特效"（普攻默认不铺）
                             // 立刻关掉专属状态：写入会经转发访问器走到【引擎自己的 setter】
-                            //   -> 贴图/动画当场回退（闪耀僵尸的彩虹立刻消散），不用等下一帧
+                            // -> 贴图/动画当场回退（闪耀僵尸的彩虹立刻消散），不用等下一帧
                             try { if ('dancing' in target) target.dancing = false; } catch (e) {}
                         }
                     } else if (!invin && !target.isBoss && C.normalStun > 0) {   // ---- 普攻命中 ----
                         target.setStun(C.normalStun);
-                        // ★ ①b 用户 2026/10/16：**普攻也让目标暂时不受魔音舞台效果影响**（1.25 秒）
-                        //   复用同一套屏蔽（gpnJamMask 幂等）＋ 剩余秒数取 max（**不会缩短**大招的 25 秒）
+                        // ①b **普攻也让目标暂时不受魔音舞台效果影响**（1.25 秒）
+                        // 复用同一套屏蔽（gpnJamMask 幂等）＋ 剩余秒数取 max（**不会缩短**大招的 25 秒）
                         if (C.normalJamClearSeconds > 0) {
                             gpnJamMask(target);
                             target.__gpnJamClearCD = Math.max(target.__gpnJamClearCD || 0, C.normalJamClearSeconds);
@@ -6846,7 +6958,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         warn('跳过魔音甜菜：没有 foodAttack');
     }
 
-    // ---- (4) 索敌：3x3 内有被安抚的植物 -> 也算「有敌人」（会发动普攻；普攻不伤植物）----
+    // ---- (4) 索敌：3x3 内有被安抚的植物 -> 也算「有敌人」（会发动普攻；普攻不伤植物） ----
     if (typeof P.detectEnemies === 'function') {
         const rec = methodRecord(PhatBeetPlant, 'detectEnemies');
         P.detectEnemies = function () {
@@ -6870,7 +6982,7 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
                 return rec.original.apply(this, arguments);
             }
             // 只在【这一只】算移速的这一瞬间，把当前音乐顶成 jam_clear
-            //   -> 原版那三行 jam 乘数自然失效；同步执行、finally 还原，不污染全局
+            // -> 原版那三行 jam 乘数自然失效；同步执行、finally 还原，不污染全局
             const orig = FrontYard.getCurrentJam;
             try {
                 FrontYard.getCurrentJam = function () { return JAM_CLEAR; };
@@ -6935,24 +7047,24 @@ function gpnCloneProjectile(Container, fromAlias, newAlias, tweak) {
 }
 
 /** 甜椒落点铺火用到的引擎依赖（`setup()` 里分配，供自检/诊断复用）。
- *  ⚠️ 只是**引用存档**，不改变任何行为。 */
+ * 只是**引用存档**，不改变任何行为。 */
 let gpnPepperDeps = null;
 
-/** ★★ 场外范围兜底（修 2026/10/14 用户报告的三个 BUG）★★
+/** 场外范围兜底（修 实测发现的三个 BUG）
  *
- *  问题：**最右列（cIndex 8）的更右侧 = 场外**，那里的格是全场共用的假格 `LnCRight`
- *        （**`lIndex = -2`**、`cIndex = 9`）。引擎的通用范围通道 `SplashDamage` 带一道
- *        `lIndex 必须 0..4` 的守卫 ⇒ **场外时整段范围效果被跳过** ⇒ 只有被直接命中的那一个生效。
+ * 问题：**最右列（cIndex 8）的更右侧 = 场外**，那里的格是全场共用的假格 `LnCRight`
+ * （**`lIndex = -2`**、`cIndex = 9`）。引擎的通用范围通道 `SplashDamage` 带一道
+ * `lIndex 必须 0..4` 的守卫 ⇒ **场外时整段范围效果被跳过** ⇒ 只有被直接命中的那一个生效。
  *
- *  本函数绕开那条通道，照原版「寒冰辣椒 `_chillLane`」的模板做：
- *      **按 Y 求行 → 行池（`lane.zombiePool()`）→ 自算判定框 → 直接对僵尸施加效果**
+ * 本函数绕开那条通道，照原版「寒冰辣椒 `_chillLane`」的模板做：
+ * **按 Y 求行 → 行池（`lane.zombiePool()`）→ 自算判定框 → 直接对僵尸施加效果**
  *
- *  @param shot  命中的那颗弹道（`commonShot` 实例）
- *  @param z     被直接命中的僵尸
- *  @param deps  `{ Square, Rectangle }`（引擎类）
- *  @param kinds 要兜底的效果：`'snow'`（冰减速/冻结，读弹道自身的 `chill`/`freeze`）
- *                              `'bloom'`（心蕊 1×3 减防 DEBUFF，读弹道自身的 `DefenceRateList`）
- *  @returns 是否真的施加了（只为日志用）
+ * @param shot 命中的那颗弹道（`commonShot` 实例）
+ * @param z 被直接命中的僵尸
+ * @param deps `{ Square, Rectangle }`（引擎类）
+ * @param kinds 要兜底的效果：`'snow'`（冰减速/冻结，读弹道自身的 `chill`/`freeze`）
+ * `'bloom'`（心蕊 1×3 减防 DEBUFF，读弹道自身的 `DefenceRateList`）
+ * @returns 是否真的施加了（只为日志用）
  */
 function gpnOffFieldAreaApply(shot, z, deps, kinds) {
     if (!shot) return false;
@@ -6971,11 +7083,11 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
     const W = (typeof Square.SquareWidth === 'number') ? Square.SquareWidth : 68;
     const H = (typeof Square.SquareHeight === 'number') ? Square.SquareHeight : 80.77;
 
-    // ★★★ 范围判定框：**以"命中目标"为中心造【唯一一个】框**，再拿它去判行池里每一只。
-    //   ❌❌ 绝对不要"以被检查的那只僵尸自己为中心造框"—— 那样 `judgeCrossRec(它自己的 body)`
-    //       **必然为真** ⇒ 行池里每一只都会通过 ⇒ **整行僵尸全被挂上 DEBUFF**
-    //       （用户实测报的恶性 BUG，就是这个写法造成的）。
-    //   中心取法（按可靠性）：命中目标的世界坐标 → 弹道自己的世界坐标 → 最右列格心。
+    // 范围判定框：**以"命中目标"为中心造【唯一一个】框**，再拿它去判行池里每一只。
+    // 绝对不要"以被检查的那只僵尸自己为中心造框"—— 那样 `judgeCrossRec(它自己的 body)`
+    // **必然为真** ⇒ 行池里每一只都会通过 ⇒ **整行僵尸全被挂上 DEBUFF**
+    // （实测报的恶性 BUG，就是这个写法造成的）。
+    // 中心取法（按可靠性）：命中目标的世界坐标 → 弹道自己的世界坐标 → 最右列格心。
     let cx = null, cy = null;
     try {
         const zz0 = z;
@@ -7006,7 +7118,7 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
             const body = zz.bodyRecReal || zz.bodyRec;
             hit = !!(body && rec.judgeCrossRec(body));
         }
-        // ★★★ 不在范围内 ⇒ 必须跳过（少了这一句 ⇒ 行池里每只都会吃到 ⇒ 整行全挂）
+        // 不在范围内 ⇒ 必须跳过（少了这一句 ⇒ 行池里每只都会吃到 ⇒ 整行全挂）
         if (!hit) continue;
 
         if (kinds.indexOf('snow') !== -1) {
@@ -7024,29 +7136,29 @@ function gpnOffFieldAreaApply(shot, z, deps, kinds) {
     if (applied && dbgOn(CFG.pepperpult.debugLog)) {
         log('【场外范围兜底】行=' + lane + ' 框心=(' + cx + ',' + cy + ') 共施加 ' + applied + ' 次（' + kinds.join('/') + '）');
     }
-    // ★ 返回**真实施加次数**（不是布尔）：调用方靠它判断"有没有真的生效过"。
+    // 返回**真实施加次数**（不是布尔）：调用方靠它判断"有没有真的生效过"。
     return (shot.__gpnOffFieldApplied = applied);
 }
 
 
 /** 寒冰射手（Snow Pea）：冰锥概率控制
- *  引擎事实：普攻走 get defaultPea(){ Math.random() < ChanceToFreeze ? PeaFreezeType : PeaType }；
- *  而【大招】在 onFoodLeftPeaCountDec 里【显式】传 PeaTypePlantfood ⇒ 绕过 defaultPea ⇒ 永远不出冰锥；
- *  另外 defaultPea 也【不吃薄荷倍率】（那是雪滴花 Butter 那条路径才有）。
- *  所以统一在 _shoot 里处理：
- *    · 大招弹（显式 PeaTypePlantfood）-> 每发独立掷
- *    · 普攻（不传类型）            -> 由我们掷并把类型显式传进去（才吃薄荷 x3）
- *    · 其它调用（已显式传类型）    -> 原样放行 */
+ * 引擎事实：普攻走 get defaultPea(){ Math.random() < ChanceToFreeze ? PeaFreezeType : PeaType }；
+ * 而【大招】在 onFoodLeftPeaCountDec 里【显式】传 PeaTypePlantfood ⇒ 绕过 defaultPea ⇒ 永远不出冰锥；
+ * 另外 defaultPea 也【不吃薄荷倍率】（那是雪滴花 Butter 那条路径才有）。
+ * 所以统一在 _shoot 里处理：
+ * · 大招弹（显式 PeaTypePlantfood）-> 每发独立掷
+ * · 普攻（不传类型） -> 由我们掷并把类型显式传进去（才吃薄荷 x3）
+ * · 其它调用（已显式传类型） -> 原样放行 */
 function makeSnowPeaFreezePatch(SnowPeaPlant, CommonShot, deps) {
     const recs = [];
     const P = SnowPeaPlant && SnowPeaPlant.prototype;
     if (!P || typeof P._shoot !== 'function') { warn('跳过寒冰射手冰锥：拿不到 SnowPeaPlant._shoot'); return null; }
 
-    // ★★ 场外兜底（修 2026/10/14 用户报告）：寒冰的「单格冰减速 / 冰锥单格冻结」走的是引擎的
-    //    `SplashDamage` 通道，而那条通道有 `lIndex 必须 0..4` 的守卫 ⇒ **打场外目标时整段失效**
-    //    （表现为"实际为单体"）。这里补一条入场：**只在场外**时自己按"行池 + 判定框"施加
-    //    （场内仍交给引擎，绝不重复）。
-    //    认领方式：看弹道自身有没有 `chill`/`freeze`（寒冰系弹道才有）⇒ 其它植物的弹不受影响。
+    // 场外兜底（修 实测发现）：寒冰的「单格冰减速 / 冰锥单格冻结」走的是引擎的
+    // `SplashDamage` 通道，而那条通道有 `lIndex 必须 0..4` 的守卫 ⇒ **打场外目标时整段失效**
+    // （表现为"实际为单体"）。这里补一条入场：**只在场外**时自己按"行池 + 判定框"施加
+    // （场内仍交给引擎，绝不重复）。
+    // 认领方式：看弹道自身有没有 `chill`/`freeze`（寒冰系弹道才有）⇒ 其它植物的弹不受影响。
     if (CommonShot && CommonShot.prototype && typeof CommonShot.prototype.dealDamageToZombie === 'function') {
         const recD = methodRecord(CommonShot, 'dealDamageToZombie');
         CommonShot.prototype.dealDamageToZombie = function (z, isDirect) {
@@ -7071,7 +7183,7 @@ function makeSnowPeaFreezePatch(SnowPeaPlant, CommonShot, deps) {
     const C = CFG.snowpea;
     const rec = methodRecord(SnowPeaPlant, '_shoot');
     P._shoot = function (a0, a1, a2) {
-        // ★ 运行期开关：关掉 snowpea ⇒ 冰锥/减速完全不插手（直接走原逻辑）
+        // 运行期开关：关掉 snowpea ⇒ 冰锥/减速完全不插手（直接走原逻辑）
         if (!featOn('snowpea')) return rec.original.apply(this, arguments);
         try {
             const od = this._objdataOwn;
@@ -7101,55 +7213,55 @@ function makeSnowPeaFreezePatch(SnowPeaPlant, CommonShot, deps) {
 /* =========================================================================
  * 流星花（MeteorFlower）：索敌策略
  *
- *  ⚠️ 现状 = **P0（只挂空补丁，行为与原版逐字等价）**。
- *     后续步骤：
- *       P1 第 2 颗流星：去掉"35% 打歪"，改为 50% 密度最高格 / 50% 随机僵尸格
- *       P2 第 1 颗流星：本行最靠左 → 全场最靠左（两级优先；`cIndex` 最小）
- *       P3 第 1/2 颗：可索敌"障碍物 + 敌方护盾"
- *       P4 features.json 开关 `meteorflowerAim`
+ * 现状 = **P0（只挂空补丁，行为与原版逐字等价）**。
+ * 后续步骤：
+ * P1 第 2 颗流星：去掉"35% 打歪"，改为 50% 密度最高格 / 50% 随机僵尸格
+ * P2 第 1 颗流星：本行最靠左 → 全场最靠左（两级优先；`cIndex` 最小）
+ * P3 第 1/2 颗：可索敌"障碍物 + 敌方护盾"
+ * P4 features.json 开关 `meteorflowerAim`
  *
- *  === 引擎事实（已逐字核对 1.5.5 bundle，见 §开发修订记录）===
- *   · 模块 `chunks:///_virtual/MeteorFlower.ts`，导出 `MeteorFlowerPlant`（`t("MeteorFlowerPlant",...)`）。
- *   · 原版索敌写在 `MeteorFlowerPlant.prototype.detectEnemy`：
- *       只有 `thrownAmount <= 0`（第 1 颗）或 `Math.random() < SecondMeteorMissChance(0.35)`（第 2 颗）
- *       时才去找目标；找目标的规则是【全草坪僵尸池里 cIndex 最大（最靠右）的那只所在格】。
- *     - 僵尸筛选：`isInLawn()`（lIndex 0..4 且 cIndex 0..8）；所在格 `getSquareType()` 必须是
- *       `solid` 或 `deck`。
- *     - 池为空 ⇒ 退化查 `TombPool`（墓碑）。
- *     - 第 2 颗若没选出目标（35% 打歪 / 池空）⇒ `Square.getRandomLnC()` **随机一个草坪格照砸**。
- *   · 投掷入口：
- *       `_throw(pos)`：`pos.worldPosition` 是**格心 Vec3**（`LnC.plantPoint`），落点 = 该格；
- *                     内部 `lobOneCabbageOnPos(..., new Vec2(pos.worldPosition.x - 10*SquareWidth,
- *                     pos.worldPosition.y), 700, this.inLane.prjLayer, pos.worldPosition.toVec2(), ...)`
- *       `_throwAtZombie(z)`：以僵尸世界坐标为目标，走 `lobOneCabbageOnZombie`。
- *     两者着陆后都 `setTileLiquid` 铺熔岩 + `judgeInLnC` + 吓跑同格恐龙。
- *   · 一次点燃期扔 `MeteorCountOnce(2)` 颗，之后 `rest()` 休息 `RestTime(7)` 秒。
- *   · 大招 `specialPlantFood` **不走 detectEnemy**（自己每 0.1s 对草坪内随机僵尸扔 5 颗）。
+ * === 引擎事实（已逐字核对 1.5.5 bundle，见 §开发修订记录）===
+ * · 模块 `chunks:///_virtual/MeteorFlower.ts`，导出 `MeteorFlowerPlant`（`t("MeteorFlowerPlant",...)`）。
+ * · 原版索敌写在 `MeteorFlowerPlant.prototype.detectEnemy`：
+ * 只有 `thrownAmount <= 0`（第 1 颗）或 `Math.random() < SecondMeteorMissChance(0.35)`（第 2 颗）
+ * 时才去找目标；找目标的规则是【全草坪僵尸池里 cIndex 最大（最靠右）的那只所在格】。
+ * - 僵尸筛选：`isInLawn()`（lIndex 0..4 且 cIndex 0..8）；所在格 `getSquareType()` 必须是
+ * `solid` 或 `deck`。
+ * - 池为空 ⇒ 退化查 `TombPool`（墓碑）。
+ * - 第 2 颗若没选出目标（35% 打歪 / 池空）⇒ `Square.getRandomLnC()` **随机一个草坪格照砸**。
+ * · 投掷入口：
+ * `_throw(pos)`：`pos.worldPosition` 是**格心 Vec3**（`LnC.plantPoint`），落点 = 该格；
+ * 内部 `lobOneCabbageOnPos(..., new Vec2(pos.worldPosition.x - 10*SquareWidth,
+ * pos.worldPosition.y), 700, this.inLane.prjLayer, pos.worldPosition.toVec2(), ...)`
+ * `_throwAtZombie(z)`：以僵尸世界坐标为目标，走 `lobOneCabbageOnZombie`。
+ * 两者着陆后都 `setTileLiquid` 铺熔岩 + `judgeInLnC` + 吓跑同格恐龙。
+ * · 一次点燃期扔 `MeteorCountOnce(2)` 颗，之后 `rest()` 休息 `RestTime(7)` 秒。
+ * · 大招 `specialPlantFood` **不走 detectEnemy**（自己每 0.1s 对草坪内随机僵尸扔 5 颗）。
  *
- *  === 关键辅助事实 ===
- *   · 三种护盾实体（`ZombieEnum.future_protector_shield` / `future_infinut_shield` /
- *     `modern_moonflower_shield`）都是 **`Zombie` 的子类**、`isRealZombie === false`，
- *     并且**会被注册进 `ZombiePool.pool()`**（`registerZombie` 只判 `hypnotized`，不看 isRealZombie）
- *     ⇒ 遍历"真僵尸"时必须把它们排除（本模组已有 `gpnIsShieldZombie` 可复用）。
- *   · 护盾**在哪一方由它自己的 `hypnotized` 决定**（引擎 `turnVelocity` 里就会把植物方的盾杀掉重建）；
- *     `hypnotized === false` ⇒ 僵尸方（可被植物攻击）；`true` ⇒ 植物方（自家，不砸）。
- *   · `LnC.zombieShields` 是护盾的权威容器；`Lane.laneLnCs` / `Square.getAllLnC()` 可列举格子。
- *   · 墓碑（含**冲浪板**）走 `TombPool` / `Lane.tombPool()`，与护盾**不重叠**。
- *     `TombEnum` 共 32 项，其中 6 项**不应当是流星目标**：
- *       kongfu_TNT(17) / planttarget_iceblock(21) / zombietarget_iceblock(22) /
- *       zombietarget_birthday_present(23) / zomboss_iceage_glacier_block(24) / planttarget_squid(25)
+ * === 关键辅助事实 ===
+ * · 三种护盾实体（`ZombieEnum.future_protector_shield` / `future_infinut_shield` /
+ * `modern_moonflower_shield`）都是 **`Zombie` 的子类**、`isRealZombie === false`，
+ * 并且**会被注册进 `ZombiePool.pool()`**（`registerZombie` 只判 `hypnotized`，不看 isRealZombie）
+ * ⇒ 遍历"真僵尸"时必须把它们排除（本模组已有 `gpnIsShieldZombie` 可复用）。
+ * · 护盾**在哪一方由它自己的 `hypnotized` 决定**（引擎 `turnVelocity` 里就会把植物方的盾杀掉重建）；
+ * `hypnotized === false` ⇒ 僵尸方（可被植物攻击）；`true` ⇒ 植物方（自家，不砸）。
+ * · `LnC.zombieShields` 是护盾的权威容器；`Lane.laneLnCs` / `Square.getAllLnC()` 可列举格子。
+ * · 墓碑（含**冲浪板**）走 `TombPool` / `Lane.tombPool()`，与护盾**不重叠**。
+ * `TombEnum` 共 32 项，其中 6 项**不应当是流星目标**：
+ * kongfu_TNT(17) / planttarget_iceblock(21) / zombietarget_iceblock(22) /
+ * zombietarget_birthday_present(23) / zomboss_iceage_glacier_block(24) / planttarget_squid(25)
  * =======================================================================*/
 
 /* ===== 流星花索敌：模块级纯函数（自检直接单测；补丁本体也调用它们，避免两份实现）=====
- *  deps 需要 `{ Square, ZombieEnum }`。
- *  ⚠️ 全部**只读**输入、不产生副作用、不依赖 this ⇒ 可以被自检用假数据反复调用。 */
+ * deps 需要 `{ Square, ZombieEnum }`。
+ * 全部**只读**输入、不产生副作用、不依赖 this ⇒ 可以被自检用假数据反复调用。 */
 
 /** 对象的所在格（统一走 `inLnC`；**不要**用 `.cIndex/.lIndex` 缓存字段） */
 function gpnMeteorCellOf(o) { return (o && o.inLnC) || null; }
 
 /** 真僵尸：`isRealZombie === true` 且**不是**护盾实体 且存活 且**敌方** 且在场内。
- *  ⚠️ 三种护盾是 `Zombie` 的子类、**会混在 `ZombiePool.pool()` 里**，
- *     所以必须用 `gpnIsShieldZombie` 排除（本模组既有函数，按 ID 认）。 */
+ * 三种护盾是 `Zombie` 的子类、**会混在 `ZombiePool.pool()` 里**，
+ * 所以必须用 `gpnIsShieldZombie` 排除（本模组既有函数，按 ID 认）。 */
 function gpnMeteorIsRealZombie(z, deps) {
     if (!z || z.isRealZombie !== true) return false;
     const ZombieEnum = deps && deps.ZombieEnum;
@@ -7191,11 +7303,11 @@ function gpnMeteorCollectZombies(ZombiePool, deps) {
     return out;
 }
 
-/** ★ 1×3 同排横带密度最高的那一格（并列随机）。
- *  窗口 = 该格 + 左右各一格，**限同一行**（与 `meteor` 的 `w=3,h=1` 伤害范围同构）。
- *  僵尸算在哪一列 = **身体中心**所在列 ⇒ 一只僵尸只贡献给一列，不会重复计数。
- *  @param forbidLanes 可选：排除这些行（**只给自检做"同排隔离"构造性证明用**；
- *                     正常调用不传 ⇒ 行为不变） */
+/** 1×3 同排横带密度最高的那一格（并列随机）。
+ * 窗口 = 该格 + 左右各一格，**限同一行**（与 `meteor` 的 `w=3,h=1` 伤害范围同构）。
+ * 僵尸算在哪一列 = **身体中心**所在列 ⇒ 一只僵尸只贡献给一列，不会重复计数。
+ * @param forbidLanes 可选：排除这些行（**只给自检做"同排隔离"构造性证明用**；
+ * 正常调用不传 ⇒ 行为不变） */
 function gpnMeteorPickDensestCell(zombies, deps, forbidLanes) {
     const Square = deps && deps.Square;
     const forbid = forbidLanes || null;
@@ -7220,11 +7332,11 @@ function gpnMeteorPickDensestCell(zombies, deps, forbidLanes) {
     return ties.length ? ties[Math.floor(Math.random() * ties.length)] : null;
 }
 
-/** ★ 只返回"最高分"（不随机、不挑格）—— 专用于自检做
- *  **"窗口限同一行"的构造性证明**：若窗口真的限同一行，那么
- *  "只统计行X" 与 "统计所有行" 得到的**该行最大分必须相等**；
- *  一旦跨行累加（3×3 那种错法），两者就不等。
- *  @param forbidLanes 只给自检用；正常调用不传 ⇒ 行为不变 */
+/** 只返回"最高分"（不随机、不挑格）—— 专用于自检做
+ * **"窗口限同一行"的构造性证明**：若窗口真的限同一行，那么
+ * "只统计行X" 与 "统计所有行" 得到的**该行最大分必须相等**；
+ * 一旦跨行累加（3×3 那种错法），两者就不等。
+ * @param forbidLanes 只给自检用；正常调用不传 ⇒ 行为不变 */
 function gpnMeteorDensestScore(zombies, deps, forbidLanes) {
     const Square = deps && deps.Square;
     const forbid = forbidLanes || null;
@@ -7260,44 +7372,44 @@ function gpnMeteorPickRandomZombieCell(zombies) {
     return cells.length ? cells[Math.floor(Math.random() * cells.length)] : null;
 }
 
-/** ★ 不应当作"障碍物"目标的 Tomb 类型（按 `TombEnum` 的**数值**认，见引擎 `TombEnum`）。
+/** 不应当作"障碍物"目标的 Tomb 类型（按 `TombEnum` 的**数值**认，见引擎 `TombEnum`）。
  *
- *  用户口径（2026/10/15 **最终定稿**）：**只排除 1 类** —— 功夫世界的**炸药桶**：
- *      17 `kongfu_TNT`  ← 会爆炸的炸药架（实机截图确认就是它）
+ * 规则（**最终定稿**）：**只排除 1 类** —— 功夫世界的**炸药桶**：
+ * 17 `kongfu_TNT` ← 会爆炸的炸药架（实机截图确认就是它）
  *
- *  其余 **30 项全部算障碍物**（含冲浪板、背包、帐篷、街机、音箱、各世界墓碑、功夫货架、
- *  以及 21/22/23 的冰砖与生日礼物、24 冰河 BOSS 冰川块、25 章鱼）——
- *  用户明确要求"只保留 kongfu_TNT"，故 21~25 都**回到白名单**。
+ * 其余 **30 项全部算障碍物**（含冲浪板、背包、帐篷、街机、音箱、各世界墓碑、功夫货架、
+ * 以及 21/22/23 的冰砖与生日礼物、24 冰河 BOSS 冰川块、25 章鱼）——
+ * 明确要求"只保留 kongfu_TNT"，故 21~25 都**回到白名单**。
  *
- *  ⚠️ 用**数值**而不是名字：数值最稳，不受导出名变化影响。
- *  📌 历史：2026/10/15 初版曾把 17/21/22/23/24/25 都排除；
- *     用户逐条核对后改成"只排除 17"（冰砖/生日礼物/章鱼/冰川块 都恢复可砸）。 */
+ * 用**数值**而不是名字：数值最稳，不受导出名变化影响。
+ * 📌 历史：初版曾把 17/21/22/23/24/25 都排除；
+ * 逐条核对后改成"只排除 17"（冰砖/生日礼物/章鱼/冰川块 都恢复可砸）。 */
 const GPN_METEOR_TOMB_BLACK = [17];
 /** 判断某个 Tomb 是否属于黑名单（抽出来便于单测；非数字 ID 视为「不在黑名单」）。
- *  ⚠️ `typeof id === 'number'` 是**防御性冗余**：`Array.prototype.indexOf` 用严格相等（`===`），
- *     字符串 `'17'` 本来就不会命中数字 `17` ⇒ 这条守卫去掉也不改变行为
- *     （对应的变异体 r3 是**等价变异体**，已记录，不是漏网）。
- *     保留它是为了将来若把黑名单换成 `Set`/`includes` 之类的写法时仍然安全。 */
+ * `typeof id === 'number'` 是**防御性冗余**：`Array.prototype.indexOf` 用严格相等（`===`），
+ * 字符串 `'17'` 本来就不会命中数字 `17` ⇒ 这条守卫去掉也不改变行为
+ * （对应的变异体 r3 是**等价变异体**，已记录，不是漏网）。
+ * 保留它是为了将来若把黑名单换成 `Set`/`includes` 之类的写法时仍然安全。 */
 function gpnMeteorTombIsBlacklisted(id) {
     return typeof id === 'number' && GPN_METEOR_TOMB_BLACK.indexOf(id) !== -1;
 }
 
-/** 取对象的所在格 —— **按类别决定用哪个来源**（2026/10/15 实机教训）。
+/** 取对象的所在格 —— **按类别决定用哪个来源**（实机教训）。
  *
- *  为什么必须分类（P3 首版就是因此**收不到任何墓碑**）：
- *    · **墓碑/Tomb**：权威是**对象自身的 \`lIndex/cIndex\`** —— 引擎 \`tombPool\` 就是按它过滤的
- *      （\`n.lIndex == t.LaneIndex\`）。而它的 \`inLnC\` 指向的格子，\`lIndex\` **可能还是 -2**
- *      （\`LnC\` 构造默认 -2；网格初始化只给 \`LnCAbstract/LnCLeft/LnCRight/LnCHere/LnCThere\` 赋过值；
- *        \`standardize()\` 也只算 lefter/righter）
- *      ⇒ **拿 \`inLnC.lIndex\` 判范围会把墓碑全判成"场外"而丢弃**。
- *    · **僵尸/护盾**：权威是 **\`inLnC\`** —— 僵尸自身的 \`lIndex\` 由 \`Character.getLaneIndex()\`
- *      从世界坐标算出来，会与 \`inLnC\` 不同步；引擎里 \`a.lIndex == d.inLnC.lIndex\` 这种比较说明
- *      **两套索引并存**，而"在哪一格"应当以 \`inLnC\` 为准。
+ * 为什么必须分类（P3 首版就是因此**收不到任何墓碑**）：
+ * · **墓碑/Tomb**：权威是**对象自身的 \`lIndex/cIndex\`** —— 引擎 \`tombPool\` 就是按它过滤的
+ * （\`n.lIndex == t.LaneIndex\`）。而它的 \`inLnC\` 指向的格子，\`lIndex\` **可能还是 -2**
+ * （\`LnC\` 构造默认 -2；网格初始化只给 \`LnCAbstract/LnCLeft/LnCRight/LnCHere/LnCThere\` 赋过值；
+ * \`standardize()\` 也只算 lefter/righter）
+ * ⇒ **拿 \`inLnC.lIndex\` 判范围会把墓碑全判成"场外"而丢弃**。
+ * · **僵尸/护盾**：权威是 **\`inLnC\`** —— 僵尸自身的 \`lIndex\` 由 \`Character.getLaneIndex()\`
+ * 从世界坐标算出来，会与 \`inLnC\` 不同步；引擎里 \`a.lIndex == d.inLnC.lIndex\` 这种比较说明
+ * **两套索引并存**，而"在哪一格"应当以 \`inLnC\` 为准。
  *
- *  ⇒ 策略：\`preferOwn === true\`（墓碑）走 **自身字段 → inLnC**；否则（僵尸/护盾）走 **inLnC → 自身**。
- *     两条路径都**要求范围合法**（行 0..4、列 0..8），否则视为"不在草坪"。
+ * ⇒ 策略：\`preferOwn === true\`（墓碑）走 **自身字段 → inLnC**；否则（僵尸/护盾）走 **inLnC → 自身**。
+ * 两条路径都**要求范围合法**（行 0..4、列 0..8），否则视为"不在草坪"。
  *
- *  @param preferOwn 是否优先用对象自身的 \`lIndex/cIndex\`（墓碑传 true） */
+ * @param preferOwn 是否优先用对象自身的 \`lIndex/cIndex\`（墓碑传 true） */
 function gpnMeteorCellOfAny(o, preferOwn) {
     if (!o) return null;
     const ok = (l, c) => (typeof l === 'number' && typeof c === 'number'
@@ -7313,9 +7425,9 @@ function gpnMeteorCellOfAny(o, preferOwn) {
 }
 
 /** 收集"障碍物"（各行的 `tombPool(0)` = 非魅惑墓碑；**含冲浪板** —— 它就是墓碑的一种）。
- *  ★ 分行**用 `getAllLane()` 的循环下标**（= 引擎的 `lane.LaneIndex`，权威），
- *    不再依赖墓碑/格子各自的索引字段（两者可能不同源，见 `gpnMeteorCellOfAny` 的说明）。
- *  @returns 实体数组（能取到格的才收） */
+ * 分行**用 `getAllLane()` 的循环下标**（= 引擎的 `lane.LaneIndex`，权威），
+ * 不再依赖墓碑/格子各自的索引字段（两者可能不同源，见 `gpnMeteorCellOfAny` 的说明）。
+ * @returns 实体数组（能取到格的才收） */
 function gpnMeteorCollectTombs(Square, laneIndex) {
     const out = [];
     const push = (t) => {
@@ -7323,7 +7435,7 @@ function gpnMeteorCollectTombs(Square, laneIndex) {
         if (typeof t.isAlive === 'function' && !t.isAlive()) return;
         if (t.hypnotized === true) return;                       // 我方墓碑 ⇒ 不砸
         if (gpnMeteorTombIsBlacklisted(t.ID)) return;
-        const c = gpnMeteorCellOfAny(t, true);   // ★ 墓碑：优先用**对象自身**的 lIndex/cIndex
+        const c = gpnMeteorCellOfAny(t, true);   // 墓碑：优先用**对象自身**的 lIndex/cIndex
         if (!c) return;
         out.push(t);
     };
@@ -7344,10 +7456,10 @@ function gpnMeteorCollectTombs(Square, laneIndex) {
 
 /** 收集"**敌方护盾**"（`LnC.zombieShields` 里 `hypnotized === false` 的那些）。
  *
- *  为什么按 `hypnotized` 而不是按 ID：用户口径（2026/10/15）——
- *     **这三种护盾（力场盾 / 全息坚果大招 / 月光花大招）实际上可以属于任一方**
- *     （引擎 `turnVelocity` 里就会把植物方的盾杀掉、再生成一个），
- *     所以判据只能是"这个盾**此刻**在哪一方" ⇒ 我方(`hypnotized === true`)不砸。 */
+ * 为什么按 `hypnotized` 而不是按 ID：规则——
+ * **这三种护盾（力场盾 / 全息坚果大招 / 月光花大招）实际上可以属于任一方**
+ * （引擎 `turnVelocity` 里就会把植物方的盾杀掉、再生成一个），
+ * 所以判据只能是"这个盾**此刻**在哪一方" ⇒ 我方(`hypnotized === true`)不砸。 */
 function gpnMeteorCollectEnemyShields(Square, laneIndex) {
     const out = [];
     const push = (s) => {
@@ -7376,34 +7488,34 @@ function gpnMeteorCollectObstacles(Square, laneIndex) {
 }
 
 
-/** ★★ 第 1 颗流星的索敌（**P2 → P3**：四级优先，全部取 **`cIndex` 最小 = 最靠左**）。
+/** 第 1 颗流星的索敌（**P2 → P3**：四级优先，全部取 **`cIndex` 最小 = 最靠左**）。
  *
- *  用户口径（2026/10/15）：
- *    ① **本行**（该株流星花所在行）僵尸里 `cIndex` 最小的那一只；
- *    ② 本行没有 ⇒ **全场**僵尸里 `cIndex` 最小的一只；
- *    ★③ 本行没有僵尸 ⇒ **本行障碍物（墓碑/冲浪板/…）∪ 敌方护盾** 里 `cIndex` 最小的那个；
- *    ★④ 本行也没有 ⇒ **全场障碍物 ∪ 敌方护盾** 里 `cIndex` 最小的那个；
- *    ⑤ 都没有 ⇒ 返回 `null` ⇒ 调用方走**原版兜底**（`Square.getRandomLnC()` 随机草坪格）。
- *  **僵尸整体优先于障碍/护盾**（①②永远先于③④）。
- *  ⚠️ 原版**不索敌障碍/护盾**，也**不区分本行**（它直接取全场僵尸 `cIndex` 最大）；
- *     ⇒ 本模组这四条是**有意的行为变更**。
- *  📌 历史：2026/10/15 先做 P2（最靠右→修正为最靠左），再补 P3 的③④。
+ * 规则：
+ * ① **本行**（该株流星花所在行）僵尸里 `cIndex` 最小的那一只；
+ * ② 本行没有 ⇒ **全场**僵尸里 `cIndex` 最小的一只；
+ * ③ 本行没有僵尸 ⇒ **本行障碍物（墓碑/冲浪板/…）∪ 敌方护盾** 里 `cIndex` 最小的那个；
+ * ④ 本行也没有 ⇒ **全场障碍物 ∪ 敌方护盾** 里 `cIndex` 最小的那个；
+ * ⑤ 都没有 ⇒ 返回 `null` ⇒ 调用方走**原版兜底**（`Square.getRandomLnC()` 随机草坪格）。
+ * **僵尸整体优先于障碍/护盾**（①②永远先于③④）。
+ * 原版**不索敌障碍/护盾**，也**不区分本行**（它直接取全场僵尸 `cIndex` 最大）；
+ * ⇒ 本模组这四条是**有意的行为变更**。
+ * 📌 历史：先做 P2（最靠右→修正为最靠左），再补 P3 的③④。
  *
- *  @param deps `{ obstacles?: 障碍/护盾实体数组（调用方用 gpnMeteorCollectObstacles 采好）}`
- *              —— 传进来而不是在这里采，是为了**分开单测**（采集 / 选格 各自可测）。
- *  @returns `{zombie, cell, cIndex, kind}` | null（`kind` ∈ zombie/tomb/shield）
+ * @param deps `{ obstacles?: 障碍/护盾实体数组（调用方用 gpnMeteorCollectObstacles 采好）}`
+ * —— 传进来而不是在这里采，是为了**分开单测**（采集 / 选格 各自可测）。
+ * @returns `{zombie, cell, cIndex, kind}` | null（`kind` ∈ zombie/tomb/shield）
  */
 function gpnMeteorFirstTarget(laneIndex, zombies, deps) {
     /** 取 `cIndex` **最小**（最靠左）的那个；并列时保留先遇到的那个（由数组顺序决定） */
     const pickMinC = (list, laneFilter) => {
         let best = Infinity, bestObj = null, bestC = null, bestKind = null;
         for (const o of (list || [])) {
-            // ★ 类别判定（2026/10/15 修：原来墓碑会被误判成 shield —— 真实墓碑既没有
-            //   `__gpnMeteorKind`（那是自检打标）也没有 `isRealZombie`）
-            //   顺序：显式标记 → 真僵尸 → 有 inLnC（僵尸/护盾） → 否则算墓碑（靠自身 lIndex/cIndex）
-            //   ⚠️ 判据要用 **gpnMeteorCellOfAny**（取可用格索引），**不能**只看 `o.inLnC` 是否存在 ——
-            //      实机墓碑也有 `inLnC`，但那个格子的 `lIndex` 是 -2（见 gpnMeteorCellOfAny 的说明）
-            //      ⇒ 只判 `inLnC` 会把墓碑误算成 shield（P3b 断言抓到过）。
+            // 类别判定（修：原来墓碑会被误判成 shield —— 真实墓碑既没有
+            // `__gpnMeteorKind`（那是自检打标）也没有 `isRealZombie`）
+            // 顺序：显式标记 → 真僵尸 → 有 inLnC（僵尸/护盾） → 否则算墓碑（靠自身 lIndex/cIndex）
+            // 判据要用 **gpnMeteorCellOfAny**（取可用格索引），**不能**只看 `o.inLnC` 是否存在 ——
+            // 实机墓碑也有 `inLnC`，但那个格子的 `lIndex` 是 -2（见 gpnMeteorCellOfAny 的说明）
+            // ⇒ 只判 `inLnC` 会把墓碑误算成 shield（P3b 断言抓到过）。
             const _ownOk = (o && typeof o.lIndex === 'number' && typeof o.cIndex === 'number'
                 && o.lIndex >= 0 && o.lIndex <= 4 && o.cIndex >= 0 && o.cIndex <= 8);
             const kind = (o && o.__gpnMeteorKind === 'tomb') ? 'tomb'
@@ -7411,10 +7523,10 @@ function gpnMeteorFirstTarget(laneIndex, zombies, deps) {
                     : (o && o.isRealZombie === true) ? 'zombie'
                         : _ownOk ? 'tomb'          // 有可用的自身格索引 ⇒ 墓碑
                             : (o && o.inLnC) ? 'shield' : 'tomb';
-            const c = gpnMeteorCellOfAny(o, kind === 'tomb');   // ★ 按类别取格
+            const c = gpnMeteorCellOfAny(o, kind === 'tomb');   // 按类别取格
             if (!c) continue;
             if (laneFilter !== null && c.lIndex !== laneFilter) continue;
-            // ⚠️ 严格 `<` ⇒ **并列时保留先遇到的**（列表顺序：僵尸 → 墓碑 → 护盾）⇒ **确定性**
+            // 严格 `<` ⇒ **并列时保留先遇到的**（列表顺序：僵尸 → 墓碑 → 护盾）⇒ **确定性**
             if (c.cIndex < best) { best = c.cIndex; bestObj = o; bestC = c; bestKind = kind; }
         }
         return bestObj ? { zombie: bestObj, cell: bestC, cIndex: best, kind: bestKind } : null;
@@ -7426,7 +7538,7 @@ function gpnMeteorFirstTarget(laneIndex, zombies, deps) {
     // ② 全场僵尸最靠左
     const anyLane = pickMinC(zombies, null);
     if (anyLane) return anyLane;
-    // ★ P3：③ 本行障碍物 ∪ 敌方护盾最靠左 → ④ 全场障碍物 ∪ 敌方护盾最靠左
+    // P3：③ 本行障碍物 ∪ 敌方护盾最靠左 → ④ 全场障碍物 ∪ 敌方护盾最靠左
     const obstacles = (deps && Array.isArray(deps.obstacles)) ? deps.obstacles : [];
     if (obstacles.length > 0) {
         const obLane = pickMinC(obstacles, laneOk);
@@ -7439,20 +7551,20 @@ function gpnMeteorFirstTarget(laneIndex, zombies, deps) {
 }
 
 
-/** ★ 第 2 颗流星的落点：**不再打歪**。
- *    · 场上**有僵尸**：50% ⇒ 1×3 同排横带密度最高的那一格（`gpnMeteorPickDensestCell`）
- *                      50% ⇒ 从"有僵尸的格"里随机一格（`gpnMeteorPickRandomZombieCell`）
- *    ★ 场上**没僵尸但有障碍物/敌方护盾**（P3，用户口径 Q8）：
- *                      从"有障碍/护盾的格"里**随机一格**
- *    · 两者都没有 ⇒ 返回 null ⇒ 调用方落**原版口径的随机草坪格**兜底（不会停在中途）。
- *  @param deps `{ Square, obstacles?: 障碍/护盾实体数组 }` */
+/** 第 2 颗流星的落点：**不再打歪**。
+ * · 场上**有僵尸**：50% ⇒ 1×3 同排横带密度最高的那一格（`gpnMeteorPickDensestCell`）
+ * 50% ⇒ 从"有僵尸的格"里随机一格（`gpnMeteorPickRandomZombieCell`）
+ * 场上**没僵尸但有障碍物/敌方护盾**（P3，规则 Q8）：
+ * 从"有障碍/护盾的格"里**随机一格**
+ * · 两者都没有 ⇒ 返回 null ⇒ 调用方落**原版口径的随机草坪格**兜底（不会停在中途）。
+ * @param deps `{ Square, obstacles?: 障碍/护盾实体数组 }` */
 function gpnMeteorSecondCell(zombies, deps) {
     if (zombies && zombies.length > 0) {
         return (Math.random() < 0.5)
             ? gpnMeteorPickDensestCell(zombies, deps)
             : gpnMeteorPickRandomZombieCell(zombies);
     }
-    // ★ P3：没僵尸 ⇒ 优先砸"障碍物 / 敌方护盾"所在的格（随机一格）
+    // P3：没僵尸 ⇒ 优先砸"障碍物 / 敌方护盾"所在的格（随机一格）
     const obstacles = (deps && Array.isArray(deps.obstacles)) ? deps.obstacles : [];
     if (obstacles.length > 0) return gpnMeteorPickRandomObstacleCell(obstacles);
     return null;
@@ -7473,19 +7585,19 @@ function gpnMeteorPickRandomObstacleCell(list) {
 }
 
 
-/** ★ 原版口径的"随机草坪格"兜底：`Square.getRandomLnC()`（默认 0..4 行 × 0..8 列均匀随机）。
+/** 原版口径的"随机草坪格"兜底：`Square.getRandomLnC()`（默认 0..4 行 × 0..8 列均匀随机）。
  *
- *  这是**恢复原版行为** —— 原版 `detectEnemy` 里就有这一句：
- *      `if (this.thrownAmount > 0 && !bestLnC) bestLnC = Square.getRandomLnC();`
- *  我们只是把"没有可选目标"这一小类交还给原版兜底（用户口径 2026/10/15 拍板 B1）。
+ * 这是**恢复原版行为** —— 原版 `detectEnemy` 里就有这一句：
+ * `if (this.thrownAmount > 0 && !bestLnC) bestLnC = Square.getRandomLnC();`
+ * 我们只是把"没有可选目标"这一小类交还给原版兜底（规则：拍板 B1）。
  *
- *  ⚠️ 为什么必须要有兜底：引擎 `specialPlantUpdate` 里
- *      `this.busy <= 0 && i > 0 ⇒ this.detectEnemy()`
- *    ⇒ 若我们"不投掷也不收尾"，`busy` 会一直是 0 ⇒ **每帧重进** ⇒
- *      `thrownAmount` 卡在 1、`ignited` 永真 ⇒ `rest()` 永不调用 ⇒
- *      **动画永远停在"正在攻击"**（实机 1685 次/局 的日志刷屏 + 卡死）。
+ * 为什么必须要有兜底：引擎 `specialPlantUpdate` 里
+ * `this.busy <= 0 && i > 0 ⇒ this.detectEnemy()`
+ * ⇒ 若我们"不投掷也不收尾"，`busy` 会一直是 0 ⇒ **每帧重进** ⇒
+ * `thrownAmount` 卡在 1、`ignited` 永真 ⇒ `rest()` 永不调用 ⇒
+ * **动画永远停在"正在攻击"**（实机 1685 次/局 的日志刷屏 + 卡死）。
  *
- *  @returns `{lIndex, cIndex}` | null（拿不到就返回 null，由调用方收尾） */
+ * @returns `{lIndex, cIndex}` | null（拿不到就返回 null，由调用方收尾） */
 function gpnMeteorRandomLawnCell(Square) {
     try {
         if (!Square || typeof Square.getRandomLnC !== 'function') return null;
@@ -7496,51 +7608,51 @@ function gpnMeteorRandomLawnCell(Square) {
     } catch (e) { return null; }
 }
 
-/** ★ 本轮"到此为止"：结束 ignited 循环，让引擎自己接管余下流程。
+/** 本轮"到此为止"：结束 ignited 循环，让引擎自己接管余下流程。
  *
- *  为什么只需 `rest()`：
- *    `rest()` 会 `busy = +∞`（⇒ `specialPlantUpdate` 不再每帧调 `detectEnemy`）、
- *    `ignited = false`、播 `SummonEnd`；随后引擎自己的
- *    `animationListener("rest")` 会设 `resting = RestTime × _cdScale`，
- *    再经 `resting → 0` 触发 `Recover` → `awaken` → 重新 `igniteStart`。
- *  ⇒ 与"投完第 2 颗后的正常收尾"**调用点完全相同**，是引擎自有机制。
- *  ⚠️ 刻意**不**去写 `resting` 等引擎内部字段（少碰内部状态 = 少风险）。 */
+ * 为什么只需 `rest()`：
+ * `rest()` 会 `busy = +∞`（⇒ `specialPlantUpdate` 不再每帧调 `detectEnemy`）、
+ * `ignited = false`、播 `SummonEnd`；随后引擎自己的
+ * `animationListener("rest")` 会设 `resting = RestTime × _cdScale`，
+ * 再经 `resting → 0` 触发 `Recover` → `awaken` → 重新 `igniteStart`。
+ * ⇒ 与"投完第 2 颗后的正常收尾"**调用点完全相同**，是引擎自有机制。
+ * 刻意**不**去写 `resting` 等引擎内部字段（少碰内部状态 = 少风险）。 */
 function gpnMeteorCycleBailOut(pl) {
     try { if (pl && typeof pl.rest === 'function') pl.rest(); } catch (e) { /* 收尾失败也不能抛给引擎 */ }
 }
 
 
-/** ★ 引擎"方格类型"里能让流星花点燃的那两种（`SquareTypeEnum.solid` / `.deck`）**的真实数值**。
+/** 引擎"方格类型"里能让流星花点燃的那两种（`SquareTypeEnum.solid` / `.deck`）**的真实数值**。
  *
- *  引擎原文（`MeteorFlowerPlant.specialPlantUpdate`）：
- *      `i != y.solid && i != y.deck || (e = !0)`  ⇒ 只有这两种格上的僵尸才点火。
+ * 引擎原文（`MeteorFlowerPlant.specialPlantUpdate`）：
+ * `i != y.solid && i != y.deck || (e = !0)` ⇒ 只有这两种格上的僵尸才点火。
  *
- *  ⚠️⚠️ **绝不硬编码**：`SquareTypeEnum` 的枚举名在 bundle 里是压缩异名，从字节里挖不出数值；
- *     而且不同 gp-next 版本可能变动。⇒ **运行时用引擎自己导出的 `SquareType` 读一次**，
- *     读不到就把"用到了没校准的数值"这件事记下来、并**放弃**点燃门改造（宁可少一个功能，也不能瞎点火）。
+ * **绝不硬编码**：`SquareTypeEnum` 的枚举名在 bundle 里是压缩异名，从字节里挖不出数值；
+ * 而且不同 gp-next 版本可能变动。⇒ **运行时用引擎自己导出的 `SquareType` 读一次**，
+ * 读不到就把"用到了没校准的数值"这件事记下来、并**放弃**点燃门改造（宁可少一个功能，也不能瞎点火）。
  *
- *  📌 2026/10/15 教训：我一开始凭印象写成 `solid=1 / deck=2`，与自检里的 `solid:0 / deck:4` 冲突
- *     ⇒ 最终改为**完全不依赖枚举**的判据（isInLawn）——见 `gpnMeteorShouldIgnite`。 */
-/* ⚠️ 2026/10/15 教训：这里原本想"运行时读 SquareType 枚举来校准 solid/deck"，
- *   但 `Square.ts` **并不导出 SquareType**（它在 `LnC.ts` 里，数值 solid=0/deck=4）
- *   ⇒ `squareMod.SquareType` 恒为 undefined ⇒ 校准必失败 ⇒ **点燃门静默跳过**（实机暴露）。
- *   ⇒ 改为**完全不依赖任何枚举**的判据（见 `gpnMeteorShouldIgnite`）：
- *     「僵尸在草坪格」**或**「场上有可瞄准障碍」——既准确又不怕引擎改枚举。 */
-/** ★★ 流星花的"**门**"：有没有**可瞄准的障碍**（墓碑 ∪ 敌方护盾）。
+ * 📌 教训：我一开始凭印象写成 `solid=1 / deck=2`，与自检里的 `solid:0 / deck:4` 冲突
+ * ⇒ 最终改为**完全不依赖枚举**的判据（isInLawn）——见 `gpnMeteorShouldIgnite`。 */
+/* 教训：这里原本想"运行时读 SquareType 枚举来校准 solid/deck"，
+ * 但 `Square.ts` **并不导出 SquareType**（它在 `LnC.ts` 里，数值 solid=0/deck=4）
+ * ⇒ `squareMod.SquareType` 恒为 undefined ⇒ 校准必失败 ⇒ **点燃门静默跳过**（实机暴露）。
+ * ⇒ 改为**完全不依赖任何枚举**的判据（见 `gpnMeteorShouldIgnite`）：
+ * 「僵尸在草坪格」**或**「场上有可瞄准障碍」——既准确又不怕引擎改枚举。 */
+/** 流星花的"**门**"：有没有**可瞄准的障碍**（墓碑 ∪ 敌方护盾）。
  *
- *  ⚠️ 为什么需要这个（本轮改造的核心，2026/10/15）：
- *    引擎 `MeteorFlowerPlant.specialPlantUpdate` 里的点燃条件**只认僵尸**：
- *        `p.inLawnPool().forEach(t => { var i = t.inLnC?.getSquareType();
- *                                       (i == solid || i == deck) && (e = true); });
- *        e && this.igniteStart();`
- *    ⇒ 没有僵尸时**根本不会点燃** ⇒ 我们的索敌函数（在 `detectEnemy` 里）**永远进不去**
- *      ⇒ 第 1 颗的"障碍级"是**死代码**（用户口径 A：僵尸优先，没僵尸才找障碍）。
+ * 为什么需要这个（本轮改造的核心）：
+ * 引擎 `MeteorFlowerPlant.specialPlantUpdate` 里的点燃条件**只认僵尸**：
+ * `p.inLawnPool().forEach(t => { var i = t.inLnC?.getSquareType();
+ * (i == solid || i == deck) && (e = true); });
+ * e && this.igniteStart();`
+ * ⇒ 没有僵尸时**根本不会点燃** ⇒ 我们的索敌函数（在 `detectEnemy` 里）**永远进不去**
+ * ⇒ 第 1 颗的"障碍级"是**死代码**（规则：A：僵尸优先，没僵尸才找障碍）。
  *
- *  ★ 本 MOD 内部先例：**蒲公英**能"主动索敌障碍"，正是因为它把**开火门**也改了
- *    （`makeDandelionPatch` 的补丁②：`detectEnemy` = 活僵尸 **或** 可见障碍）。
- *    这里照同一模式，给流星花补上"障碍也能开门"。
+ * 本 MOD 内部先例：**蒲公英**能"主动索敌障碍"，正是因为它把**开火门**也改了
+ * （`makeDandelionPatch` 的补丁②：`detectEnemy` = 活僵尸 **或** 可见障碍）。
+ * 这里照同一模式，给流星花补上"障碍也能开门"。
  *
- *  @returns 场上"可瞄准障碍"的个数（墓碑 + 敌方护盾） */
+ * @returns 场上"可瞄准障碍"的个数（墓碑 + 敌方护盾） */
 function gpnMeteorHasIgnitableObstacle(Square) {
     try {
         return gpnMeteorCollectTombs(Square, null).length
@@ -7548,14 +7660,14 @@ function gpnMeteorHasIgnitableObstacle(Square) {
     } catch (e) { return 0; }
 }
 
-/** ★★ 点燃门的**决策**（纯函数，便于单测）：原版这一帧**没有**点燃它，
- *  但我们该不该因为"场上有可瞄准障碍"补一次点燃？
+/** 点燃门的**决策**（纯函数，便于单测）：原版这一帧**没有**点燃它，
+ * 但我们该不该因为"场上有可瞄准障碍"补一次点燃？
  *
- *  @param deps `{ awakenBefore, awakenAfter, ignited, featOn, hasObstacle }`（都由调用方先算好）
- *  @returns true = 应当补点燃
+ * @param deps `{ awakenBefore, awakenAfter, ignited, featOn, hasObstacle }`（都由调用方先算好）
+ * @returns true = 应当补点燃
  *
- *  ⚠️ 为什么抽出来：这段判断曾写在包装里，被"全局校准值"与"测试桩"的时序问题**反复掩盖**
- *     （2026/10/15 排查了很久）。抽成纯函数后，逻辑只依赖入参 ⇒ 可被确定性地单测。 */
+ * 为什么抽出来：这段判断曾写在包装里，被"全局校准值"与"测试桩"的时序问题**反复掩盖**
+ * （排查了很久）。抽成纯函数后，逻辑只依赖入参 ⇒ 可被确定性地单测。 */
 function gpnMeteorShouldSupplementIgnite(deps) {
     const d = deps || {};
     return !!(d.featOn === true
@@ -7568,20 +7680,20 @@ function gpnMeteorShouldSupplementIgnite(deps) {
 
 
 
-/** ★★ 点燃门判据（**纯函数**，便于单测）：这一帧要不要点燃流星花？
+/** 点燃门判据（**纯函数**，便于单测）：这一帧要不要点燃流星花？
  *
- *  规则（用户口径 A：僵尸优先、没有僵尸才找障碍）：
- *    ① **有僵尸在草坪格** ⇒ 点燃（这也是引擎原版的判据）
- *    ② 否则**场上有可瞄准障碍**（墓碑 ∪ 敌方护盾）⇒ 也点燃（本模组的扩展，照蒲公英模式）
- *    ③ 都没有 ⇒ 不点燃（不空放）
+ * 规则（规则：A：僵尸优先、没有僵尸才找障碍）：
+ * ① **有僵尸在草坪格** ⇒ 点燃（这也是引擎原版的判据）
+ * ② 否则**场上有可瞄准障碍**（墓碑 ∪ 敌方护盾）⇒ 也点燃（本模组的扩展，照蒲公英模式）
+ * ③ 都没有 ⇒ 不点燃（不空放）
  *
- *  ⚠️ 为什么不用 `SquareTypeEnum.solid/deck` 精确复刻引擎判据：
- *    `SquareType` 不在 `Square.ts` 的导出里（它在 `LnC.ts`，数值 solid=0/deck=4），
- *    取不到就会让整个改造**静默失效**（2026/10/15 实机踩过）。
- *    改用 `isInLawn()`：语义等价（草坪 = 能站僵尸的格），且**不依赖任何枚举**。
+ * 为什么不用 `SquareTypeEnum.solid/deck` 精确复刻引擎判据：
+ * `SquareType` 不在 `Square.ts` 的导出里（它在 `LnC.ts`，数值 solid=0/deck=4），
+ * 取不到就会让整个改造**静默失效**（实机踩过）。
+ * 改用 `isInLawn()`：语义等价（草坪 = 能站僵尸的格），且**不依赖任何枚举**。
  *
- *  @param deps `{ awaken, featOn, zombieInLawn, obstacleCount }`（均由调用方先算好）
- *  @returns true = 应当点燃
+ * @param deps `{ awaken, featOn, zombieInLawn, obstacleCount }`（均由调用方先算好）
+ * @returns true = 应当点燃
  */
 function gpnMeteorShouldIgnite(deps) {
     const d = deps || {};
@@ -7593,15 +7705,15 @@ function gpnMeteorShouldIgnite(deps) {
 }
 
 
-/** ★★ "本轮已点燃"标记（防止重复点火）。
+/** "本轮已点燃"标记（防止重复点火）。
  *
- *  为什么需要（2026/10/15 实机 F12 发现）：
- *    引擎原本只在 `awaken === true` 时才调 `igniteStart()` ⇒ 天然一次；
- *    我们的补点燃是"每帧判断"（`specialPlantUpdate` 每帧都会跑）⇒
- *    在"原版不点火、场上有障碍"的场面里会**连续补点燃**（日志里出现连续 3 行），
- *    而 `igniteStart()` 会 `playAnimation("SummonStart")` ⇒ **召唤动画被反复重启**。
- *  ⇒ 用 WeakSet 记住"本轮已经点燃过"，并在 `rest()` / `recover()`（一轮结束）时清除。
- *  ⚠️ 用 WeakSet（不是普通标记）：不会因为植物被销毁而留下悬挂引用。 */
+ * 为什么需要（实机 F12 发现）：
+ * 引擎原本只在 `awaken === true` 时才调 `igniteStart()` ⇒ 天然一次；
+ * 我们的补点燃是"每帧判断"（`specialPlantUpdate` 每帧都会跑）⇒
+ * 在"原版不点火、场上有障碍"的场面里会**连续补点燃**（日志里出现连续 3 行），
+ * 而 `igniteStart()` 会 `playAnimation("SummonStart")` ⇒ **召唤动画被反复重启**。
+ * ⇒ 用 WeakSet 记住"本轮已经点燃过"，并在 `rest()` / `recover()`（一轮结束）时清除。
+ * 用 WeakSet（不是普通标记）：不会因为植物被销毁而留下悬挂引用。 */
 const gpnMeteorIgnitedSet = new WeakSet();
 /** 本轮是否已点燃过（幂等保护） */
 function gpnMeteorAlreadyIgnited(pl) {
@@ -7638,26 +7750,26 @@ function gpnMeteorZombieInLawn(Square) {
 
 /** P1 起步：流星花索敌 —— 第 2 颗流星改为"不再打歪"。
  *
- *  === P1 的行为（相对原版）===
- *    · 第 2 颗**取消** `SecondMeteorMissChance(0.35)` 的打歪判定（原版会随机砸一个草坪格）。
- *    · 改为 50/50：
- *        50% ⇒ **1×3 同排横带密度最高**的那一格（= 这一击能打到最多僵尸的位置）
- *        50% ⇒ 从"**有僵尸的所有格**"里随机一格
- *    · 若场上**没有任何僵尸** ⇒ 本颗**不发射**（与原版"随机砸一格"不同，这是用户口径 Q9）。
+ * === P1 的行为（相对原版）===
+ * · 第 2 颗**取消** `SecondMeteorMissChance(0.35)` 的打歪判定（原版会随机砸一个草坪格）。
+ * · 改为 50/50：
+ * 50% ⇒ **1×3 同排横带密度最高**的那一格（= 这一击能打到最多僵尸的位置）
+ * 50% ⇒ 从"**有僵尸的所有格**"里随机一格
+ * · 若场上**没有任何僵尸** ⇒ 本颗**不发射**（与原版"随机砸一格"不同，这是规则 Q9）。
  *
- *  === 第 1 颗**仍走原版**（P1 不动它）===
- *    P2 起第 1 颗 = "本行最靠左 → 全场最靠左"（`cIndex` 最小）；P3 再加"障碍物 / 敌方护盾"。
- *    所以本函数里第 1 颗的路径是"整段照抄原版条件与选法"，**逐字等价**。
+ * === 第 1 颗**仍走原版**（P1 不动它）===
+ * P2 起第 1 颗 = "本行最靠左 → 全场最靠左"（`cIndex` 最小）；P3 再加"障碍物 / 敌方护盾"。
+ * 所以本函数里第 1 颗的路径是"整段照抄原版条件与选法"，**逐字等价**。
  *
- *  @param MeteorFlowerPlant 引擎 `MeteorFlower.ts` 导出的植物类
- *  @returns 补丁记录数组（空数组表示没挂上） */
+ * @param MeteorFlowerPlant 引擎 `MeteorFlower.ts` 导出的植物类
+ * @returns 补丁记录数组（空数组表示没挂上） */
 let gpnMeteorLastZombieEnum = null;      // 工厂最近一次收到的 ZombieEnum（**只读记录**，给自检）
 function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
     const recs = [];
-    // ★★ 归一化：本工厂的调用方可能传**类**，也可能传**原型**（两种写法都在用）——
-    //    2026/10/15 踩过这个坑：点燃门改造用 `methodRecord(P, ...)` 时，
-    //    若 P 是原型就会让 `Cls.prototype` 变 undefined ⇒ **改造静默跳过**（实机看不出原因）。
-    //    ⇒ 这里统一解析出真正的 prototype，并且**始终用 prototype 做补丁**（不再依赖调用约定）。
+    // 归一化：本工厂的调用方可能传**类**，也可能传**原型**（两种写法都在用）——
+    // 踩过这个坑：点燃门改造用 `methodRecord(P, ...)` 时，
+    // 若 P 是原型就会让 `Cls.prototype` 变 undefined ⇒ **改造静默跳过**（实机看不出原因）。
+    // ⇒ 这里统一解析出真正的 prototype，并且**始终用 prototype 做补丁**（不再依赖调用约定）。
     const _maybeCls = MeteorFlowerPlant;
     const P = (_maybeCls && _maybeCls.prototype && typeof _maybeCls.prototype.detectEnemy === 'function')
         ? _maybeCls.prototype                                   // 传的是类
@@ -7672,7 +7784,7 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
 
     const original = P.detectEnemy;
     const D = deps || {};
-    // ★ 点燃门改造不再需要任何枚举校准（改用 isInLawn 判据）
+    // 点燃门改造不再需要任何枚举校准（改用 isInLawn 判据）
     const Square = D.Square, ZombiePool = D.ZombiePool;
     const D2 = { Square: Square, ZombieEnum: D.ZombieEnum };   // 模块级工具需要的依赖
 
@@ -7682,7 +7794,7 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
         gpnMeteorCycleBailOut(pl);
     };
 
-    // ---- 依赖健全性：任何一个关键依赖缺失 ⇒ 整个功能直通原版（绝不半残运行）----
+    // ---- 依赖健全性：任何一个关键依赖缺失 ⇒ 整个功能直通原版（绝不半残运行） ----
     const depsOk = !!(Square && typeof Square.getLnC === 'function'
         && typeof Square.getAllLane === 'function'
         && ZombiePool && typeof ZombiePool.pool === 'function');
@@ -7693,19 +7805,19 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
 
     /** 砸向"某一格"：走原版 `_throw`，入参必须是格子的 `plantPoint`。
      *
-     *  ⚠️⚠️ **绝对不要拷贝 `plantPoint`（`Object.assign` / 展开 / clone 都不行）** ——
-     *     `LnC.plantPoint` 是个 **getter**：
-     *         get() { return this._plantPoint ? this._plantPoint : this.node }
-     *     ① 它可能返回 **Cocos `node`**（`_plantPoint` 为空时）；`node.worldPosition` 是 **Vec3**，
-     *        **没有 `toVec2()`** ⇒ 引擎 `_throw` 里 `n.worldPosition.toVec2()` 会炸；
-     *     ② 拷贝会丢掉 getter / 原型 / 非枚举属性 ⇒ 引擎拿到残缺对象
-     *        ⇒ 实机表现 = `TypeError: Cannot read properties of undefined (reading 'x')`
-     *          抛在引擎 `_throw` 内部（`lobOneCabbageOnPos` 之前，异步 ⇒ "Uncaught (in promise)"）
-     *        ⇒ **投掷流程中断 ⇒ 这一颗流星直接没了**（而 `thrownAmount` 已 ++，日志看着还正常）。
-     *     【实机教训 2026/10/15】P1 第 2 颗"消失"就是这个原因。
+     * **绝对不要拷贝 `plantPoint`（`Object.assign` / 展开 / clone 都不行）** ——
+     * `LnC.plantPoint` 是个 **getter**：
+     * get() { return this._plantPoint ? this._plantPoint : this.node }
+     * ① 它可能返回 **Cocos `node`**（`_plantPoint` 为空时）；`node.worldPosition` 是 **Vec3**，
+     * **没有 `toVec2()`** ⇒ 引擎 `_throw` 里 `n.worldPosition.toVec2()` 会炸；
+     * ② 拷贝会丢掉 getter / 原型 / 非枚举属性 ⇒ 引擎拿到残缺对象
+     * ⇒ 实机表现 = `TypeError: Cannot read properties of undefined (reading 'x')`
+     * 抛在引擎 `_throw` 内部（`lobOneCabbageOnPos` 之前，异步 ⇒ "Uncaught (in promise)"）
+     * ⇒ **投掷流程中断 ⇒ 这一颗流星直接没了**（而 `thrownAmount` 已 ++，日志看着还正常）。
+     * 【实机教训 】P1 第 2 颗"消失"就是这个原因。
      *
-     *  ⇒ 正确做法：**原样把 `lnC.plantPoint` 传进去**。
-     *     给自检用的 `__cell` 标记**直接挂在那个对象上**（引擎不认这个字段，无副作用）。 */
+     * ⇒ 正确做法：**原样把 `lnC.plantPoint` 传进去**。
+     * 给自检用的 `__cell` 标记**直接挂在那个对象上**（引擎不认这个字段，无副作用）。 */
     function throwAtCell(pl, cell) {
         const lnC = Square.getLnC(cell.lIndex, cell.cIndex);
         if (!lnC) return false;
@@ -7713,12 +7825,12 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
         try { pos = lnC.plantPoint; } catch (e) { pos = null; }
         if (!pos) return false;
         // 结构性自检：连 `worldPosition` 都没有 ⇒ 这颗投不出去（例如 plantPoint 回了空 node）
-        //   宁可**提前失败**（调用方退回原版），也不要让异常抛进引擎的异步流程里
+        // 宁可**提前失败**（调用方退回原版），也不要让异常抛进引擎的异步流程里
         let wp = null;
         try { wp = pos.worldPosition; } catch (e) { wp = null; }
         if (!wp || typeof wp.x !== 'number') return false;
-        // ⚠️ `__cell` 标记**只在自检实例上写**：实机绝不往引擎对象（可能是共享的 Cocos 节点）写字段。
-        //    自检通过 `inst.__gpnMeteorTest = true` 开启。
+        // `__cell` 标记**只在自检实例上写**：实机绝不往引擎对象（可能是共享的 Cocos 节点）写字段。
+        // 自检通过 `inst.__gpnMeteorTest = true` 开启。
         if (pl && pl.__gpnMeteorTest === true) {
             try { pos.__cell = cell; } catch (e) { /* 冻住也不影响投掷 */ }
         }
@@ -7743,25 +7855,25 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
         };
         _d3();
 
-        // ★ 运行期开关：关掉 ⇒ 与原版**逐字等价**（直通，不做任何额外判断）
+        // 运行期开关：关掉 ⇒ 与原版**逐字等价**（直通，不做任何额外判断）
         if (!featOn('meteorflowerAim')) { if (_diag) log('流星花【索敌】⇒ 开关关，直通原版'); return original.apply(this, arguments); }
 
         try {
-            // ⚠️ `_throw` 内部要用 `this.inLane.prjLayer` ⇒ 没有 inLane 时不能接管
+            // `_throw` 内部要用 `this.inLane.prjLayer` ⇒ 没有 inLane 时不能接管
             if (!this.inLane) { if (_diag) log('流星花【索敌】⇒ 无 inLane，直通原版'); return original.apply(this, arguments); }
 
             // —— 第 1 颗：**P2/P3 新索敌**（本行僵尸→全场僵尸→本行障碍/护盾→全场障碍/护盾→原版兜底）——
             if (!(this.thrownAmount > 0)) {
                 const _lane = (this.inLane && typeof this.inLane.LaneIndex === 'number') ? this.inLane.LaneIndex : null;
                 const _zs1 = gpnMeteorCollectZombies(ZombiePool, D2);
-                // ★ P3：障碍 ∪ 敌方护盾。**分开采**，便于诊断把"墓碑数 / 护盾数"分开打
+                // P3：障碍 ∪ 敌方护盾。**分开采**，便于诊断把"墓碑数 / 护盾数"分开打
                 const _tomb1 = gpnMeteorCollectTombs(Square, null);
                 const _shld1 = gpnMeteorCollectEnemyShields(Square, null);
                 const _obs1 = _tomb1.concat(_shld1);
                 const _t1 = gpnMeteorFirstTarget(_lane, _zs1, { Square: Square, obstacles: _obs1 });
                 if (_t1 && _t1.zombie) {
-                    // ★ `kind === 'zombie'` ⇒ 走**原版** `_throwAtZombie`（瞄准僵尸世界坐标、带追踪；保留原版手感）
-                    //   `kind === 'tomb' / 'shield'` ⇒ 它们没有"可追踪的僵尸坐标"语义 ⇒ 走 `_throw(cell)`（落格心）
+                    // `kind === 'zombie'` ⇒ 走**原版** `_throwAtZombie`（瞄准僵尸世界坐标、带追踪；保留原版手感）
+                    // `kind === 'tomb' / 'shield'` ⇒ 它们没有"可追踪的僵尸坐标"语义 ⇒ 走 `_throw(cell)`（落格心）
                     const _z = _t1.zombie;
                     const _isZ = (_t1.kind === 'zombie');
                     const _ok = _isZ
@@ -7808,7 +7920,7 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
             }
 
             // —— 第 2 颗：新策略（不再打歪）——
-            //    ⚠️ 逻辑全在**模块级纯函数** `gpnMeteorSecondCell()` 里（便于自检直接单测）
+            // 逻辑全在**模块级纯函数** `gpnMeteorSecondCell()` 里（便于自检直接单测）
             const _zs = gpnMeteorCollectZombies(ZombiePool, D2);
             const _tomb2 = gpnMeteorCollectTombs(Square, null);
             const _shld2 = gpnMeteorCollectEnemyShields(Square, null);
@@ -7816,9 +7928,9 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
             let cell = gpnMeteorSecondCell(_zs, { Square: Square, obstacles: _obs2 });
             let fellBack = false;
 
-            // ★★【1】任何"没有可选目标"（池空 / 只剩场外僵尸 / 全被筛掉）
-            //        ⇒ 按**原版口径**落"全草坪随机一格"（用户口径 2026/10/15 拍板）
-            //   ⚠️ 绝不能在这里 `return`：引擎会每帧重调（busy 恒 0）⇒ 死循环 + 动画卡死
+            // 【1】任何"没有可选目标"（池空 / 只剩场外僵尸 / 全被筛掉）
+            // ⇒ 按**原版口径**落"全草坪随机一格"（规则：拍板）
+            // 绝不能在这里 `return`：引擎会每帧重调（busy 恒 0）⇒ 死循环 + 动画卡死
             if (!cell) {
                 fellBack = true;
                 cell = gpnMeteorRandomLawnCell(Square);
@@ -7829,17 +7941,17 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
                     + (fellBack ? '（兜底：随机草坪格）' : ''));
             }
 
-            // ★★【2】兜底也拿不到 ⇒ **收尾**（结束本轮），绝不停在半路
+            // 【2】兜底也拿不到 ⇒ **收尾**（结束本轮），绝不停在半路
             if (!cell) { meteorCycleBailOut(this, _diag, '连随机格都拿不到'); return; }
 
-            // ★★【3】投出去；结构性失败（plantPoint 无 worldPosition 等）
-            //        ⇒ 再试一次随机格，仍失败才收尾（**不回退原版**，避免"我投了一半+原版又投一颗"）
+            // 【3】投出去；结构性失败（plantPoint 无 worldPosition 等）
+            // ⇒ 再试一次随机格，仍失败才收尾（**不回退原版**，避免"我投了一半+原版又投一颗"）
             if (!throwAtCell(this, cell)) {
                 const alt = fellBack ? null : gpnMeteorRandomLawnCell(Square);
                 if (!alt || !throwAtCell(this, alt)) { meteorCycleBailOut(this, _diag, '投掷结构性失败'); return; }
             }
 
-            // ★ 尾部状态机：逐字照抄原版（thrownAmount++ / busy / rest）
+            // 尾部状态机：逐字照抄原版（thrownAmount++ / busy / rest）
             this.thrownAmount++;
             this.busy = 0.5;
             // `MeteorCountOnce` 是实例的 objdataOwn 字段；原版就在这里读它
@@ -7855,19 +7967,19 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
     recs.push(rec);
 
     // ================= ② 点燃门（照本 MOD 蒲公英的模式） =================
-    //   引擎的点燃条件**只认僵尸**（僵尸落在 solid/deck 格）⇒ 没僵尸时永不点燃
-    //   ⇒ 索敌函数进不去 ⇒ 第 1 颗的"障碍级"是死代码。
-    //   ★ 这里**只补**"原版没点燃、但场上存在可瞄准障碍"这一种情形：
-    //     · 绝不动原版条件与时机（原版该点燃的仍然点燃）
-    //     · 原版已经点燃 ⇒ 我们什么都不做（避免同一帧二次 igniteStart）
-    //     · `igniteStart()` 自身有幂等保护（它会把 awaken 置 false）⇒ 不会连开
+    // 引擎的点燃条件**只认僵尸**（僵尸落在 solid/deck 格）⇒ 没僵尸时永不点燃
+    // ⇒ 索敌函数进不去 ⇒ 第 1 颗的"障碍级"是死代码。
+    // 这里**只补**"原版没点燃、但场上存在可瞄准障碍"这一种情形：
+    // · 绝不动原版条件与时机（原版该点燃的仍然点燃）
+    // · 原版已经点燃 ⇒ 我们什么都不做（避免同一帧二次 igniteStart）
+    // · `igniteStart()` 自身有幂等保护（它会把 awaken 置 false）⇒ 不会连开
     if (typeof P.specialPlantUpdate === 'function') {
         let recIgnite = null;
-        // ⚠️ 用归一化后的 `_cls`（它保证 `.prototype` 指向真正的 prototype）
+        // 用归一化后的 `_cls`（它保证 `.prototype` 指向真正的 prototype）
         try { recIgnite = methodRecord(_cls, 'specialPlantUpdate'); } catch (e) { recIgnite = null; }
         if (recIgnite && typeof recIgnite.original === 'function') {
-            // ★ 包 `rest()` / `recover()`：一轮结束 ⇒ 清掉"本轮已点燃"标记。
-            //   ⚠️ 只做"清除标记"这一件事，**不改动原方法任何行为**。
+            // 包 `rest()` / `recover()`：一轮结束 ⇒ 清掉"本轮已点燃"标记。
+            // 只做"清除标记"这一件事，**不改动原方法任何行为**。
             for (const _mn of ['rest', 'recover']) {
                 try {
                     if (typeof P[_mn] === 'function') {
@@ -7884,22 +7996,22 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
             P.specialPlantUpdate = function () {
                 const _wasAwaken = (this.awaken === true);           // 原版调用前状态
                 const _restingWas = this.resting;                     // 原版调用前 resting
-                const r = recIgnite.original.apply(this, arguments); // ★ 原版流程完全不变
+                const r = recIgnite.original.apply(this, arguments); // 原版流程完全不变
                 try {
-                    // ★ 只在"原版这一帧**没有**点燃它"时考虑补点燃。
-                    //   ⚠️ 判据：引擎 `igniteStart()` = `resting = Infinity; awaken = false`
-                    //      ⇒ 若原版已点火，`awaken` 也会变 false ⇒ **光看 awaken 会重复点火**
-                    //        （2026/10/15 自检场景 A 抓到：igniteStart 被调了 2 次）。
-                    //      ⇒ 用 resting 的**跃变**判定："有限值 → Infinity" = 原版刚点过火。
-                    //   ⚠️ 必须是**函数**（`_vanillaIgnited()`）：写成值会让 `!x` 永远为 false
-                    //      —— 2026/10/15 这个笔误让"补点燃"整段**静默失效**，排查了很久。
+                    // 只在"原版这一帧**没有**点燃它"时考虑补点燃。
+                    // 判据：引擎 `igniteStart()` = `resting = Infinity; awaken = false`
+                    // ⇒ 若原版已点火，`awaken` 也会变 false ⇒ **光看 awaken 会重复点火**
+                    // （自检场景 A 抓到：igniteStart 被调了 2 次）。
+                    // ⇒ 用 resting 的**跃变**判定："有限值 → Infinity" = 原版刚点过火。
+                    // 必须是**函数**（`_vanillaIgnited()`）：写成值会让 `!x` 永远为 false
+                    // —— 这个笔误让"补点燃"整段**静默失效**，排查了很久。
                     const _vanillaIgnited = () => isFinite(_restingWas) && (this.resting === Infinity);
-                    // ⚠️⚠️ **绝不能再加 `this.awaken === false`**：引擎 igniteStart() 会把 awaken
-                    //    置 false，而**原版这一帧若点了火也会置 false** ⇒ 两者无法区分，
-                    //    那个条件会把"补点燃"**永远挡住**（自检场景 B 与实机都复现过）。
-                    //    唯一可靠判据 = resting 的跃变（有限值 → Infinity）。
+                    // **绝不能再加 `this.awaken === false`**：引擎 igniteStart() 会把 awaken
+                    // 置 false，而**原版这一帧若点了火也会置 false** ⇒ 两者无法区分，
+                    // 那个条件会把"补点燃"**永远挡住**（自检场景 B 与实机都复现过）。
+                    // 唯一可靠判据 = resting 的跃变（有限值 → Infinity）。
                     if (_wasAwaken && !_vanillaIgnited() && this.ignited !== true
-                        && !gpnMeteorAlreadyIgnited(this)) {   // ★ 幂等：本轮只点一次
+                        && !gpnMeteorAlreadyIgnited(this)) {   // 幂等：本轮只点一次
                         const _obs = gpnMeteorHasIgnitableObstacle(Square);
                         if (gpnMeteorShouldIgnite({
                             featOn: featOn('meteorflowerAim'),
@@ -7907,7 +8019,7 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
                             zombieInLawn: gpnMeteorZombieInLawn(Square),
                             obstacleCount: _obs,
                         })) {
-                            gpnMeteorMarkIgnited(this);   // ★ 先标记，避免同一帧内重复
+                            gpnMeteorMarkIgnited(this);   // 先标记，避免同一帧内重复
                             this.igniteStart();
                             if (verboseOn()) {
                                 log('流星花【点燃】补点燃（障碍=' + _obs + '）');
@@ -7917,7 +8029,7 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
                 } catch (e4) { /* 补点燃失败不影响原版流程 */ }
                 return r;
             };
-            recs.push(recIgnite);   // ★ push 真实 rec（含 original/own），交给统一的还原逻辑
+            recs.push(recIgnite);   // push 真实 rec（含 original/own），交给统一的还原逻辑
         } else {
             warn('流星花：拿不到 specialPlantUpdate（点燃门改造跳过 —— 第 1 颗将无法索敌障碍）。');
         }
@@ -7925,10 +8037,10 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
         warn('流星花：没有 specialPlantUpdate（点燃门改造跳过 —— 第 1 颗将无法索敌障碍）。');
     }
 
-    // ★ 明确的"成功"日志（一次性，只在 setup 时打一条）。
-    //   ⚠️ 为什么不加 `if (verboseOn())` 门：这条是**接线/版本确认**用的，
-    //      性质与 `[CTM] BUILD = ...` 相同 —— 没有它就只能靠"没有告警"反证，
-    //      实机排查会很别扭（P0 实机验证时就吃过这个亏）。一行、一次，不会刷屏。
+    // 明确的"成功"日志（一次性，只在 setup 时打一条）。
+    // 为什么不加 `if (verboseOn())` 门：这条是**接线/版本确认**用的，
+    // 性质与 `[CTM] BUILD = ...` 相同 —— 没有它就只能靠"没有告警"反证，
+    // 实机排查会很别扭（P0 实机验证时就吃过这个亏）。一行、一次，不会刷屏。
     log('流星花索敌：补丁已挂（第 1 颗 = 本行僵尸→全场僵尸→本行障碍/敌方护盾→全场障碍/敌方护盾，'
         + '全部取 cIndex 最小（最靠左）；第 2 颗 = 50% 密度最高格 / 50% 随机僵尸格，'
         + '无僵尸但有障碍/护盾则从中随机一格，都没有则按原版口径落随机草坪格；'
@@ -7939,12 +8051,12 @@ function makeMeteorFlowerAimPatch(MeteorFlowerPlant, deps) {
 
 
 /** 红针花（Red Stinger）：左键循环切换形态（0 -> 1 -> 2 -> 0）
- *  引擎事实（已逐条核对）：
- *    · inArea 是【带 setter 的访问器】=> 赋值即自动刷新 待机/随机/射击/死亡 动画 ✓
- *    · 承伤倍率 damageScale() 实时读 inArea（数据 DamageScale0/1/2）✓
- *    · 弹种也在 animationListener 里实时读 inArea（1 档弱弹 / 0 档强弹 / 2 档不索敌）✓
- *    · inArea 的 setter 完全不碰 health ⇒ 切形态【不回血】，血量自然继承 ✓
- *  所以模组只需三件事：① 写 inArea ② 防被"按列自动重算"覆盖 ③ 捕获左键点击 */
+ * 引擎事实（已逐条核对）：
+ * · inArea 是【带 setter 的访问器】=> 赋值即自动刷新 待机/随机/射击/死亡 动画 ✓
+ * · 承伤倍率 damageScale() 实时读 inArea（数据 DamageScale0/1/2）✓
+ * · 弹种也在 animationListener 里实时读 inArea（1 档弱弹 / 0 档强弹 / 2 档不索敌）✓
+ * · inArea 的 setter 完全不碰 health ⇒ 切形态【不回血】，血量自然继承 ✓
+ * 所以模组只需三件事：① 写 inArea ② 防被"按列自动重算"覆盖 ③ 捕获左键点击 */
 function makeRedStingerPatch(RedStingerPlant, deps) {
     const recs = [];
     const P = RedStingerPlant && RedStingerPlant.prototype;
@@ -7957,7 +8069,7 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
         const rec = methodRecord(RedStingerPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function () {
             const r = rec.original.apply(this, arguments);
-            // ★ 运行期开关：关掉后不再"锁"手动形态（否则看起来像没关闭）
+            // 运行期开关：关掉后不再"锁"手动形态（否则看起来像没关闭）
             if (!featOn('redstinger')) return r;
             try {
                 if (this.__gpnFormManual && typeof this.__gpnForm === 'number') this.inArea = this.__gpnForm;
@@ -7967,13 +8079,13 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
         recs.push(rec);
     }
 
-    // ---- ② 左键循环切换形态（挂引擎自己的植物鼠标事件）----
-    //  引擎事实：草坪 onMouseDown -> plantMouseReact(event) -> 逐个植物 e.onMouseDown(event)，
-    //  且只在【手上没拿卡】时才走这条路 ⇒ 不会抢"种植"的左键。
-    //  （这版引擎没有 Input.EventType / systemEvent，鼠标只走节点事件，所以不能用 cc.input ✗）
+    // ---- ② 左键循环切换形态（挂引擎自己的植物鼠标事件） ----
+    // 引擎事实：草坪 onMouseDown -> plantMouseReact(event) -> 逐个植物 e.onMouseDown(event)，
+    // 且只在【手上没拿卡】时才走这条路 ⇒ 不会抢"种植"的左键。
+    // （这版引擎没有 Input.EventType / systemEvent，鼠标只走节点事件，所以不能用 cc.input ✗）
     const baseOnMouseDown = P.onMouseDown;                 // 可能继承自 Plant 基类
     P.onMouseDown = function (ev) {
-        // ★ 运行期开关：关掉后完全不干涉形态（补丁常驻、行为现查）
+        // 运行期开关：关掉后完全不干涉形态（补丁常驻、行为现查）
         if (!featOn('redstinger')) {
             try { return (typeof baseOnMouseDown === 'function') ? baseOnMouseDown.apply(this, arguments) : undefined; }
             catch (e) { warn('红针花：原版 onMouseDown 出错', e); return undefined; }
@@ -7985,13 +8097,13 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
             if (!CFG.redstinger.clickSwitch) return r;
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;             // 只认左键
-            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则形态连切两下）
+            // 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则形态连切两下）
             if (!gpnClickOnce(this, '__gpnRsClickAt')) return r;
             const now = (typeof this.inArea === 'number') ? this.inArea : 0;
             const next = (now + 1) % 3;
             this.__gpnFormManual = true;
             this.__gpnForm = next;
-            this.inArea = next;                             // ★ 只写这一个值；不碰 health
+            this.inArea = next;                             // 只写这一个值；不碰 health
             if (dbgOn(CFG.redstinger.debugLog)) log('红针花：形态 ' + now + ' → ' + next
                 + '（承伤 ×' + [1, CFG.redstinger.tier1, CFG.redstinger.tier2][next] + '）');
             return true;                                    // 告诉引擎"这次点击我处理了"
@@ -8006,48 +8118,48 @@ function makeRedStingerPatch(RedStingerPlant, deps) {
 /* =========================================================================
  * 孢子菇（SporeShroom）—— 亡语 + 数值 + 图鉴
  *
- *  用户需求（2026-10-16 定稿，见 `CTM\设计稿-孢子菇.md`）：
- *    R1 亡语：以自身格为中心的 **1 行 × 3 列**，伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查弹道 Damage）
- *    R2 亡语伤害 = **不穿甲**（armorProtection=true）+ **普通物理**（damageType=physicle 0）
- *    R3 亡语对范围内僵尸 **先施加 `CarriedSporeShroom` 标记、再造成伤害**（⇒ 这一发自己吃 ×1.5）
- *    R4 亡语附带 **0.75 秒眩晕**
- *    R5 带标记的僵尸 **非"化灰"死亡 ⇒ 生成一株孢子菇**（照抄引擎 `turnIntoSporeShroom`）
- *    R7 孢子菇**自己也要吃到 ×1.5**（含亡语伤害）—— 由 R3 的"先标记"天然满足
- *    R8 阳光 150 → **200**、血量上限 300 → **150**
- *    R9 图鉴新增**两条特点**（中英）
- *    R10 亡语特效 = 暗影豌豆**初档**大招子弹的**命中特效**（`ShadowPeaPF0PAR`），100% 还原、不依赖场上暗影豌豆
- *    R11 开关 `sporeshroom`（默认开；关掉 = 全部回原版）
- *    R12 分两步：**第一步直伤**（本块）／第二步 Dot 的 ×1.5（后续）
+ * 需求（定稿，见 `CTM\设计稿-孢子菇.md`）：
+ * R1 亡语：以自身格为中心的 **1 行 × 3 列**，伤害 = **跟随孢子菇普攻攻击力**（按 CabbageType 查弹道 Damage）
+ * R2 亡语伤害 = **不穿甲**（armorProtection=true）+ **普通物理**（damageType=physicle 0）
+ * R3 亡语对范围内僵尸 **先施加 `CarriedSporeShroom` 标记、再造成伤害**（⇒ 这一发自己吃 ×1.5）
+ * R4 亡语附带 **0.75 秒眩晕**
+ * R5 带标记的僵尸 **非"化灰"死亡 ⇒ 生成一株孢子菇**（照抄引擎 `turnIntoSporeShroom`）
+ * R7 孢子菇**自己也要吃到 ×1.5**（含亡语伤害）—— 由 R3 的"先标记"天然满足
+ * R8 阳光 150 → **200**、血量上限 300 → **150**
+ * R9 图鉴新增**两条特点**（中英）
+ * R10 亡语特效 = 暗影豌豆**初档**大招子弹的**命中特效**（`ShadowPeaPF0PAR`），100% 还原、不依赖场上暗影豌豆
+ * R11 开关 `sporeshroom`（默认开；关掉 = 全部回原版）
+ * R12 分两步：**第一步直伤**（本块）／第二步 Dot 的 ×1.5（后续）
  *
- *  === 引擎事实（逐字核对 1.5.5 bundle + 实机探针，见设计稿 §1/§4.1）===
- *   · 模块 `chunks:///_virtual/SporeShroom.ts` 导出 `SporeShroomPlant`；它**没有**覆盖
- *     `specialPlantOnKilled` / `specialPlantDie` ⇒ 继承 `Plant` 基类的空实现。
- *   · `Plant.die(released, lost, particle, anm, noFoodEnd)` 里调 `this.specialPlantDie(noFoodEnd)`；
- *     被击杀路径另调 `specialPlantOnKilled()`（爆裂坚果就是用这个做亡语）。
- *   · `specialPlantOnKilled` **不含"被铲"**（铲子走 `die(..., noFoodEnd=true)`）—— 用户要求：铲掉不触发 ✓
- *   · 亡语伤害对象：`new ZombieDamageDetails(dmg, true, false, false, null, ZombieDamageType.physicle)`
- *     ⚠️ **绝不能**用 `ray`：`Zombie.defaultDealDamage` 里 `canPlayAshNow() && damageType==ray` ⇒ 化灰，
- *        而化灰路径**不会**走 `playDie` 里的亡语分支 ⇒ 中招僵尸反而生不出孢子菇（自相矛盾）。
- *   · 免疫：`z.ImmuneToSporeShroom`（引擎已封装 getter；僵王等恒 true）。
- *     用户口径：**免疫僵尸照吃伤害、只是不标记**。
- *   · 命中特效：`commonShot.prototype.playParticle` 里的 `n.parent = this.node.parent`
- *     ⇒ 实机观测到父节点 = 车道的 **prjLayer**（`New Node` 通用名，链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）
- *     ⇒ 现在**亡语显式传"自己那条车道"**（`gpnSporeFxGetParent(null, D, lane)`），特效永远落在本行 prjLayer；
- *       弹道观测到的那个缓存**只作兜底**（§3.71：曾经因为它退化成了唯一来源 ⇒ 偶发一次层不对）。
- *   · 僵尸侧亡语（R5）：照抄 `Zombie.turnIntoSporeShroom`，**在 `playDie` 里加分支**（S3）。
+ * === 引擎事实（逐字核对 1.5.5 bundle + 实机探针，见设计稿 §1/§4.1）===
+ * · 模块 `chunks:///_virtual/SporeShroom.ts` 导出 `SporeShroomPlant`；它**没有**覆盖
+ * `specialPlantOnKilled` / `specialPlantDie` ⇒ 继承 `Plant` 基类的空实现。
+ * · `Plant.die(released, lost, particle, anm, noFoodEnd)` 里调 `this.specialPlantDie(noFoodEnd)`；
+ * 被击杀路径另调 `specialPlantOnKilled()`（爆裂坚果就是用这个做亡语）。
+ * · `specialPlantOnKilled` **不含"被铲"**（铲子走 `die(..., noFoodEnd=true)`）—— 要求：铲掉不触发 ✓
+ * · 亡语伤害对象：`new ZombieDamageDetails(dmg, true, false, false, null, ZombieDamageType.physicle)`
+ * **绝不能**用 `ray`：`Zombie.defaultDealDamage` 里 `canPlayAshNow() && damageType==ray` ⇒ 化灰，
+ * 而化灰路径**不会**走 `playDie` 里的亡语分支 ⇒ 中招僵尸反而生不出孢子菇（自相矛盾）。
+ * · 免疫：`z.ImmuneToSporeShroom`（引擎已封装 getter；僵王等恒 true）。
+ * 规则：**免疫僵尸照吃伤害、只是不标记**。
+ * · 命中特效：`commonShot.prototype.playParticle` 里的 `n.parent = this.node.parent`
+ * ⇒ 实机观测到父节点 = 车道的 **prjLayer**（`New Node` 通用名，链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）
+ * ⇒ 现在**亡语显式传"自己那条车道"**（`gpnSporeFxGetParent(null, D, lane)`），特效永远落在本行 prjLayer；
+ * 弹道观测到的那个缓存**只作兜底**（§3.71：曾经因为它退化成了唯一来源 ⇒ 偶发一次层不对）。
+ * · 僵尸侧亡语（R5）：照抄 `Zombie.turnIntoSporeShroom`，**在 `playDie` 里加分支**（S3）。
  * =======================================================================*/
 
 /** 特性表里的开关名（同时是图鉴里"我们改过"的开关名） */
 const GPN_SPORE_FEAT = 'sporeshroom';
 
 /** 亡语伤害 = **本株普攻攻击力 × `CFG.sporeshroom.deathDamageScale`**。
- *  · 正常路径：运行期从 `ProjectileProps` 里读那 3 条弹道的真实 `Damage`（**不硬编码**，改数据也跟着变）
- *  · 拿不到数据 ⇒ 用 CFG 的兜底表（表里存的是**普攻攻击力** 50/150/250）
- *  · 最后**统一乘倍率**（用户 2026/10/16 指定：先 1.25、随后改 **1.35** ⇒ **67.5 / 202.5 / 337.5**）
- *    ⚠️ 倍率**只在这里乘一次**，各调用点（僵尸 / 障碍物 / 日志）都直接用这个返回值
- *       —— 这样"跟随本株普攻"这条口径就只有一个实现处，不会两处算错。
- *  ⚠️ 记：mark 先于伤害 ⇒ 僵尸那一发还会被 ×1.5 的毒性家族加成再乘一次（= 101.25 / 303.75 / 506.25）；
- *     障碍物没有标记 ⇒ 只吃这里的基础值。 */
+ * · 正常路径：运行期从 `ProjectileProps` 里读那 3 条弹道的真实 `Damage`（**不硬编码**，改数据也跟着变）
+ * · 拿不到数据 ⇒ 用 CFG 的兜底表（表里存的是**普攻攻击力** 50/150/250）
+ * · 最后**统一乘倍率**（先 1.25、随后改 **1.35** ⇒ **67.5 / 202.5 / 337.5**）
+ * 倍率**只在这里乘一次**，各调用点（僵尸 / 障碍物 / 日志）都直接用这个返回值
+ * —— 这样"跟随本株普攻"这条口径就只有一个实现处，不会两处算错。
+ * 记：mark 先于伤害 ⇒ 僵尸那一发还会被 ×1.5 的毒性家族加成再乘一次（= 101.25 / 303.75 / 506.25）；
+ * 障碍物没有标记 ⇒ 只吃这里的基础值。 */
 function gpnSporeDeathDamage(plant, jsonMod) {
     const C = CFG.sporeshroom;
     const sc = (function () { const v = Number(C.deathDamageScale); return (isFinite(v) && v > 0) ? v : 1; })();
@@ -8070,12 +8182,12 @@ function gpnSporeDeathDamage(plant, jsonMod) {
                 if (!it || !Array.isArray(it.aliases) || it.aliases.indexOf(pea) === -1) continue;
                 const od = it.objdata || {};
                 const d = Number(od.Damage);
-                if (isFinite(d) && d > 0) return d * sc;      // ★ 真实普攻 × 倍率
+                if (isFinite(d) && d > 0) return d * sc;      // 真实普攻 × 倍率
                 break;
             }
         }
     } catch (e) { /* 忽略 */ }
-    return fb * sc;                                          // ★ 兜底普攻 × 倍率
+    return fb * sc;                                          // 兜底普攻 × 倍率
 }
 
 /** 取一个"僵尸池"（按类别的通用取法，与流星花改造里用的是同一套判据） */
@@ -8083,17 +8195,17 @@ function gpnSporeLaneOf(plant) {
     try { return (plant && plant.inLane) || null; } catch (e) { return null; }
 }
 
-/** ★ 亡语特效（R10）—— 暗影豌豆**初档**大招子弹的**命中特效** prefab。
- *  实机实测（S1/S1b/S1c 探针，见设计稿 §4.1）：
- *    · 只读路径：`resources` bundle → `load('projectiles/PeaShadowPF0PRJ', cc.Prefab)`
- *                → `findPropInNode(prefab.data, 'PopParticle')` ⇒ `cc.Prefab`「ShadowPeaPF0PAR」
- *    · 实例化：`NodePools.instantiatePooly(那个 Prefab)` ⇒ `cc.Node`（实测可用）
- *    · 落点：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`
- *            ⇒ 实机观测到父节点 = 车道的 **prjLayer**（通用名 `New Node`）
- *    · ⚠️ 用户给的那张**参考贴图**（PTX 文件）**仅作参考、绝不引用**，连文件名都不写进源码：
- *      这里只用引擎自己的 prefab。
- *  ★ 状态按**场景键**失效（换场景后旧 prefab / 旧父节点都不能再用，否则抛
- *    `Cannot read properties of null (reading '_prefab')` —— 本工程踩过）。 */
+/** 亡语特效（R10）—— 暗影豌豆**初档**大招子弹的**命中特效** prefab。
+ * 实机实测（S1/S1b/S1c 探针，见设计稿 §4.1）：
+ * · 只读路径：`resources` bundle → `load('projectiles/PeaShadowPF0PRJ', cc.Prefab)`
+ * → `findPropInNode(prefab.data, 'PopParticle')` ⇒ `cc.Prefab`「ShadowPeaPF0PAR」
+ * · 实例化：`NodePools.instantiatePooly(那个 Prefab)` ⇒ `cc.Node`（实测可用）
+ * · 落点：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`
+ * ⇒ 实机观测到父节点 = 车道的 **prjLayer**（通用名 `New Node`）
+ * · 原始数据里的那张**参考贴图**（PTX 文件）**仅作参考、绝不引用**，连文件名都不写进源码：
+ * 这里只用引擎自己的 prefab。
+ * 状态按**场景键**失效（换场景后旧 prefab / 旧父节点都不能再用，否则抛
+ * `Cannot read properties of null (reading '_prefab')` —— 本工程踩过）。 */
 const GPN_SPORE_FX = {
     prefab: null,      // 命中特效 prefab（cc.Prefab）
     refd: false,       // 是否 addRef 过（decRef 要配平）
@@ -8133,16 +8245,16 @@ function gpnSporeFxSetParent(parent, deps) {
 
 /** 取父节点：**优先「本株 / 本行所在车道的 prjLayer」**（最准、确定），其次弹道钩子回填的缓存。
  *
- *  ⚠️⚠️ **历史坑（2026/10/16 用户实测：偶发一次"特效被植物贴图盖住"）**：
- *    · 亡语那条路原来是 `gpnSporeFxGetParent(null, D)` —— 传 `plant = null`
- *      ⇒ **"车道 prjLayer"这个分支永远走不到**，只剩"缓存"分支；
- *    · 缓存 = 上一次**弹道命中**时观察到的 `shot.node.parent`。若那一刻的缓存还是**上一关 / 旧帧**的节点，
- *      特效就会落进一个**层不对**的父节点（症状正是"被孢子菇自己的贴图盖住"）；
- *      而**下一发弹道命中会把缓存改回 prjLayer** ⇒ 所以**只偶发一次**、之后又正常 ✓ 与实测完全吻合。
- *    · 缓存校验原本是 `S.parentSceneKey === key`：**两支都是 `null` 时会误判为"同一个场景"**
- *      （`gpnFxSceneKey` 在车道还没就绪时返回 null）⇒ 这里改成 **key 必须非空**才认缓存。
+ * **历史坑（实测：偶发一次"特效被植物贴图盖住"）**：
+ * · 亡语那条路原来是 `gpnSporeFxGetParent(null, D)` —— 传 `plant = null`
+ * ⇒ **"车道 prjLayer"这个分支永远走不到**，只剩"缓存"分支；
+ * · 缓存 = 上一次**弹道命中**时观察到的 `shot.node.parent`。若那一刻的缓存还是**上一关 / 旧帧**的节点，
+ * 特效就会落进一个**层不对**的父节点（症状正是"被孢子菇自己的贴图盖住"）；
+ * 而**下一发弹道命中会把缓存改回 prjLayer** ⇒ 所以**只偶发一次**、之后又正常 ✓ 与实测完全吻合。
+ * · 缓存校验原本是 `S.parentSceneKey === key`：**两支都是 `null` 时会误判为"同一个场景"**
+ * （`gpnFxSceneKey` 在车道还没就绪时返回 null）⇒ 这里改成 **key 必须非空**才认缓存。
  *
- *  ⇒ 现在：**调用方显式把车道传进来**（`laneOverride`），彻底不依赖缓存；缓存只作为兜底。 */
+ * ⇒ 现在：**调用方显式把车道传进来**（`laneOverride`），彻底不依赖缓存；缓存只作为兜底。 */
 function gpnSporeFxGetParent(plant, deps, laneOverride) {
     try {
         const lane = laneOverride || (plant && plant.inLane) || null;
@@ -8150,7 +8262,7 @@ function gpnSporeFxGetParent(plant, deps, laneOverride) {
     } catch (e) { /* 忽略 */ }
     const key = (typeof gpnFxSceneKey === 'function') ? gpnFxSceneKey(deps) : null;
     const S = GPN_SPORE_FX;
-    // ★ `key` 必须非空 —— 否则"新旧两支都是 null"会被当成同一场景，把上一关的旧父节点认下来
+    // `key` 必须非空 —— 否则"新旧两支都是 null"会被当成同一场景，把上一关的旧父节点认下来
     if (key && S.parent && S.parentSceneKey === key) return S.parent;
     return null;
 }
@@ -8253,9 +8365,9 @@ function gpnSporeFxSpawn(parent, pos) {
         node = inst(S.prefab);
         if (!node) return null;
         node.parent = parent;
-        // ★ 保险：把它放到该父节点的**最后一个孩子**（= 同层最上面）。
-        //   为什么需要：`instantiatePooly` 从池里取回的节点可能带着**旧的 siblingIndex**；
-        //   池化复用 + 同层频繁增删时，会出现"新特效被同层旧元素盖住"（用户 2026/10/16 报过一次偶发）。
+        // 保险：把它放到该父节点的**最后一个孩子**（= 同层最上面）。
+        // 为什么需要：`instantiatePooly` 从池里取回的节点可能带着**旧的 siblingIndex**；
+        // 池化复用 + 同层频繁增删时，会出现"新特效被同层旧元素盖住"（报过一次偶发）。
         try {
             const kids = parent.children || parent._children;
             if (kids && typeof node.setSiblingIndex === 'function') node.setSiblingIndex(kids.length - 1);
@@ -8274,7 +8386,7 @@ function gpnSporeFxSpawn(parent, pos) {
         else if (node.worldPosition) { node.worldPosition.x = pos.x; node.worldPosition.y = pos.y; }
         return node;
     } catch (e) {
-        // ★ 资源失效（换场景）⇒ 清缓存，下次重取（本工程约定，不要求大退）
+        // 资源失效（换场景）⇒ 清缓存，下次重取（本工程约定，不要求大退）
         warn('孢子菇亡语特效：播放失败，已清缓存下次重取', e);
         gpnSporeFxDrop();
         return null;
@@ -8288,13 +8400,13 @@ function gpnSporeFxReady(parent, pos) {
     return gpnSporeFxSpawn(parent, pos);
 }
 
-/* ---- 弹道钩子：把「引擎自己用的那个特效父节点」记下来（只读观测，不改行为）----
- *  为什么需要：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`；
- *  实机探针（S1c）观测到那个父节点就是**车道的 prjLayer**（通用名 `New Node`，
- *  链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）。
- *  拿到它之后，孢子菇亡语特效就能落在**和原版一模一样**的层上。
- *  实现：包装 `playParticle` —— **先原样调用原函数**，再顺手缓存 `this.node.parent`。
- *  ⚠️ 绝不改返回值 / 副作用；关掉开关时也不拆（钩子无害，仅一次赋值）。 */
+/* ---- 弹道钩子：把「引擎自己用的那个特效父节点」记下来（只读观测，不改行为） ----
+ * 为什么需要：引擎 `commonShot.playParticle` 里是 `n.parent = this.node.parent`；
+ * 实机探针（S1c）观测到那个父节点就是**车道的 prjLayer**（通用名 `New Node`，
+ * 链：`<RowN> < squaresLower < LawnCommon < Canvas < inGameScene`）。
+ * 拿到它之后，孢子菇亡语特效就能落在**和原版一模一样**的层上。
+ * 实现：包装 `playParticle` —— **先原样调用原函数**，再顺手缓存 `this.node.parent`。
+ * 绝不改返回值 / 副作用；关掉开关时也不拆（钩子无害，仅一次赋值）。 */
 function makeSporeShroomCommonShotHook(CommonShot, deps) {
     const recs = [];
     if (!CommonShot || !CommonShot.prototype || typeof CommonShot.prototype.playParticle !== 'function') {
@@ -8303,7 +8415,7 @@ function makeSporeShroomCommonShotHook(CommonShot, deps) {
     }
     const rec = methodRecord(CommonShot, 'playParticle');
     CommonShot.prototype.playParticle = function () {
-        const r = rec.original.apply(this, arguments);       // ★ 先原样调用
+        const r = rec.original.apply(this, arguments);       // 先原样调用
         try {
             const nd = this && this.node;
             const parent = nd && nd.parent;
@@ -8319,17 +8431,17 @@ function makeSporeShroomCommonShotHook(CommonShot, deps) {
 /**
  * 僵尸侧门禁（R5 的"开关两态"）
  *
- *  ★ 引擎事实（逐字核对）：`Zombie.playDie` 里**本来就有**亡语分支 ——
- *      `t || ( …, this.playSpecialZombieDie(e,s), …, this.CarriedSporeShroom && this.turnIntoSporeShroom("sporeshroom") )`
- *    ⇒ 「带 `CarriedSporeShroom` 的僵尸非化灰死亡 ⇒ 变出一株孢子菇」**原版行为就是如此**
- *      （`turnIntoSporeShroom` 里还会 `playDie(!0,null,!1)` + 缩小 + `particle.sporeShroomSpawn()`
- *        + `SpawnPlantByType('sporeshroom',…)` + `onSpawnedAsSporeShroom()` + `shovelDropSun=!1`）。
- *    ⇒ 我们**不需要重写**它；只需要在**开关关掉时**把它压住（否则"关掉"形同虚设）。
+ * 引擎事实（逐字核对）：`Zombie.playDie` 里**本来就有**亡语分支 ——
+ * `t || ( …, this.playSpecialZombieDie(e,s), …, this.CarriedSporeShroom && this.turnIntoSporeShroom("sporeshroom") )`
+ * ⇒ 「带 `CarriedSporeShroom` 的僵尸非化灰死亡 ⇒ 变出一株孢子菇」**原版行为就是如此**
+ * （`turnIntoSporeShroom` 里还会 `playDie(!0,null,!1)` + 缩小 + `particle.sporeShroomSpawn()`
+ * + `SpawnPlantByType('sporeshroom',…)` + `onSpawnedAsSporeShroom()` + `shovelDropSun=!1`）。
+ * ⇒ 我们**不需要重写**它；只需要在**开关关掉时**把它压住（否则"关掉"形同虚设）。
  *
- *  实现：包装 `Zombie.prototype.playDie` —— 只有"开关关 + 身上有标记"时才临时摘掉标记
- *  （**原样调用**之后再还原），其它情况**完全不动**。这样：
- *    · 开 ⇒ 引擎原逻辑照跑（100% 原版手感，含动画/音效/不掉阳光）
- *    · 关 ⇒ 不生成孢子菇；且标记本身也不该再被写（见亡语里的 `if (!featOn(...)) return`）
+ * 实现：包装 `Zombie.prototype.playDie` —— 只有"开关关 + 身上有标记"时才临时摘掉标记
+ * （**原样调用**之后再还原），其它情况**完全不动**。这样：
+ * · 开 ⇒ 引擎原逻辑照跑（100% 原版手感，含动画/音效/不掉阳光）
+ * · 关 ⇒ 不生成孢子菇；且标记本身也不该再被写（见亡语里的 `if (!featOn(...)) return`）
  */
 function makeSporeShroomZombieGate(Zombie, deps) {
     const recs = [];
@@ -8339,7 +8451,7 @@ function makeSporeShroomZombieGate(Zombie, deps) {
     }
     const rec = methodRecord(Zombie, 'playDie');
     Zombie.prototype.playDie = function () {
-        // ★ 只在"开关关 + 身上有标记"时做手脚；其余一律原样
+        // 只在"开关关 + 身上有标记"时做手脚；其余一律原样
         let patched = false, saved = false;
         try {
             if (!featOn(GPN_SPORE_FEAT) && this.CarriedSporeShroom === true) {
@@ -8348,7 +8460,7 @@ function makeSporeShroomZombieGate(Zombie, deps) {
                 patched = true;
             }
         } catch (e) { /* 忽略 */ }
-        const r = rec.original.apply(this, arguments);   // ★ 原样调用
+        const r = rec.original.apply(this, arguments);   // 原样调用
         try {
             if (patched && saved) this.CarriedSporeShroom = true;   // 还原（僵尸可能被复用，标记该留着）
         } catch (e) { /* 忽略 */ }
@@ -8361,76 +8473,76 @@ function makeSporeShroomZombieGate(Zombie, deps) {
 
 /* =========================================================================
  * 孢子菇 ×1.5（R6/R7）—— 「带孢子标记的僵尸，受到毒性家族伤害 ×1.5」
- *  （= 设计稿 §5「第二步」：**直伤 + Dot 一起做完**）
+ * （= 设计稿 §5「第二步」：**直伤 + Dot 一起做完**）
  *
- *  用户需求（2026-10-16 定稿，见 `CTM\设计稿-孢子菇.md` §0 / §6 Q2）：
- *    R6 带 `CarriedSporeShroom` 标记的僵尸，受**毒性家族**伤害 ×1.5（**直击与持续伤害都算**）
- *    R7 孢子菇**自己**的伤害也吃这一份（亡语**先标记、再伤害** ⇒ 天生满足）
- *    多段叠加 Dot：**该帧全部 Dot 合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
- *    忧郁菇 gloomshroom / 毒影菇 shadowshroom **额外计入**（Family 是 Shadow，数据判不出来）
- *    大蒜 garlic / 巴豆 chilibean **排除**（⚠️ 它们**本来就是** Poison 家族！）
- *    心蕊 bloominghearts **只算子弹直击**（它的"减防 debuff"本身不结算伤害）
+ * 需求（定稿，见 `CTM\设计稿-孢子菇.md` §0 / §6 Q2）：
+ * R6 带 `CarriedSporeShroom` 标记的僵尸，受**毒性家族**伤害 ×1.5（**直击与持续伤害都算**）
+ * R7 孢子菇**自己**的伤害也吃这一份（亡语**先标记、再伤害** ⇒ 天生满足）
+ * 多段叠加 Dot：**该帧全部 Dot 合计后只 ×1.5 一次**（不是"叠加次数 ×1.5"）
+ * 忧郁菇 gloomshroom / 毒影菇 shadowshroom **额外计入**（Family 是 Shadow，数据判不出来）
+ * 大蒜 garlic / 巴豆 chilibean **排除**（它们**本来就是** Poison 家族！）
+ * 心蕊 bloominghearts **只算子弹直击**（它的"减防 debuff"本身不结算伤害）
  *
- *  === 引擎事实（逐字核对 1.5.5 bundle；@ = 字符偏移）===
- *   · `Zombie.defaultDealDamage(details)`（@3600436）是**所有僵尸伤害的最终落点**：
- *     它自己只读 `t.damage`；僵尸子类里那些 `dealDamage` 覆写（共 6 处）最后也都调它
- *     ⇒ **在这一点乘倍率 = 一处覆盖「直击 + 溅射 + 非弹道直伤 + Dot」**。
- *   · 乘倍率要**造替身**：用引擎自己的 `ZombieDamageDetails.replaceDamage(newDamage)`
- *     （@486803，它 `new` 一个新对象并带上 armorProtection / damageType / shockRGB 等全部字段）
- *     ⇒ **绝不改原对象**（同一份 details 会被多只僵尸共用，改了会连坐 + 变成 ×1.5^N）。
- *   · `Zombie.dealPoison(dt)`（@3594834）是**所有 Dot 的唯一结算点**：
- *       主毒   = `dealDamage(new ZDD(dt * this.poison.DPS, …))`
- *       叠加毒 = `_poison_stacked` 逐条 `dealDamage(s.replaceDamage(dt * e.DPS))`
- *     ⇒ 进 dealPoison 之前把"属于毒性家族"的那几份毒的 `DPS` 临时 ×1.5，
- *       就等价于"该帧家族 Dot 合计 ×1.5、且**只乘一次**"（线性；绝不会 ×1.5^N）。
- *       `ZombiePoison.DPS` 是**可写数据字段**（@3580907 描述符 `writable:!0`）。
- *   · `Zombie.setPoison(DPS,dur,infect)`（@3594499）**只收数字**、内部 `new ZombiePoison`
- *     ⇒ 来源没法从参数带进来；而 `pushPoisonStacked(obj)`（同处）推的是**同一个对象**
- *     ⇒ 用一个"当前来源算不算毒性家族"的**瞬时标记**给毒对象盖章 `__gpnPoisonFam`，
- *       Dot 结算时按章决定乘不乘（**没盖章 = 不算** ⇒ 巴豆的薄荷毒天然被排除在外）。
- *   · 弹道侧：`commonShot.dealDamageToZombie(e,t,i,o)`（@576376）在**一次同步调用**里做完
- *     "直击 + 溅射 + 上毒（setPoison / pushPoisonStacked）"；`dealSplashDamage`（@565552）
- *     是它的溅射入口，也会被 `onTombHit` 等路径单独调用 ⇒ **两处都要开"来源窗口"**。
- *     `this.carriedSporeShroom = e.CarriesSporeShroom`（@560858）⇒ **孢子菇自己的弹道天然可认**；
- *     其它植物靠**发射时打在弹道上的标记** `shot.__gpnPoisonFam`。
- *   · ⚠️ **S4-1 教训（实机探针）**：绝不能在"弹道命中"处反查"谁打的" —— 实测
- *     `shot.master/owner/plant/srcPlant` 全空、`PrjFunctions.shootOnePea` 的 `this` 是
- *     `PrjFunctions` 自己 ⇒ **标记必须在植物自己的发射入口打**。
- *   · 发射入口的三种形态（逐个实测，**别想当然**）：
- *       ① `PeashooterPlant._shoot`（@2312816）**return 弹道**（`t.abrupt("return",y)`）
- *          ⇒ 直接拿返回值打标。实测继承它且**没有覆盖** `_shoot` 的只有：
- *          `GooPeashooterPlant`（毒液豌豆）/ `PuffShroomPlant`（小喷菇）/
- *          `SeaShroomPlant`（海蘑菇，经 PuffShroom）/ 以及普通豌豆系。
- *       ② `ScaredyShroomPlant._shoot`（@2666366）**不 return 弹道**（`return t.stop()`）
- *          ⇒ 靠"发射期间置 pending + 包 `PrjFunctions.shootOnePea` 读 pending"。
- *       ③ **心蕊 `BloomingHeartPlant` 继承的是 `CabbagePultPlant`（抛投系，不是豌豆系！）**
- *          ⇒ 它的弹道来自 `_lobToZombie` / `_lobToTomb` / `_lobToPos`
- *            （@361288 / @362861 / @362204），同样**不 return** ⇒ 同样走 pending +
- *            `PrjFunctions.lobOneCabbageOnZombie / OnTomb / OnPos`。
- *      pending 之所以成立（已逐个核对）：这三个入口都在**生成器第一步**里同步调用
- *      `PrjFunctions.*`（原文形如 `t.next=6, w.lobOneCabbageOnZombie(…)`），
- *      而我们的包装器是在**被调用的那一瞬间**读 pending ⇒ 不会跨越 await。
- *   · `Plant_Type`（@1930114 `N.Plant_Type = c || I.CODENAME`）是植物实例上的**别名字符串**
- *     ⇒ 家族判定 = `PlantProps[Plant_Type].objdata.Family`。
- *   · ★ **`setPoison(` 在 1.5.5 bundle 里共 16 个调用点** —— 逐条清点过（这是最容易漏 Dot 的地方）：
- *       本 MOD **算**（= 家族来源，要 ×1.5）：
- *         AilMint.specialMintAnimationListener(boost_begin) ｜ commonShot.dealDamageToZombie（弹道自带的毒）
- *         GloomShroom.detectEnemies ｜ goopeaFoodPrj.detectEnemy（**毒液豌豆大招弹**）
- *         GooTileLiquid.specialTileLiquidUpdate（那发大招留下的**黏液地面**；数据 `TileLiquidType="goo"`）
- *         MariGoldPurple._turn ｜ ShadowShroom.specialPlantOnEaten ｜ ShadowShroom.animationListener(foodExplode)
- *         Zombie.dealPoison（传染给邻居）｜ Zombie.copyBuff（把毒复制给另一只）
- *       本 MOD **不算**（每条都有明确理由）：
- *         ChiliBean → Zombie.chilibeanFart（**用户指定：巴豆排除**）
- *         Stunion.animationListener（薄荷毒；眩晕洋葱**不在** Poison 家族）
- *         Dragonbruit._shoot / _shootOnTomb（不在 Poison 家族）
- *         duskSplat.dealSplashDamage（**暗影菇·黄昏投手**系弹道，不在用户名单内）
- *         commonShot.ts @563875 那个 `setPoison(DPS,duration)`（那是**弹道自己的载荷对象**，
- *           不是僵尸侧的 setPoison，名字相同、语义不同）
+ * === 引擎事实（逐字核对 1.5.5 bundle；@ = 字符偏移）===
+ * · `Zombie.defaultDealDamage(details)`（@3600436）是**所有僵尸伤害的最终落点**：
+ * 它自己只读 `t.damage`；僵尸子类里那些 `dealDamage` 覆写（共 6 处）最后也都调它
+ * ⇒ **在这一点乘倍率 = 一处覆盖「直击 + 溅射 + 非弹道直伤 + Dot」**。
+ * · 乘倍率要**造替身**：用引擎自己的 `ZombieDamageDetails.replaceDamage(newDamage)`
+ * （@486803，它 `new` 一个新对象并带上 armorProtection / damageType / shockRGB 等全部字段）
+ * ⇒ **绝不改原对象**（同一份 details 会被多只僵尸共用，改了会连坐 + 变成 ×1.5^N）。
+ * · `Zombie.dealPoison(dt)`（@3594834）是**所有 Dot 的唯一结算点**：
+ * 主毒 = `dealDamage(new ZDD(dt * this.poison.DPS, …))`
+ * 叠加毒 = `_poison_stacked` 逐条 `dealDamage(s.replaceDamage(dt * e.DPS))`
+ * ⇒ 进 dealPoison 之前把"属于毒性家族"的那几份毒的 `DPS` 临时 ×1.5，
+ * 就等价于"该帧家族 Dot 合计 ×1.5、且**只乘一次**"（线性；绝不会 ×1.5^N）。
+ * `ZombiePoison.DPS` 是**可写数据字段**（@3580907 描述符 `writable:!0`）。
+ * · `Zombie.setPoison(DPS,dur,infect)`（@3594499）**只收数字**、内部 `new ZombiePoison`
+ * ⇒ 来源没法从参数带进来；而 `pushPoisonStacked(obj)`（同处）推的是**同一个对象**
+ * ⇒ 用一个"当前来源算不算毒性家族"的**瞬时标记**给毒对象盖章 `__gpnPoisonFam`，
+ * Dot 结算时按章决定乘不乘（**没盖章 = 不算** ⇒ 巴豆的薄荷毒天然被排除在外）。
+ * · 弹道侧：`commonShot.dealDamageToZombie(e,t,i,o)`（@576376）在**一次同步调用**里做完
+ * "直击 + 溅射 + 上毒（setPoison / pushPoisonStacked）"；`dealSplashDamage`（@565552）
+ * 是它的溅射入口，也会被 `onTombHit` 等路径单独调用 ⇒ **两处都要开"来源窗口"**。
+ * `this.carriedSporeShroom = e.CarriesSporeShroom`（@560858）⇒ **孢子菇自己的弹道天然可认**；
+ * 其它植物靠**发射时打在弹道上的标记** `shot.__gpnPoisonFam`。
+ * · **S4-1 教训（实机探针）**：绝不能在"弹道命中"处反查"谁打的" —— 实测
+ * `shot.master/owner/plant/srcPlant` 全空、`PrjFunctions.shootOnePea` 的 `this` 是
+ * `PrjFunctions` 自己 ⇒ **标记必须在植物自己的发射入口打**。
+ * · 发射入口的三种形态（逐个实测，**别想当然**）：
+ * ① `PeashooterPlant._shoot`（@2312816）**return 弹道**（`t.abrupt("return",y)`）
+ * ⇒ 直接拿返回值打标。实测继承它且**没有覆盖** `_shoot` 的只有：
+ * `GooPeashooterPlant`（毒液豌豆）/ `PuffShroomPlant`（小喷菇）/
+ * `SeaShroomPlant`（海蘑菇，经 PuffShroom）/ 以及普通豌豆系。
+ * ② `ScaredyShroomPlant._shoot`（@2666366）**不 return 弹道**（`return t.stop()`）
+ * ⇒ 靠"发射期间置 pending + 包 `PrjFunctions.shootOnePea` 读 pending"。
+ * ③ **心蕊 `BloomingHeartPlant` 继承的是 `CabbagePultPlant`（抛投系，不是豌豆系！）**
+ * ⇒ 它的弹道来自 `_lobToZombie` / `_lobToTomb` / `_lobToPos`
+ * （@361288 / @362861 / @362204），同样**不 return** ⇒ 同样走 pending +
+ * `PrjFunctions.lobOneCabbageOnZombie / OnTomb / OnPos`。
+ * pending 之所以成立（已逐个核对）：这三个入口都在**生成器第一步**里同步调用
+ * `PrjFunctions.*`（原文形如 `t.next=6, w.lobOneCabbageOnZombie(…)`），
+ * 而我们的包装器是在**被调用的那一瞬间**读 pending ⇒ 不会跨越 await。
+ * · `Plant_Type`（@1930114 `N.Plant_Type = c || I.CODENAME`）是植物实例上的**别名字符串**
+ * ⇒ 家族判定 = `PlantProps[Plant_Type].objdata.Family`。
+ * · **`setPoison(` 在 1.5.5 bundle 里共 16 个调用点** —— 逐条清点过（这是最容易漏 Dot 的地方）：
+ * 本 MOD **算**（= 家族来源，要 ×1.5）：
+ * AilMint.specialMintAnimationListener(boost_begin) ｜ commonShot.dealDamageToZombie（弹道自带的毒）
+ * GloomShroom.detectEnemies ｜ goopeaFoodPrj.detectEnemy（**毒液豌豆大招弹**）
+ * GooTileLiquid.specialTileLiquidUpdate（那发大招留下的**黏液地面**；数据 `TileLiquidType="goo"`）
+ * MariGoldPurple._turn ｜ ShadowShroom.specialPlantOnEaten ｜ ShadowShroom.animationListener(foodExplode)
+ * Zombie.dealPoison（传染给邻居）｜ Zombie.copyBuff（把毒复制给另一只）
+ * 本 MOD **不算**（每条都有明确理由）：
+ * ChiliBean → Zombie.chilibeanFart（**：巴豆排除**）
+ * Stunion.animationListener（薄荷毒；眩晕洋葱**不在** Poison 家族）
+ * Dragonbruit._shoot / _shootOnTomb（不在 Poison 家族）
+ * duskSplat.dealSplashDamage（**暗影菇·黄昏投手**系弹道，不在名单内）
+ * commonShot.ts @563875 那个 `setPoison(DPS,duration)`（那是**弹道自己的载荷对象**，
+ * 不是僵尸侧的 setPoison，名字相同、语义不同）
  * =======================================================================*/
 
-/** 额外白名单：Family 是 Shadow、但用户特意要求也吃 ×1.5（含 `_mgp` 前缀变体） */
+/** 额外白名单：Family 是 Shadow、但特意要求也吃 ×1.5（含 `_mgp` 前缀变体） */
 const GPN_SPORE_FAM_EXTRA = ['gloomshroom', 'shadowshroom'];
-/** 排除表：它们**本来就是** Poison 家族，但用户指定不算 */
+/** 排除表：它们**本来就是** Poison 家族，但不算 */
 const GPN_SPORE_FAM_EXCLUDE = ['garlic', 'chilibean'];
 
 /** 倍率（唯一来源 = CFG；图鉴文案也从它现算） */
@@ -8460,7 +8572,7 @@ function gpnSporeFamilyOf(plant) {
     try {
         const t = plant.Plant_Type;
         if (typeof t === 'string' && t) {
-            /* ★ 兼容 `RTID(xxx@PlantTypes)` 形式：用 normalizeType 比别名 */
+            /* 兼容 `RTID(xxx@PlantTypes)` 形式：用 normalizeType 比别名 */
             const tKey = normalizeType(t);
             const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : null;
             const list = Box && Box.PlantProps;
@@ -8504,7 +8616,7 @@ function gpnSporePlantQualifies(plant) {
 }
 
 /* 「当前正在结算毒性家族来源」的瞬时窗口 —— 用**计数**而不是布尔（天然的嵌套安全：
- *   dealDamageToZombie 内部还会再调 dealSplashDamage；异常也必须能正确退栈）。 */
+ * dealDamageToZombie 内部还会再调 dealSplashDamage；异常也必须能正确退栈）。 */
 let gpnPoisonDmgDepth = 0;      // >0 ⇒ 这期间的伤害算"毒性家族"
 let gpnPoisonStampDepth = 0;    // >0 ⇒ 这期间上的毒盖"家族章"
 function gpnPoisonCtxEnter(who) {
@@ -8551,10 +8663,10 @@ function objectMethodRecord(obj, name) {
 /**
  * 孢子菇 ×1.5 补丁工厂（R6/R7）
  * @param {Object} mods 引擎类/对象：Zombie / CommonShot / PrjFunctions / Peashooter /
- *                      ScaredyShroom / CabbagePult / FumeShroom / Vamporcini /
- *                      GloomShroom / ShadowShroom / AilMint / **MariGold（基类）** /
- *                      GooFoodPrj / GooTileLiquid
- *                      ⚠️ **不要**传 `MariGoldPurple`：那个模块**没有导出类**（实测）。
+ * ScaredyShroom / CabbagePult / FumeShroom / Vamporcini /
+ * GloomShroom / ShadowShroom / AilMint / **MariGold（基类）** /
+ * GooFoodPrj / GooTileLiquid
+ * **不要**传 `MariGoldPurple`：那个模块**没有导出类**（实测）。
  * @returns {Array} recs（交给上层还原/清理）
  */
 function makeSporePoisonBonusPatch(mods) {
@@ -8566,7 +8678,7 @@ function makeSporePoisonBonusPatch(mods) {
     const installed = [];
     const mark = (label, ok) => { installed.push(label + (ok ? '✓' : '✗')); };
 
-    /* ---------- ① 伤害落点：带标记的僵尸 ×1.5（直击 / 溅射 / 非弹道直伤 / Dot 全覆盖） ---------- */
+    /* ---- ---- -- ① 伤害落点：带标记的僵尸 ×1.5（直击 / 溅射 / 非弹道直伤 / Dot 全覆盖） ---- ---- -- */
     if (P(Zombie, 'defaultDealDamage')) {
         const rec = methodRecord(Zombie, 'defaultDealDamage');
         Zombie.prototype.defaultDealDamage = function (d) {
@@ -8576,7 +8688,7 @@ function makeSporePoisonBonusPatch(mods) {
                 if (this && this.CarriedSporeShroom === true && d
                     && typeof d.damage === 'number' && d.damage > 0
                     && typeof d.replaceDamage === 'function') {
-                    // ★ 用引擎自己的 replaceDamage 造替身：**不改原对象**（它可能被多只僵尸共用）
+                    // 用引擎自己的 replaceDamage 造替身：**不改原对象**（它可能被多只僵尸共用）
                     return rec.original.call(this, d.replaceDamage(d.damage * gpnSporeMult()));
                 }
             } catch (e) { /* 出错就退回原逻辑，绝不因此吞伤害或加倍 */ }
@@ -8589,7 +8701,7 @@ function makeSporePoisonBonusPatch(mods) {
         warn('跳过孢子菇加成：拿不到 Zombie.defaultDealDamage');
     }
 
-    /* ---------- ② Dot：dealPoison（按"来源章"临时乘 DPS ⇒ 合计一次、绝不 ×1.5^N） ---------- */
+    /* ---- ---- -- ② Dot：dealPoison（按"来源章"临时乘 DPS ⇒ 合计一次、绝不 ×1.5^N） ---- ---- -- */
     if (P(Zombie, 'dealPoison')) {
         const rec = methodRecord(Zombie, 'dealPoison');
         Zombie.prototype.dealPoison = function () {
@@ -8606,8 +8718,8 @@ function makeSporePoisonBonusPatch(mods) {
                         p.DPS = before * gpnSporeMult();
                         scaledMain = 1;
                         spread = (p.infective === true);     // 这份毒会传染 ⇒ 邻居那份也该带家族章
-                        // ⚠️ 万一 `ZombiePoison.DPS` 在真机上是**只读访问器**，上面那句会**静默失败**
-                        //    ⇒ 症状恰好是"毒整帧不加成"、极难查 ⇒ 这里当场验一次（只报一条）。
+                        // 万一 `ZombiePoison.DPS` 在真机上是**只读访问器**，上面那句会**静默失败**
+                        // ⇒ 症状恰好是"毒整帧不加成"、极难查 ⇒ 这里当场验一次（只报一条）。
                         if (!(p.DPS > before)) {
                             gpnPoisonDiag('dot.mutate-fail', () => '[孢子菇·Dot] ⚠️⚠️ 改写 ZombiePoison.DPS **没有生效**'
                                 + '（真机上它可能是只读访问器）⇒ Dot 的 ×1.5 会失效；请把这一行发给作者');
@@ -8632,7 +8744,7 @@ function makeSporePoisonBonusPatch(mods) {
                         }
                     }
                 }
-                // ---- 诊断（verboseLog 打开时；每个 key 前 3 条 + 之后每 50 条）----
+                // ---- 诊断（verboseLog 打开时；每个 key 前 3 条 + 之后每 50 条） ----
                 if (scaledMain || scaledStack) {
                     gpnPoisonDiag('dot.ok', (n) => '[孢子菇·Dot] ×1.5 生效：主毒=' + (scaledMain ? '乘' : '—')
                         + ' 叠加=' + scaledStack + ' 份 ｜ 僵尸=' + (this.Zombie_Type || '?') + '（第 ' + n + ' 次）');
@@ -8642,7 +8754,7 @@ function makeSporePoisonBonusPatch(mods) {
                         + '（= 上毒那一刻不在"家族窗口"里 ⇒ 那条来源没挂钩子/没开窗口）（第 ' + n + ' 次）');
                 }
                 if (spread) {
-                    // ⚠️ 只开"盖章"窗口、**不开"伤害"窗口** —— 否则 Dot 会被乘两次
+                    // 只开"盖章"窗口、**不开"伤害"窗口** —— 否则 Dot 会被乘两次
                     gpnPoisonStampDepth++;
                     try { return rec.original.apply(this, arguments); } finally { gpnPoisonStampDepth--; }
                 }
@@ -8660,7 +8772,7 @@ function makeSporePoisonBonusPatch(mods) {
         warn('跳过孢子菇 Dot 加成：拿不到 Zombie.dealPoison');
     }
 
-    /* ---------- ③ Dot 来源记账：给毒对象盖章（没盖章 = 不算家族） ---------- */
+    /* ---- ---- -- ③ Dot 来源记账：给毒对象盖章（没盖章 = 不算家族） ---- ---- -- */
     if (P(Zombie, 'setPoison')) {
         const rec = methodRecord(Zombie, 'setPoison');
         Zombie.prototype.setPoison = function () {
@@ -8706,7 +8818,7 @@ function makeSporePoisonBonusPatch(mods) {
         mark('毒章叠加', false);
     }
 
-    /* ---------- ④ 弹道命中/溅射：开"来源窗口"（上毒 + 直伤都在这个同步窗口里） ---------- */
+    /* ---- ---- -- ④ 弹道命中/溅射：开"来源窗口"（上毒 + 直伤都在这个同步窗口里） ---- ---- -- */
     const CommonShot = M.CommonShot;
     const shotIsFam = function (shot) {
         try {
@@ -8729,8 +8841,8 @@ function makeSporePoisonBonusPatch(mods) {
         }
     }
 
-    /* ---------- ⑤ 发射时打标：植物入口置 pending，PrjFunctions 那一瞬读走 ---------- */
-    //  ⚠️ S4-1 教训：绝不能"命中时反查来源"（弹道上没有主人信息）⇒ 必须在植物入口打标。
+    /* ---- ---- -- ⑤ 发射时打标：植物入口置 pending，PrjFunctions 那一瞬读走 ---- ---- -- */
+    // S4-1 教训：绝不能"命中时反查来源"（弹道上没有主人信息）⇒ 必须在植物入口打标。
     const Prj = M.PrjFunctions;
     const wrapShotEntry = function (Cls, name, label) {
         if (!P(Cls, name)) {
@@ -8797,7 +8909,7 @@ function makeSporePoisonBonusPatch(mods) {
             if (typeof Prj[nm] !== 'function') continue;
             const rec = objectMethodRecord(Prj, nm);
             Prj[nm] = function () {
-                const tag = gpnPoisonShotPending;               // ★ 必须在这一瞬读
+                const tag = gpnPoisonShotPending;               // 必须在这一瞬读
                 const r = rec.original.apply(this, arguments);
                 if (tag == null || !r || typeof r.then !== 'function') return r;
                 return r.then(tagCb(tag));
@@ -8809,7 +8921,7 @@ function makeSporePoisonBonusPatch(mods) {
         warn('跳过孢子菇加成标记：拿不到 PrjFunctions（豌豆系仍可用返回值打标）');
     }
 
-    /* ---------- ⑥ 非弹道直伤 / 纯 Dot 的来源窗口 ---------- */
+    /* ---- ---- -- ⑥ 非弹道直伤 / 纯 Dot 的来源窗口 ---- ---- -- */
     const ctxWrap = function (Cls, name, label) {
         if (!P(Cls, name)) {
             if (label) warn('跳过孢子菇加成：拿不到 ' + label);
@@ -8830,12 +8942,12 @@ function makeSporePoisonBonusPatch(mods) {
         [M.ShadowShroom, 'specialPlantOnEaten', 'ShadowShroom.specialPlantOnEaten'],  // 毒影菇：纯 Dot
         [M.ShadowShroom, 'animationListener', 'ShadowShroom.animationListener'],      // 毒影菇·大招 foodExplode：全场上毒 + 一段毒伤
         [M.AilMint, 'specialMintAnimationListener', 'AilMint.specialMintAnimationListener'], // 毒薄荷：boost_begin 上毒
-        // ⚠️ 紫色万寿菊**不能挂它自己的 `_turn`** —— 实测（用户 F12）：`MariGoldPurple.ts` 这个模块
-        //    **没有对外导出类**（只做了 `ccclass("MariGoldPurplePlant")` 注册）⇒ 拿不到那个类。
-        //    改挂**基类 `MariGoldPlant.specialSunflowerAnimationListener`**（模块 MariGold.ts 有导出 ✓）：
-        //    引擎原文 `if("turn"==n.name){ … this._turn(t,e) }` —— 子类**没有覆盖**这个回调，
-        //    而 `this._turn` 是**虚调用**，会落到紫色万寿菊自己那份 `_turn` ⇒ 窗口正好罩住它。
-        //    （顺带对所有颜色的万寿菊开窗；其它颜色不上毒 ⇒ 无副作用）
+        // 紫色万寿菊**不能挂它自己的 `_turn`** —— 实测（F12）：`MariGoldPurple.ts` 这个模块
+        // **没有对外导出类**（只做了 `ccclass("MariGoldPurplePlant")` 注册）⇒ 拿不到那个类。
+        // 改挂**基类 `MariGoldPlant.specialSunflowerAnimationListener`**（模块 MariGold.ts 有导出 ✓）：
+        // 引擎原文 `if("turn"==n.name){ … this._turn(t,e) }` —— 子类**没有覆盖**这个回调，
+        // 而 `this._turn` 是**虚调用**，会落到紫色万寿菊自己那份 `_turn` ⇒ 窗口正好罩住它。
+        // （顺带对所有颜色的万寿菊开窗；其它颜色不上毒 ⇒ 无副作用）
         [M.MariGold, 'specialSunflowerAnimationListener', 'MariGold.specialSunflowerAnimationListener'],
         [M.GooFoodPrj, 'detectEnemy', 'goopeaFoodPrj.detectEnemy'],       // 毒液豌豆·大招弹：直伤 + Poison{50,5}
         [M.GooTileLiquid, 'specialTileLiquidUpdate', 'GooTileLiquid.specialTileLiquidUpdate'], // 上面那发大招留下的"黏液地面"（PoisonDPS 50）
@@ -8846,9 +8958,9 @@ function makeSporePoisonBonusPatch(mods) {
         mark(ctxList[i][2], !!r6);
     }
 
-    /* ---------- ⑦ 传染 / 复制增益：让"毒的家族章"跟着走 ---------- */
-    //  · `Zombie.copyBuff(src)`（@3618850）会把 src 的毒原样复制给另一只僵尸（`setPoison(t.poison.DPS, …)`）
-    //    ⇒ 按 src 那份毒的章决定要不要盖章（否则"被复制的家族毒"会掉章）。
+    /* ---- ---- -- ⑦ 传染 / 复制增益：让"毒的家族章"跟着走 ---- ---- -- */
+    // · `Zombie.copyBuff(src)`（@3618850）会把 src 的毒原样复制给另一只僵尸（`setPoison(t.poison.DPS, …)`）
+    // ⇒ 按 src 那份毒的章决定要不要盖章（否则"被复制的家族毒"会掉章）。
     if (P(Zombie, 'copyBuff')) {
         const rec = methodRecord(Zombie, 'copyBuff');
         Zombie.prototype.copyBuff = function (src) {
@@ -8862,8 +8974,8 @@ function makeSporePoisonBonusPatch(mods) {
         mark('copyBuff', true);
     }
 
-    // ★ 安装情况一行汇总（**verboseLog 打开时才有**）—— 实机排查"哪一项没挂上"最快的手段。
-    //   本轮就是靠 F12 里那句「跳过孢子菇加成：拿不到 MariGoldPurple._turn」定位到万寿菊的。
+    // 安装情况一行汇总（**verboseLog 打开时才有**）—— 实机排查"哪一项没挂上"最快的手段。
+    // 本轮就是靠 F12 里那句「跳过孢子菇加成：拿不到 MariGoldPurple._turn」定位到万寿菊的。
     try {
         if (typeof verboseOn === 'function' && verboseOn()) {
             log('[孢子菇×1.5] 钩子安装：' + installed.join(' ｜ '));
@@ -8890,7 +9002,7 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
     const D = deps || {};
     const C = CFG.sporeshroom;
 
-    /* ---------- 1) 亡语本体（R1~R4 + R10 特效） ---------- */
+    /* ---- ---- -- 1) 亡语本体（R1~R4 + R10 特效） ---- ---- -- */
     if (typeof P.specialPlantOnKilled !== 'function') {
         warn('跳过孢子菇亡语：Plant 基类上没有 specialPlantOnKilled（原版可能改过名）');
     } else {
@@ -8899,7 +9011,7 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
             if (!featOn(GPN_SPORE_FEAT)) return recKilled.original.apply(this, arguments);
             let cell = null, node = null;
             try { cell = this.inLnC || null; node = this.node || null; } catch (e) { cell = null; }
-            // ★ 先抓住"格子 / 节点 / 世界位置"——scheduleOnce 之后 this 可能已经被清空
+            // 先抓住"格子 / 节点 / 世界位置"——scheduleOnce 之后 this 可能已经被清空
             const wp = (function () {
                 try {
                     const p = node && node.worldPosition;
@@ -8911,11 +9023,11 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
 
             // 把"这一帧的受害者"先算出来（用 Rectangle 判交集；照引擎 explodeCherry3x3 的取框方式）
             const hit = [];
-            // ★ 障碍物（墓碑 / 功夫货架 / 冲浪板 / 背包 / 帐篷 / 街机柜 / 音箱 / 冰砖 / 生日礼物 /
-            //   冰川块 / 章鱼 ……）—— **用户 2026/10/16 追加**：亡语也要能打障碍物。
-            //   口径与流星花**完全同一份白名单**（`gpnMeteorTombIsBlacklisted`：只排除 `kongfu_TNT`=17）。
-            //   ⚠️ 障碍物**绝不施加 `CarriedSporeShroom`**（按原版口径）⇒ 它自然也**不吃 ×1.5**
-            //      （我们的伤害落点要求"带标记"，天然满足）。
+            // 障碍物（墓碑 / 功夫货架 / 冲浪板 / 背包 / 帐篷 / 街机柜 / 音箱 / 冰砖 / 生日礼物 /
+            // 冰川块 / 章鱼 ……）—— ** 追加**：亡语也要能打障碍物。
+            // 口径与流星花**完全同一份白名单**（`gpnMeteorTombIsBlacklisted`：只排除 `kongfu_TNT`=17）。
+            // 障碍物**绝不施加 `CarriedSporeShroom`**（按原版口径）⇒ 它自然也**不吃 ×1.5**
+            // （我们的伤害落点要求"带标记"，天然满足）。
             const tombs = [];
             try {
                 const Rect = D.Rectangle;
@@ -8949,10 +9061,10 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                 }
             } catch (e) { warn('孢子菇亡语：取范围内僵尸/障碍物出错', e); }
 
-            /* ★ 2026/10/22 用户指定：**标记**范围 = 3 行 × 3 列（伤害/眩晕/特效/障碍物伤害仍是 1 行 × 3 列）。
-             *   做法：同一个矩形，只把高度改成 `deathMarkRows × SH`（竖着覆盖本行 + 上下各一行）；
-             *   池子取「本行 + UpperLane + LowerLane」，按僵尸对象去重（本行那些会同时出现在 hit 里）。
-             *   ⚠️ 这些僵尸**只打 `CarriedSporeShroom`**：不眩晕、不扣血（用户口径）。 */
+            /* ：**标记**范围 = 3 行 × 3 列（伤害/眩晕/特效/障碍物伤害仍是 1 行 × 3 列）。
+             * 做法：同一个矩形，只把高度改成 `deathMarkRows × SH`（竖着覆盖本行 + 上下各一行）；
+             * 池子取「本行 + UpperLane + LowerLane」，按僵尸对象去重（本行那些会同时出现在 hit 里）。
+             * 这些僵尸**只打 `CarriedSporeShroom`**：不眩晕、不扣血（规则：）。 */
             const markHit = [];
             try {
                 const Rect2 = D.Rectangle;
@@ -8990,7 +9102,7 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                     + ' 位置=' + (wp ? ('(' + Math.round(wp.x) + ',' + Math.round(wp.y) + ')') : '?'));
             }
 
-            // ★ 立刻跑（与引擎爆裂坚果一致：`inLnC.scheduleOnce(fn)`）
+            // 立刻跑（与引擎爆裂坚果一致：`inLnC.scheduleOnce(fn)`）
             const fire = function () {
                 // ---- ⓪ 只标记（3 行 × 3 列）：不眩晕、不伤害 ----
                 for (const z of markHit) {
@@ -8999,20 +9111,20 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                         if (z.ImmuneToSporeShroom !== true) z.CarriedSporeShroom = true;
                     } catch (e) { /* 单只失败忽略 */ }
                 }
-                // ---- ① 先标记 + 眩晕（R3/R4）----
+                // ---- ① 先标记 + 眩晕（R3/R4） ----
                 for (const z of hit) {
                     try {
                         if (!z) continue;
-                        // 标记：免疫的不标记（用户口径 Q1 = 甲：照吃伤害、只是不标记）
+                        // 标记：免疫的不标记（规则：Q1 = 甲：照吃伤害、只是不标记）
                         if (z.ImmuneToSporeShroom !== true) z.CarriedSporeShroom = true;
                         if (C.deathStun > 0 && typeof z.setStun === 'function') z.setStun(C.deathStun);
                     } catch (e) { /* 单只失败忽略 */ }
                 }
-                // ---- ② 再造成伤害（不穿甲 + 普通物理）⇒ 吃到 ×1.5（R2/R7）----
-                //   ⚠️ 顺序是硬要求：① 先把上面的 `CarriedSporeShroom` 打上，② 这里再开
-                //      "来源 = 毒性家族"的窗口 ⇒ 这一发**自己**吃 ×1.5（实测 50/150/250 ⇒ 75/225/375）。
-                //      `×1.5` 本身由 `makeSporePoisonBonusPatch` 的 `Zombie.defaultDealDamage` 钩子做，
-                //      这里**不要**自己乘（否则会变成 ×2.25）。
+                // ---- ② 再造成伤害（不穿甲 + 普通物理）⇒ 吃到 ×1.5（R2/R7） ----
+                // 顺序是硬要求：① 先把上面的 `CarriedSporeShroom` 打上，② 这里再开
+                // "来源 = 毒性家族"的窗口 ⇒ 这一发**自己**吃 ×1.5（实测 50/150/250 ⇒ 75/225/375）。
+                // `×1.5` 本身由 `makeSporePoisonBonusPatch` 的 `Zombie.defaultDealDamage` 钩子做，
+                // 这里**不要**自己乘（否则会变成 ×2.25）。
                 gpnPoisonCtxEnter('孢子菇亡语');
                 try {
                     for (const z of hit) {
@@ -9026,11 +9138,11 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                             else z.dealDamage(dmg, 0);            // 兜底：老式两参调用（不穿甲由调用方保证不了，仅应急）
                         } catch (e) { /* 单只失败忽略 */ }
                     }
-                    // ---- ②b 障碍物（用户 2026/10/16 追加）----
-                    //   · **不施加标记、不眩晕**（障碍物按原版口径）⇒ 也因此不吃 ×1.5
-                    //   · 伤害走 `tb.dealDamage(details)`：引擎 `Tomb.dealDamage(t)` 读的是
-                    //     `t.damage * this.damageScale(t)`（`damageType` 只影响可融化的冰砖），
-                    //     与本 MOD 在 A1 穿透里打墓碑**完全同一套**（main.js 的 `e.dealDamage(dmg)`）。
+                    // ---- ②b 障碍物（追加） ----
+                    // · **不施加标记、不眩晕**（障碍物按原版口径）⇒ 也因此不吃 ×1.5
+                    // · 伤害走 `tb.dealDamage(details)`：引擎 `Tomb.dealDamage(t)` 读的是
+                    // `t.damage * this.damageScale(t)`（`damageType` 只影响可融化的冰砖），
+                    // 与本 MOD 在 A1 穿透里打墓碑**完全同一套**（main.js 的 `e.dealDamage(dmg)`）。
                     for (const tb of tombs) {
                         try {
                             if (!tb || typeof tb.dealDamage !== 'function') continue;
@@ -9043,12 +9155,12 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
                         } catch (e) { /* 单个障碍物失败忽略 */ }
                     }
                 } finally { gpnPoisonCtxExit(); }
-                // ---- ③ 特效（R10；纯视觉）----
+                // ---- ③ 特效（R10；纯视觉） ----
                 try {
                     if (C.fxEnable && gpnSporeFxReady) {
-                        // ★ 显式把自己那条车道传进去 —— 特效必须落在**本行的 prjLayer**（= 引擎给该行弹道
-                        //   命中特效用的同一个层）。**不再依赖"上一次弹道观察到的父节点"缓存**（那个缓存可能
-                        //   还是上一关/旧帧的 ⇒ 曾经偶发一次"层不对、被植物贴图盖住"，见 gpnSporeFxGetParent 注释）
+                        // 显式把自己那条车道传进去 —— 特效必须落在**本行的 prjLayer**（= 引擎给该行弹道
+                        // 命中特效用的同一个层）。**不再依赖"上一次弹道观察到的父节点"缓存**（那个缓存可能
+                        // 还是上一关/旧帧的 ⇒ 曾经偶发一次"层不对、被植物贴图盖住"，见 gpnSporeFxGetParent 注释）
                         const parent = gpnSporeFxGetParent(null, D, lane);
                         if (parent) gpnSporeFxReady(parent, wp, D);
                         else if (dbgOn(C.debugLog)) log('孢子菇亡语特效：暂时拿不到父节点（车道 prjLayer / 缓存都没有），本次跳过');
@@ -9073,26 +9185,26 @@ function makeSporeShroomPatch(SporeShroomPlant, deps) {
 
 /* ==========================================================================
  * 暗影夏威夷果（MurkadamiaNut）—— 暗影状态下本体隐身
- *  需求（已与用户确认）：
- *    ① 暗影状态：本体【只做视觉隐身】= 透明度 ×50%，判定完全不碰
- *       ⇒ 僵尸照常来啃，但挨打顺序是【暗影物质 → 盾牌 → 本体】⇒ 果冻在，本体一滴血不掉
- *    ② 暗影物质与盾牌【不隐身】
- *    ③ 暗影物质被打光后的冷却期：才上【真隐身】（路灯花同款），回血后立刻解除
- *    ④ 暗影状态下暗影物质耐久上限 + 本体耐久上限（2500 → 5000）
- *  引擎事实（逐条核对过）：
- *    · 「植物变透明」引擎自己就是用【主渲染器 db 的 color.a】做的（出生淡入 = anmControl.db.color
- *      从 (255,255,255,0) 补间到 a:255）⇒ 我们用同一个机制：单写者、不会闪、不会出现双层贴图 ✓
- *    · 影子：followShade() 每帧 shade.color.a = db.color.a × shadeAlphaScale ⇒ 自动跟着半透明 ✓
- *    · 暗影物质是【另一个渲染器 spikesDB】，但 specialPlantUpdateForce 每帧
- *      spikesDB.color = db.color ⇒ 会被带上 ⇒ 我们每帧再把它顶回不透明 ✓
- *    · 盾牌是【同一个主渲染器】上的 SHIELD* 槽位 ⇒ 整台一起淡 ⇒ 所以【盾牌在的时候不做半透明】
- *      （宁可在盾牌那几秒里让本体保持不透明，也不能让盾牌跟着隐身）
- *    · 路灯花大招的「隐身」= PlanternHidden>0 ⇒ bodyRec 变空（僵尸判定失败）
- *      + 材质 uniform planternHidden=1（路灯花那套外观）⇒ 真隐身期间把那个 uniform 压回 0
+ * 需求（已与确认）：
+ * ① 暗影状态：本体【只做视觉隐身】= 透明度 ×50%，判定完全不碰
+ * ⇒ 僵尸照常来啃，但挨打顺序是【暗影物质 → 盾牌 → 本体】⇒ 果冻在，本体一滴血不掉
+ * ② 暗影物质与盾牌【不隐身】
+ * ③ 暗影物质被打光后的冷却期：才上【真隐身】（路灯花同款），回血后立刻解除
+ * ④ 暗影状态下暗影物质耐久上限 + 本体耐久上限（2500 → 5000）
+ * 引擎事实（逐条核对过）：
+ * · 「植物变透明」引擎自己就是用【主渲染器 db 的 color.a】做的（出生淡入 = anmControl.db.color
+ * 从 (255,255,255,0) 补间到 a:255）⇒ 我们用同一个机制：单写者、不会闪、不会出现双层贴图 ✓
+ * · 影子：followShade() 每帧 shade.color.a = db.color.a × shadeAlphaScale ⇒ 自动跟着半透明 ✓
+ * · 暗影物质是【另一个渲染器 spikesDB】，但 specialPlantUpdateForce 每帧
+ * spikesDB.color = db.color ⇒ 会被带上 ⇒ 我们每帧再把它顶回不透明 ✓
+ * · 盾牌是【同一个主渲染器】上的 SHIELD* 槽位 ⇒ 整台一起淡 ⇒ 所以【盾牌在的时候不做半透明】
+ * （宁可在盾牌那几秒里让本体保持不透明，也不能让盾牌跟着隐身）
+ * · 路灯花大招的「隐身」= PlanternHidden>0 ⇒ bodyRec 变空（僵尸判定失败）
+ * + 材质 uniform planternHidden=1（路灯花那套外观）⇒ 真隐身期间把那个 uniform 压回 0
  *
- *  ⚠️ 走过的弯路（用户实测发现）：一开始想「逐槽改 alpha」（slot._colorTransform + _updateColor()），
- *     结果和引擎自己的槽位显示更新打架 ⇒ 贴图出现**两层**、**一闪一闪**、**那张更透的还不是满血样子**。
- *     ⇒ 已整套换成渲染器颜色方案。
+ * 走过的弯路（实测发现）：一开始想「逐槽改 alpha」（slot._colorTransform + _updateColor()），
+ * 结果和引擎自己的槽位显示更新打架 ⇒ 贴图出现**两层**、**一闪一闪**、**那张更透的还不是满血样子**。
+ * ⇒ 已整套换成渲染器颜色方案。
  * ========================================================================== */
 
 /** 暗影态本体半透明：改【主渲染器】color 的 alpha（引擎自己的机制）。quiet=true 不打日志 */
@@ -9130,9 +9242,9 @@ function gpnMkKeepJellyOpaque(plant, deps) {
 
 /**
  * 暗影物质的三个数值（**永久生效，不随暗影状态来回切**；幂等）：
- *   · 耐久上限 = 原版基础值 + jellyBonusHp（2500 + 2500 = 5000）
- *   · 冷却秒数 = jellyCooldown（= 原版 5 秒；这个键保留着，方便以后再调）
- *   · 初始比例 = jellyInitialPct（0.6 → 0.3 ⇒ 出现/冷却结束时是 1500）
+ * · 耐久上限 = 原版基础值 + jellyBonusHp（2500 + 2500 = 5000）
+ * · 冷却秒数 = jellyCooldown（= 原版 5 秒；这个键保留着，方便以后再调）
+ * · 初始比例 = jellyInitialPct（0.6 → 0.3 ⇒ 出现/冷却结束时是 1500）
  * 基础值只在第一次看到时记一次，避免反复加算；`_objdataOwn` 是**每株独立**的 ⇒ 只影响这一株。
  * （回满速度沿用原版 JellyRecoveryHPS 100/秒 ⇒ 打光到回满 = 5 秒冷却 + 25 秒回复 = 30 秒，和改前一样）
  */
@@ -9143,8 +9255,8 @@ function gpnMkJellyTune(plant) {
     if (!(plant.__gpnMkBaseJelly > 0)) {
         plant.__gpnMkBaseJelly = (od.JellyToughness > 0) ? od.JellyToughness : (C.jellyBaseHp > 0 ? C.jellyBaseHp : 2500);
     }
-    // ★ 两态：开 = 基础 + 加成（2500+2500=5000）/ 0.3；关 = 原版 2500 / 0.6 / 5
-    //   （原版值来自 Objects/PlantProps.json，已逐字段核对）
+    // 两态：开 = 基础 + 加成（2500+2500=5000）/ 0.3；关 = 原版 2500 / 0.6 / 5
+    // （原版值来自 Objects/PlantProps.json，已逐字段核对）
     const onMk = featOn('murkadamia');
     const wantHp = onMk ? (plant.__gpnMkBaseJelly + (C.jellyBonusHp > 0 ? C.jellyBonusHp : 0)) : plant.__gpnMkBaseJelly;
     if (od.JellyToughness !== wantHp) od.JellyToughness = wantHp;
@@ -9172,7 +9284,7 @@ function gpnMkTick(plant, deps) {
         plant.__gpnMkHidden = false;
         if (dbgOn(C.debugLog)) log('夏威夷果：暗影物质回血 → 解除隐身');
     }
-    // ---- ① 本体半透明（盾牌在的时候不做）----
+    // ---- ① 本体半透明（盾牌在的时候不做） ----
     const wantFade = !!(plant.ShadowPowered && !plant.dead
         && !(C.shieldKeepsOpaque && plant.shield_health > 0));
     const changed = (wantFade !== !!plant.__gpnMkVisual);
@@ -9231,7 +9343,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         warn('跳过暗影夏威夷果：没有 specialPlantUpdateForce（暗影物质会被一起变透明）');
     }
 
-    // ---- ④ 真隐身期间：把路灯花那套外观的 uniform 压回 0（只这一株）----
+    // ---- ④ 真隐身期间：把路灯花那套外观的 uniform 压回 0（只这一株） ----
     if (typeof P.shouldMaterial === 'function') {
         const rec = methodRecord(MurkadamiaNutPlant, 'shouldMaterial');
         P.shouldMaterial = function () {
@@ -9253,7 +9365,7 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
         warn('跳过暗影夏威夷果：拿不到 shouldMaterial（真隐身那会儿外观会变成路灯花那套）');
     }
 
-    // ---- ⑤ 池化复用：状态全部复位（否则会带到下一株身上）----
+    // ---- ⑤ 池化复用：状态全部复位（否则会带到下一株身上） ----
     if (typeof P.specialPlantOnEnable === 'function') {
         const rec = methodRecord(MurkadamiaNutPlant, 'specialPlantOnEnable');
         P.specialPlantOnEnable = function () {
@@ -9280,46 +9392,46 @@ function makeMurkadamiaPatch(MurkadamiaNutPlant, deps) {
 
 /* ==========================================================================
  * 裂荚射手（SplitPea）—— 左键左右翻转 + 前后豌豆数对调
- *  需求（已与用户确认）：
- *    ① 鼠标左键点它 → 左右翻转（状态一直保留，移动位置也不变；新种一株默认不翻）
- *    ② 翻转后：前方 1 颗 / 后方 2 颗  ⇄  前方 2 颗 / 后方 1 颗
- *    ③ 大招的前后数量也跟着对调（原版 60 前 + 90 后 → 翻转后 90 前 + 60 后）
- *    ④ 贴图（含装扮 COS* 槽位）、动画、影子一起左右翻转
- *    ⑤ 阳光 200 → 225（数据 patch）；图鉴「射速」那行补一句
- *  引擎事实（逐条核对过）：
- *    · 每次 _shoot() 只发【1 颗】；前方 = 动画事件 ShootR → _shoot()；
- *      后方 = 动画事件 ShootL → _shootBack()（= _shoot() 后把速度 x 取反、位置 -50）
- *    · 所以「后方两颗」不是代码循环，而是 ShootL 动画里连发两个 ShootL 帧事件
- *      （ShootB 同理；播哪支由 detectEnemySplit() 决定：1=只有前 / 2=只有后 / 3=两边都有）
- *      ⇒ 要真对调，必须【同时】改"播哪支动画"和"往哪个方向发"（只改方向会变成 1 颗）
- *    · 大招：两个计数器（PlantfoodPeaCount 60 前 / PlantfoodPeaCountBack 90 后）补间到 0，
- *      前计数器 → onFoodLeftPeaCountDec → _shoot()，后计数器 → _shootBack()
- *      ⇒ 方向一对调，数量自然变成 90 前 / 60 后 ✓（不用单独给大招写逻辑）
- *    · 翻转用引擎自带的 Character.scale：setter 里 node.scale.x = _scale×U×originalScale（x【带符号】）
- *      ⇒ this.scale = -1 就是水平镜像；装扮是同一个 armature 里的 COS* 槽位、动画也在里面 ⇒ 一起翻；
- *        影子在 followShade 里按 this.scale 算 ⇒ 自动跟着翻 ✓
+ * 需求（已与确认）：
+ * ① 鼠标左键点它 → 左右翻转（状态一直保留，移动位置也不变；新种一株默认不翻）
+ * ② 翻转后：前方 1 颗 / 后方 2 颗 ⇄ 前方 2 颗 / 后方 1 颗
+ * ③ 大招的前后数量也跟着对调（原版 60 前 + 90 后 → 翻转后 90 前 + 60 后）
+ * ④ 贴图（含装扮 COS* 槽位）、动画、影子一起左右翻转
+ * ⑤ 阳光 200 → 225（数据 patch）；图鉴「射速」那行补一句
+ * 引擎事实（逐条核对过）：
+ * · 每次 _shoot() 只发【1 颗】；前方 = 动画事件 ShootR → _shoot()；
+ * 后方 = 动画事件 ShootL → _shootBack()（= _shoot() 后把速度 x 取反、位置 -50）
+ * · 所以「后方两颗」不是代码循环，而是 ShootL 动画里连发两个 ShootL 帧事件
+ * （ShootB 同理；播哪支由 detectEnemySplit() 决定：1=只有前 / 2=只有后 / 3=两边都有）
+ * ⇒ 要真对调，必须【同时】改"播哪支动画"和"往哪个方向发"（只改方向会变成 1 颗）
+ * · 大招：两个计数器（PlantfoodPeaCount 60 前 / PlantfoodPeaCountBack 90 后）补间到 0，
+ * 前计数器 → onFoodLeftPeaCountDec → _shoot()，后计数器 → _shootBack()
+ * ⇒ 方向一对调，数量自然变成 90 前 / 60 后 ✓（不用单独给大招写逻辑）
+ * · 翻转用引擎自带的 Character.scale：setter 里 node.scale.x = _scale×U×originalScale（x【带符号】）
+ * ⇒ this.scale = -1 就是水平镜像；装扮是同一个 armature 里的 COS* 槽位、动画也在里面 ⇒ 一起翻；
+ * 影子在 followShade 里按 this.scale 算 ⇒ 自动跟着翻 ✓
  * ========================================================================== */
 
 /* ==========================================================================
- * 翻转适配（**1.5.5 口径**，2026/10/10 据实机 bundle 逐字核对）
+ * 翻转适配（**1.5.5 口径**，据实机 bundle 逐字核对）
  *
  * 引擎事实（1.5.5 的 SplitPea，已从 `game-main-bundle.js` 抠出原文）：
- *   · `_shoot(o, n, e, i, a, s)`：弹种 e / 速度 i / **方向向量 a** / **发射口节点 s** 都是【参数】
- *     （默认 a = new Vec2(1,0)、s = this.peaSpawnpoint），最终速度 = `a.normalize().multiplyScalar(i)`
- *   · `_shootBack(o,e,a)` = `this._shoot(o, e, a, 8, new d(-1,0), this.peaBackPoint)` ⇒ 后方只是"翻参数"
- *   · `detectEnemySplit()` 返回 **`{Left, Right}` 对象**（不再是 0/1/2/3 数字），
- *     `specialPlantUpdate` 里读 `a.Left || a.Right`，并**动态拼动画名** `"Shoot" + "R"/"L"`
- *   ⇒ 所以本模组的翻转**只要两件事**：
- *     ① 索敌【交给引擎】（它同时给 Left/Right，本来就是对的）
- *     ② 发射时把**方向向量取反**；发射口**不动**（peaSpawnpoint / peaBackPoint 是植物根节点的子节点，
- *        会随 `scale = -1` 一起镜像，世界坐标自动落到翻过来的那一侧）
+ * · `_shoot(o, n, e, i, a, s)`：弹种 e / 速度 i / **方向向量 a** / **发射口节点 s** 都是【参数】
+ * （默认 a = new Vec2(1,0)、s = this.peaSpawnpoint），最终速度 = `a.normalize().multiplyScalar(i)`
+ * · `_shootBack(o,e,a)` = `this._shoot(o, e, a, 8, new d(-1,0), this.peaBackPoint)` ⇒ 后方只是"翻参数"
+ * · `detectEnemySplit()` 返回 **`{Left, Right}` 对象**（不再是 0/1/2/3 数字），
+ * `specialPlantUpdate` 里读 `a.Left || a.Right`，并**动态拼动画名** `"Shoot" + "R"/"L"`
+ * ⇒ 所以本模组的翻转**只要两件事**：
+ * ① 索敌【交给引擎】（它同时给 Left/Right，本来就是对的）
+ * ② 发射时把**方向向量取反**；发射口**不动**（peaSpawnpoint / peaBackPoint 是植物根节点的子节点，
+ * 会随 `scale = -1` 一起镜像，世界坐标自动落到翻过来的那一侧）
  * ========================================================================== */
 
 /** 翻转时把方向参数取反（不改发射口）
- *  ⚠️ 关键：`_shoot()` 经常**不带参数**调用（动画帧事件就是 `this._shoot()`），
- *     引擎内部对方向的默认值是 `new Vec2(1, 0)`（朝前）。
- *     ⇒ 传进来的 `a` 是 `undefined/0/null` 时，我们要**补一个朝后**的方向，
- *       而且**必须用引擎自己的 Vec2**（副本类型不匹配可能被下游拒绝）—— 由 `cx` 传进来。
+ * 关键：`_shoot()` 经常**不带参数**调用（动画帧事件就是 `this._shoot()`），
+ * 引擎内部对方向的默认值是 `new Vec2(1, 0)`（朝前）。
+ * ⇒ 传进来的 `a` 是 `undefined/0/null` 时，我们要**补一个朝后**的方向，
+ * 而且**必须用引擎自己的 Vec2**（副本类型不匹配可能被下游拒绝）—— 由 `cx` 传进来。
  */
 function gpnSpFlipVec(vec, cx) {
     const New = (x) => {
@@ -9338,9 +9450,9 @@ function gpnSpFlipVec(vec, cx) {
 
 
 /** 【诊断用】取渲染层实际值（只在 debugLog 打开时调用）
- *  为什么要它：`Character.scale` 是**逻辑值**（我们的翻转写的就是它），而"贴图朝哪边"最终
- *  由 `node.scale` 决定 —— 引擎完全可以只改 `node.scale` 而不经过 setter（那样逻辑值仍是 -1，
- *  但画面已经不翻了）。所以排查"翻转丢失"必须看渲染节点本身。
+ * 为什么要它：`Character.scale` 是**逻辑值**（我们的翻转写的就是它），而"贴图朝哪边"最终
+ * 由 `node.scale` 决定 —— 引擎完全可以只改 `node.scale` 而不经过 setter（那样逻辑值仍是 -1，
+ * 但画面已经不翻了）。所以排查"翻转丢失"必须看渲染节点本身。
  */
 function gpnSpDiag(plant) {
     const g = (fn, d) => { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
@@ -9385,7 +9497,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         }
     };
 
-    // ---- ① 左键：左右翻转（引擎只在"手上没拿卡"时才调 onMouseDown ⇒ 不抢种植左键）----
+    // ---- ① 左键：左右翻转（引擎只在"手上没拿卡"时才调 onMouseDown ⇒ 不抢种植左键） ----
     const baseOnMouseDown = P.onMouseDown;      // 可能继承自 Plant 基类
     P.onMouseDown = function (ev) {
         let r;
@@ -9396,7 +9508,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (!featOn('splitpea')) return r;                  // 【运行期开关】关掉 ⇒ 完全不插手（原版行为）
             if (!ev || typeof ev.getButton !== 'function') return r;
             if (ev.getButton() !== 0) return r;                 // 只认左键
-            // ★ 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则左右连翻两下）
+            // 一次点击只认一次（引擎在 mouseUp 还会补发一次 onMouseDown ⇒ 否则左右连翻两下）
             if (!gpnClickOnce(this, '__gpnSpClickAt')) return r;
             const next = !this.__gpnSpFlip;
             applyFlip(this, next);
@@ -9409,10 +9521,10 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push({ Cls: SplitPeaPlant, name: 'onMouseDown', original: baseOnMouseDown });
 
-    // ---- ② 翻转时把【方向参数】取反（1.5.5 口径：方向 = `_shoot` 的第 5 个参数）----
-    //   说明：_shootBack 现在只是 `this._shoot(o,e,a,8,vec(-1,0),this.peaBackPoint)` 的薄封装，
-    //   所以【只包 _shoot 一处】即可覆盖前/后两个口（包 _shootBack 会双重调用）。
-    //   发射口参数【不动】：peaSpawnpoint / peaBackPoint 是植物根节点子节点，随 scale=-1 一起镜像。
+    // ---- ② 翻转时把【方向参数】取反（1.5.5 口径：方向 = `_shoot` 的第 5 个参数） ----
+    // 说明：_shootBack 现在只是 `this._shoot(o,e,a,8,vec(-1,0),this.peaBackPoint)` 的薄封装，
+    // 所以【只包 _shoot 一处】即可覆盖前/后两个口（包 _shootBack 会双重调用）。
+    // 发射口参数【不动】：peaSpawnpoint / peaBackPoint 是植物根节点子节点，随 scale=-1 一起镜像。
     const recShoot = methodRecord(SplitPeaPlant, '_shoot');
     P._shoot = function (o, n, e, i, a, sp) {
         if (featOn('splitpea') && this.__gpnSpFlip) {   // 【运行期开关】关掉 ⇒ 直接走原版
@@ -9431,14 +9543,14 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push(recShoot);
 
-    // ---- ③ 索敌结果也要跟着翻转（**1.5.5：把 {Left,Right} 交换**）----
-    //   引擎事实（1.5.5，逐字）：`detectEnemySplit()` 返回的 Left/Right 是【屏幕左右】，
-    //   调用处 `specialPlantUpdate` 用它决定播哪支动画：
-    //       a.Right ⇒ r = "Shoot"+"R"（原版"前"，1 帧事件 = 1 颗）
-    //       a.Left  ⇒ r = "Shoot"+"L"（原版"后"，2 帧事件 = 2 颗）
-    //   ⇒ 贴图一翻，屏幕左右与"植物的前后"就对调了。若只翻发射方向（② 那段）而不翻这里，
-    //     就会"往对的方向发射，但用的还是原来那支动画/那套前后数量" ⇒ 表现为【索敌没翻】。
-    //   ⇒ 因此翻转时把 {Left, Right} 交换；**必须返回对象**（返回数字会让 a.Left/a.Right 变 undefined ⇒ 永不开火）。
+    // ---- ③ 索敌结果也要跟着翻转（**1.5.5：把 {Left,Right} 交换**） ----
+    // 引擎事实（1.5.5，逐字）：`detectEnemySplit()` 返回的 Left/Right 是【屏幕左右】，
+    // 调用处 `specialPlantUpdate` 用它决定播哪支动画：
+    // a.Right ⇒ r = "Shoot"+"R"（原版"前"，1 帧事件 = 1 颗）
+    // a.Left ⇒ r = "Shoot"+"L"（原版"后"，2 帧事件 = 2 颗）
+    // ⇒ 贴图一翻，屏幕左右与"植物的前后"就对调了。若只翻发射方向（② 那段）而不翻这里，
+    // 就会"往对的方向发射，但用的还是原来那支动画/那套前后数量" ⇒ 表现为【索敌没翻】。
+    // ⇒ 因此翻转时把 {Left, Right} 交换；**必须返回对象**（返回数字会让 a.Left/a.Right 变 undefined ⇒ 永不开火）。
     const baseDetect = P.detectEnemySplit;      // 引擎原版；可能不存在（别的植物类型）
     if (typeof baseDetect === 'function') {
         P.detectEnemySplit = function () {
@@ -9460,7 +9572,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         warn('裂荚射手：引擎没有 detectEnemySplit（翻转后动画前后不会对调）');
     }
 
-    // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化）----
+    // ---- ④ 移动位置后保持翻转（搬株只换格子，不重初始化） ----
     if (typeof P.specialPlantOnSquareChange === 'function') {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnSquareChange');
         P.specialPlantOnSquareChange = function (t, o) {
@@ -9473,10 +9585,10 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     }
 
     // ---- ⑤ 池化复用：新种一株默认不翻转 ----
-    //   ⚠️ 待查（0.15.0 融合植物 splitpea_mgp 的开大丢翻转）：引擎每次 OnEnable 都会调
-    //   `specialPlantOnEnable`，而 `Character.onEnable` 会把 node.scale 重置 ⇒ 这个"复位"钩子
-    //   有可能在**植物存活期间**被触发，从而把我们的翻转清掉。下面加了诊断日志，先用实机日志确认
-    //   （日志只在 CFG.splitpea.debugLog 打开时打，不改任何行为）。
+    // 待查（0.15.0 融合植物 splitpea_mgp 的开大丢翻转）：引擎每次 OnEnable 都会调
+    // `specialPlantOnEnable`，而 `Character.onEnable` 会把 node.scale 重置 ⇒ 这个"复位"钩子
+    // 有可能在**植物存活期间**被触发，从而把我们的翻转清掉。下面加了诊断日志，先用实机日志确认
+    // （日志只在 CFG.splitpea.debugLog 打开时打，不改任何行为）。
     if (typeof P.specialPlantOnEnable === 'function') {
         const rec = methodRecord(SplitPeaPlant, 'specialPlantOnEnable');
         P.specialPlantOnEnable = function () {
@@ -9501,8 +9613,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     }
 
     // ---- ⑥ 诊断（只打日志、不改行为）：开大流程的进出场与缩放 ----
-    //   目的：定位"普攻概率开大"后翻转丢在哪一步（引擎的 Plant.food() 会重置 body 缩放，
-    //   MGP 的 specialPlantFood 还会 upgrade()/gunup()）。①/②/⑤ 三处日志连起来看顺序即可定论。
+    // 目的：定位"普攻概率开大"后翻转丢在哪一步（引擎的 Plant.food() 会重置 body 缩放，
+    // MGP 的 specialPlantFood 还会 upgrade()/gunup()）。①/②/⑤ 三处日志连起来看顺序即可定论。
     if (typeof P.specialPlantFood === 'function') {
         const recFood = methodRecord(SplitPeaPlant, 'specialPlantFood');
         P.specialPlantFood = function () {
@@ -9522,12 +9634,12 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
         const recFoodEnd = methodRecord(SplitPeaPlant, 'specialPlantFoodEnd');
         P.specialPlantFoodEnd = function () {
             const r = recFoodEnd.original.apply(this, arguments);
-            // ★ 修复（2026/10/10 实机 + 日志定位，属"纯视觉层"）：
-            //   MGP 开大（`Plant.food()`）会把 `body`（真正画贴图/装扮的骨架子节点）从植物节点上
-            //   摘走挂到开大专用层、并在结束时写回 `body.scale = (1,1,1)`；`node.scale` 虽仍是负值，
-            //   但骨架的镜像观感被这次"摘走→挂回+改缩放"打乱，表现为【贴图回到未翻转】。
-            //   `Character.scale` 的 setter 本身就是"写 node.scale"，所以在这里把翻转【重新写一次】，
-            //   强制引擎重算镜像即可（子弹方向/前后数量在 A 型里本来就是对的，不动）。
+            // 修复（实机 + 日志定位，属"纯视觉层"）：
+            // MGP 开大（`Plant.food()`）会把 `body`（真正画贴图/装扮的骨架子节点）从植物节点上
+            // 摘走挂到开大专用层、并在结束时写回 `body.scale = (1,1,1)`；`node.scale` 虽仍是负值，
+            // 但骨架的镜像观感被这次"摘走→挂回+改缩放"打乱，表现为【贴图回到未翻转】。
+            // `Character.scale` 的 setter 本身就是"写 node.scale"，所以在这里把翻转【重新写一次】，
+            // 强制引擎重算镜像即可（子弹方向/前后数量在 A 型里本来就是对的，不动）。
             if (this.__gpnSpFlip) {
                 try { this.scale = -1; } catch (e) { warn('裂荚射手：开大结束重写翻转出错', e); }
             }
@@ -9544,12 +9656,12 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     }
 
     // ---- ⑦b 【body 缩放自洽纠正】可被"帧内"与"帧末"两处调用 ----
-    //   为什么需要两处：`node.scale = x` 这类**直接赋值不会通知引擎重算世界变换**（脏标记/传播时机问题），
-    //   所以"值对了、画面没变"是可能发生的。这里统一做三件事：
-    //     ① 用 `setScale()`（走 setter、会标脏）而不是直改分量；
-    //     ② 主动 `invalidateChildren(...)` 失效子树（把可用的失效入口都试一遍）；
-    //     ③ 由 `characterUpdate`（帧内）与 `characterLateUpdate`（帧末）各调一次，
-    //        保证"最后一次写"发生在引擎渲染取变换之前。
+    // 为什么需要两处：`node.scale = x` 这类**直接赋值不会通知引擎重算世界变换**（脏标记/传播时机问题），
+    // 所以"值对了、画面没变"是可能发生的。这里统一做三件事：
+    // ① 用 `setScale()`（走 setter、会标脏）而不是直改分量；
+    // ② 主动 `invalidateChildren(...)` 失效子树（把可用的失效入口都试一遍）；
+    // ③ 由 `characterUpdate`（帧内）与 `characterLateUpdate`（帧末）各调一次，
+    // 保证"最后一次写"发生在引擎渲染取变换之前。
     const gpnSpFixBodyScale = (plant) => {
         if (!plant || !plant.__gpnSpFlip) return 0;
         const bd = plant.body;
@@ -9587,19 +9699,19 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
 
 
-    //   为什么需要（2026/10/10 实机日志定位，属于帧时序竞态）：
-    //     · 引擎 `Character.onEnable` 里有一句 `this.node.scale = new Vec3(d,d,d)`（把渲染缩放复位）；
-    //     · 我们的翻转走 `Character.scale` setter（写 `node.scale = _scale × U × originalScale`）；
-    //     · 一旦引擎在"我们翻完之后"把 `node.scale` 复位，`_scale` 仍是 -1（逻辑没丢）、
-    //       但【画面已经不翻了】；只有下次 setter 被调用才会重新写负值。
-    //     · 实测证据：开大流程里 `body.parent` 会被摘走再挂回（`New Node` ⇄ 植物节点），
-    //       `body.scale.x` 在结束时被写成 1 ⇒ 这就是竞态发生的窗口。
-    //     · 之所以"verboseLog 开=正常、关=复现"：日志开销改变了帧内时序（巧合掩盖了竞态）。
-    //   ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
+    // 为什么需要（实机日志定位，属于帧时序竞态）：
+    // · 引擎 `Character.onEnable` 里有一句 `this.node.scale = new Vec3(d,d,d)`（把渲染缩放复位）；
+    // · 我们的翻转走 `Character.scale` setter（写 `node.scale = _scale × U × originalScale`）；
+    // · 一旦引擎在"我们翻完之后"把 `node.scale` 复位，`_scale` 仍是 -1（逻辑没丢）、
+    // 但【画面已经不翻了】；只有下次 setter 被调用才会重新写负值。
+    // · 实测证据：开大流程里 `body.parent` 会被摘走再挂回（`New Node` ⇄ 植物节点），
+    // `body.scale.x` 在结束时被写成 1 ⇒ 这就是竞态发生的窗口。
+    // · 之所以"verboseLog 开=正常、关=复现"：日志开销改变了帧内时序（巧合掩盖了竞态）。
+    // ⇒ 每帧检查一次，便宜（两次属性读）且能"自愈"。只在裂荚类这一层钩，不影响其它植物。
     // ---- ⑦ 【自愈】每帧校正翻转：标记是"翻"的、但渲染节点已回正 ⇒ 立刻写回 -1 ----
     const baseCharUpdate = P.characterUpdate;          // 继承自 Plant；可能不存在
     /** 【运行期开关】关掉 splitpea 时，把"场上已经翻转的株"当场摆正。
-     *  只做一次（靠 __gpnSpFlip 标记判断）：复位渲染缩放 + 清掉翻转标记 ⇒ 下一帧不再插手。 */
+     * 只做一次（靠 __gpnSpFlip 标记判断）：复位渲染缩放 + 清掉翻转标记 ⇒ 下一帧不再插手。 */
     const gpnSpUnflip = (plant) => {
         try {
             if (!plant || !plant.__gpnSpFlip) return;
@@ -9616,8 +9728,8 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
             if (this.__gpnSpFlip) {
                 const cur = this.node && this.node.scale && this.node.scale.x;
                 if (typeof cur === 'number' && cur > 0) {
-                    // ★ 零开销路径：只计数 + 首帧抓一次调用栈；【不打任何日志】
-                    //   （这样一来时序与 verboseLog:false 时完全一致，能复现、又能拿到证据）
+                    // 零开销路径：只计数 + 首帧抓一次调用栈；【不打任何日志】
+                    // （这样一来时序与 verboseLog:false 时完全一致，能复现、又能拿到证据）
                     this.scale = -1;                    // 重新写渲染缩放（自愈）
                     gpnSpSelfHealTotal++;               // 累计（永不归零；自检/诊断用）
                     gpnSpSelfHealSpots++;               // 本次汇总窗口内计数（每 5 秒清零）
@@ -9637,19 +9749,19 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
                         }
                     }
                 }
-                // ★★ MGP 开大丢翻转的【正确修复】（2026/10/10 由"环形时间线 + 用户肉眼判定 B"定死）
-                //   事实链：
-                //     · 贴图与发射口的镜像，最终由 **body 的本地缩放符号**决定（骨架自己用的就是它）；
-                //     · 开大（`Plant.food()`）会把 body 摘到"开大层"（外层缩放 +1），为了保持世界观感，
-                //       引擎把 body 的本地缩放算成 `-0.42`（= 世界 -0.42 ÷ 父 +1）；这时的本地负号是**正确**的；
-                //     · 但 body 挂回 node（世界 -0.42）之后，本地缩放**没有重新计算**，仍是 `-0.42`
-                //       ⇒ 世界 = (-0.42) × (-0.42) = 正 ⇒ **贴图与发射口双双回到未翻转态**；
-                //     · （`body.worldScale` 恒正 —— Cocos 官方论坛已确认"负值会被自动纠正成正数" ⇒ 那条通路是死的。）
-                //     · 更深一层：**直接给 `scale.x` 赋值不会通知引擎重算世界变换**（脏标记/传播时机），
-                //       所以"值算对了、画面却不更新"完全可能发生 —— 这也是 `verboseLog:true` 时反而正常的原因
-                //       （日志开销把帧拉长，引擎的变换传播恰好落在我们写入之后）。
-                //   ⇒ 修法：维持自洽式符号，并**主动通知引擎**（setScale + invalidateChildren），
-                //     且在 **characterUpdate（帧内）与 characterLateUpdate（帧末）各写一次**。
+                // MGP 开大丢翻转的【正确修复】（由"环形时间线 + 肉眼判定 B"定死）
+                // 事实链：
+                // · 贴图与发射口的镜像，最终由 **body 的本地缩放符号**决定（骨架自己用的就是它）；
+                // · 开大（`Plant.food()`）会把 body 摘到"开大层"（外层缩放 +1），为了保持世界观感，
+                // 引擎把 body 的本地缩放算成 `-0.42`（= 世界 -0.42 ÷ 父 +1）；这时的本地负号是**正确**的；
+                // · 但 body 挂回 node（世界 -0.42）之后，本地缩放**没有重新计算**，仍是 `-0.42`
+                // ⇒ 世界 = (-0.42) × (-0.42) = 正 ⇒ **贴图与发射口双双回到未翻转态**；
+                // · （`body.worldScale` 恒正 —— Cocos 官方论坛已确认"负值会被自动纠正成正数" ⇒ 那条通路是死的。）
+                // · 更深一层：**直接给 `scale.x` 赋值不会通知引擎重算世界变换**（脏标记/传播时机），
+                // 所以"值算对了、画面却不更新"完全可能发生 —— 这也是 `verboseLog:true` 时反而正常的原因
+                // （日志开销把帧拉长，引擎的变换传播恰好落在我们写入之后）。
+                // ⇒ 修法：维持自洽式符号，并**主动通知引擎**（setScale + invalidateChildren），
+                // 且在 **characterUpdate（帧内）与 characterLateUpdate（帧末）各写一次**。
                 gpnSpFixBodyScale(this);
                 if (dt !== -1 && dbgOn(C.debugLog) && (Date.now() - gpnSpBodyFixLastReport > 5000)) {
                     gpnSpBodyFixLastReport = Date.now();
@@ -9663,7 +9775,7 @@ function makeSplitPeaPatch(SplitPeaPlant, deps) {
     };
     recs.push({ Cls: SplitPeaPlant, name: 'characterUpdate', original: baseCharUpdate });
     // 帧末兜底：`Character.lateUpdate` → `characterLateUpdate`。这次写入发生在引擎渲染取变换之前，
-    //   保证"最后一次写"是我们写的（哪怕引擎在帧内又把它改回去了）。
+    // 保证"最后一次写"是我们写的（哪怕引擎在帧内又把它改回去了）。
     const baseCharLate = P.characterLateUpdate;
     P.characterLateUpdate = function (dt) {
         let r;
@@ -9687,14 +9799,14 @@ export default {
     _config: CFG,
     _vanilla: VANILLA,                 // 同上：原版值表（"关掉开关时写回什么"的唯一出处）
     _features: FEATURES,               // 同上：自检用来核对开关表
-    _featSet: featSet,                 // ★ 配置界面写入开关的入口（自检用来验证"即时生效"）
+    _featSet: featSet,                 // 配置界面写入开关的入口（自检用来验证"即时生效"）
     _featOn: featOn,                   // 运行期判定
     _featDefaults: gpnFeatDefaults,     // 同上：出厂默认
     _featSnapshot: gpnFeatSnapshot,     // 同上：当前开关快照
     _featReset: gpnFeatStorageReset,    // 同上：恢复默认
     _gateStats: gpnGateStats,           // 同上：门禁包装计数（自检用）
-    // ⚠ 必须用**函数**形式：`gpnApplyDataPatch` 要到 setup 里（L6140 附近）才被赋值，
-    //    这里直接写变量名会把此刻的 `null` 快照走 ⇒ 导出的永远是 null（自检拿不到，白测）。
+    // 必须用**函数**形式：`gpnApplyDataPatch` 要到 setup 里（L6140 附近）才被赋值，
+    // 这里直接写变量名会把此刻的 `null` 快照走 ⇒ 导出的永远是 null（自检拿不到，白测）。
     _applyDataPatch: () => gpnApplyDataPatch,   // 同上：数据补丁（自检用来验证两态）
     _gatedBody: gpnGatedBody,            // 同上：门禁包装器本体（自检用）
     _followMergeOn: gpnFollowMergeOn,   // 同上：合并开关的依赖判定（纯查询，便于单测）
@@ -9704,7 +9816,7 @@ export default {
     _almTextOf: gpnAlmTextOf,          // 同上：取一株的图鉴文本（只读）
     _ALM_CHANGED: GPN_ALM_CHANGED,     // 同上：[图鉴 alias, 功能开关名] 名单（自检守卫用）
     _zhNum: gpnZhNum,                  // 同上：中文数字（0~20 汉字，超出回落阿拉伯）
-    // 场外范围兜底（修 2026/10/14 三个 BUG）—— 工具/纯函数，自检直接单测
+    // 场外范围兜底（修 三个 BUG）—— 工具/纯函数，自检直接单测
     _isOffField: gpnIsOffField,                 // 判定：这个弹道/僵尸是否在场外（lIndex<0 或 inLnC.cIndex==9）
     _isOffFieldRight: gpnIsOffFieldRight,       // 判定：这个格是不是「场外右侧」那个共享假格
     _laneByY: gpnLaneByY,                       // 按 Y 坐标求草坪行号（0..4）
@@ -9718,12 +9830,12 @@ export default {
     _sporePatch: makeSporeShroomPatch,          // 孢子菇：补丁工厂
     _sporeZombieGate: makeSporeShroomZombieGate,// 孢子菇：僵尸侧门禁工厂
     _sporeCommonShotHook: makeSporeShroomCommonShotHook, // 孢子菇：特效父节点观测钩子
-    _sporeDeathDamage: gpnSporeDeathDamage,     // ★ 亡语伤害取值（按 CabbageType 查弹道 Damage）
+    _sporeDeathDamage: gpnSporeDeathDamage,     // 亡语伤害取值（按 CabbageType 查弹道 Damage）
     _sporeFxDrop: gpnSporeFxDrop,               // 特效缓存清理（自检核对"换场景要丢缓存"）
-    _sporeFxGetParent: gpnSporeFxGetParent,     // ★ 特效父节点（自检核对"优先本行 prjLayer、key 为空不认缓存"）
+    _sporeFxGetParent: gpnSporeFxGetParent,     // 特效父节点（自检核对"优先本行 prjLayer、key 为空不认缓存"）
     _sporeFxSetParent: gpnSporeFxSetParent,     // 埋缓存（自检用）
     _sporeFxChain: gpnSporeFxChain,             // 节点层链（诊断；自检保证不抛错）
-    // ---- 蒲公英大招「驱离运兵艇」（§3.74）----
+    // ---- 蒲公英大招「驱离运兵艇」（§3.74） ----
     _isDropShip: gpnIsDropShip,                 // 运兵艇判定（Zombie_Type 主判据 / instanceof 次判据）
     _dandelionDrive: gpnDandelionDriveDropShips,// 全屏扫池 + 逐只驱离（返回成功次数）
     _sporeFindProp: gpnSporeFindProp,           // prefab 属性挖掘（照抄本 MOD 的 findPropInNode）
@@ -9745,25 +9857,25 @@ export default {
     _sporePoisonStampActive: gpnPoisonStampActive,
     _meteorIsRealZombie: gpnMeteorIsRealZombie, // 真僵尸判定（排除护盾/被魅惑/非场内）
     _meteorCollectZombies: gpnMeteorCollectZombies,
-    _meteorFirstTarget: gpnMeteorFirstTarget,   // ★ 第 1 颗索敌（本行最靠左 → 全场最靠左 → 障碍/护盾 → 兜底）
-    _meteorTombBlack: GPN_METEOR_TOMB_BLACK,    // ★ 不当障碍物的 Tomb（**只有** kongfu_TNT=17）
+    _meteorFirstTarget: gpnMeteorFirstTarget,   // 第 1 颗索敌（本行最靠左 → 全场最靠左 → 障碍/护盾 → 兜底）
+    _meteorTombBlack: GPN_METEOR_TOMB_BLACK,    // 不当障碍物的 Tomb（**只有** kongfu_TNT=17）
     _meteorTombIsBlacklisted: gpnMeteorTombIsBlacklisted,  // 黑名单判定（自检单测）
     _meteorCollectTombs: gpnMeteorCollectTombs,             // 障碍物采集（含冲浪板；剔黑名单/我方/死亡）
     _meteorCollectEnemyShields: gpnMeteorCollectEnemyShields, // 敌方护盾采集（按 hypnotized 判阵营）
     _meteorCollectObstacles: gpnMeteorCollectObstacles,     // 上面两者合并
-    _meteorDensestCell: gpnMeteorPickDensestCell,   // ★ 1×3 同排横带密度最高格（并列随机）
-    _meteorDensestScore: gpnMeteorDensestScore,     // ★ 只返回最高分（自检做「同排隔离」构造性证明）
+    _meteorDensestCell: gpnMeteorPickDensestCell,   // 1×3 同排横带密度最高格（并列随机）
+    _meteorDensestScore: gpnMeteorDensestScore,     // 只返回最高分（自检做「同排隔离」构造性证明）
     _meteorRandomZombieCell: gpnMeteorPickRandomZombieCell,
-    _meteorSecondCell: gpnMeteorSecondCell,     // ★ 第 2 颗落点（50/50；无目标 ⇒ null ⇒ 调用方走随机格兜底）
-    _meteorRandomLawnCell: gpnMeteorRandomLawnCell, // ★ 原版口径的"随机草坪格"兜底
-    _meteorShouldIgnite: gpnMeteorShouldIgnite,             // ★ 点燃门判据（纯函数）
+    _meteorSecondCell: gpnMeteorSecondCell,     // 第 2 颗落点（50/50；无目标 ⇒ null ⇒ 调用方走随机格兜底）
+    _meteorRandomLawnCell: gpnMeteorRandomLawnCell, // 原版口径的"随机草坪格"兜底
+    _meteorShouldIgnite: gpnMeteorShouldIgnite,             // 点燃门判据（纯函数）
     _meteorZombieInLawn: gpnMeteorZombieInLawn,             // 场上有没有草坪格僵尸
-    _meteorAlreadyIgnited: gpnMeteorAlreadyIgnited,             // ★ 本轮是否已点燃（幂等）
+    _meteorAlreadyIgnited: gpnMeteorAlreadyIgnited,             // 本轮是否已点燃（幂等）
     _meteorMarkIgnited: gpnMeteorMarkIgnited,                   // 标记（自检用）
     _meteorClearIgnited: gpnMeteorClearIgnited,                 // 清除标记
-    _meteorHasIgnitableObstacle: gpnMeteorHasIgnitableObstacle, // ★ 点燃门：有没有可瞄准障碍
-    _meteorShouldSupplementIgnite: gpnMeteorShouldSupplementIgnite, // ★ 补点燃决策（纯函数）
-    _meteorCycleBailOut: gpnMeteorCycleBailOut,     // ★ 本轮收尾（= 调引擎 rest()），防"每帧死循环+动画卡死"
+    _meteorHasIgnitableObstacle: gpnMeteorHasIgnitableObstacle, // 点燃门：有没有可瞄准障碍
+    _meteorShouldSupplementIgnite: gpnMeteorShouldSupplementIgnite, // 补点燃决策（纯函数）
+    _meteorCycleBailOut: gpnMeteorCycleBailOut,     // 本轮收尾（= 调引擎 rest()），防"每帧死循环+动画卡死"
     _meteorShieldEnum: () => gpnMeteorLastZombieEnum,   // 工厂收到的 ZombieEnum（自检单测护盾判定用）
     _gpnNullWriteStats: () => ({ total: gpnNullWriteTotal, detail: gpnNullWriteDetail, quiet: gpnNullWriteQuiet }),  // 同上：护栏降噪统计
     _gpnSpSelfHealTotal: () => gpnSpSelfHealTotal,   // 同上：裂荚每帧自愈的累计次数（自检核对）
@@ -9781,9 +9893,9 @@ export default {
 
     setup(ctx) {
         try { gpnCtx = ctx; } catch (e) { /* 忽略 */ }   // 供配置界面/生命周期使用
-        // ★★ 第一件事：抢占"活动实例令牌"（旧实例若还在，就地让它退役）
-        //    为什么必须在最前面：GP-NEXT 重载会重跑 setup，而旧实例的 onDispose 不会来
-        //    ⇒ 必须由新实例主动把旧的按住，否则两套逻辑并行（实机表现：面板点不开、开关错乱）。
+        // 第一件事：抢占"活动实例令牌"（旧实例若还在，就地让它退役）
+        // 为什么必须在最前面：GP-NEXT 重载会重跑 setup，而旧实例的 onDispose 不会来
+        // ⇒ 必须由新实例主动把旧的按住，否则两套逻辑并行（实机表现：面板点不开、开关错乱）。
         // 让位时的自己人清理：关掉本实例的窗体（否则新旧两个面板会叠在同一位置）
         try {
             gpnOnRetire = function () {
@@ -9796,9 +9908,9 @@ export default {
             };
         } catch (eOn) { /* 忽略 */ }
         try { gpnClaimInstance(); } catch (eC) { /* 忽略 */ }
-        // ★ 抢占令牌后立刻关掉上一个实例残留的窗体（实机：重载后两个面板会叠着）
+        // 抢占令牌后立刻关掉上一个实例残留的窗体（实机：重载后两个面板会叠着）
         try { gpnCloseStalePanels(); } catch (eSp) { /* 忽略 */ }
-        // ★ onDispose 也提到最前面注册（原来在面板块内，面板安装一旦抛错就永远注册不上）
+        // onDispose 也提到最前面注册（原来在面板块内，面板安装一旦抛错就永远注册不上）
         try {
             const RT0 = ctx && ctx.runtime;
             if (RT0 && typeof RT0.onDispose === 'function') {
@@ -9849,31 +9961,31 @@ export default {
             'chunks:///_virtual/MeteorFlower.ts',      // 37（流星花：索敌策略重写 —— 第1颗本行优先/可索障碍与护盾、第2颗不再打歪）
             'chunks:///_virtual/SporeShroom.ts',       // 38（孢子菇：亡语 1×3 伤害+感染+眩晕 / 阳光200 / 血量150 / 图鉴两条特点）
             // ↓ 39~47：孢子菇 ×1.5（R6/R7）—— 毒性家族伤害加成要在**植物自己的发射/伤害入口**
-            //   打标或开窗口（S4-1 实测：命中时无法反查来源）。这些模块**追加在末尾、不动旧索引**。
+            // 打标或开窗口（S4-1 实测：命中时无法反查来源）。这些模块**追加在末尾、不动旧索引**。
             'chunks:///_virtual/Peashooter.ts',        // 39（豌豆系 _shoot：毒液豌豆/小喷菇/海蘑菇共用；它 return 弹道）
             'chunks:///_virtual/ScaredyShroom.ts',     // 40（胆小菇：自己的 _shoot，**不** return 弹道 ⇒ 走 pending）
-            'chunks:///_virtual/CabbagePult.ts',       // 41（⚠️ 心蕊继承的是抛投系！_lobToZombie/_lobToTomb/_lobToPos）
+            'chunks:///_virtual/CabbagePult.ts',       // 41（心蕊继承的是抛投系！_lobToZombie/_lobToTomb/_lobToPos）
             'chunks:///_virtual/FumeShroom.ts',        // 42（大喷菇：_shoot 里就地 3×1 直伤）
             'chunks:///_virtual/Vamporcini.ts',        // 43（吸血菇：absorb 就地直伤 + 回血）
             'chunks:///_virtual/GloomShroom.ts',       // 44（忧郁菇：detectEnemies 3×3 直伤 + 暗影强化时的 setPoison）
             'chunks:///_virtual/ShadowShroom.ts',      // 45（毒影菇：specialPlantOnEaten 上纯 Dot）
             'chunks:///_virtual/AilMint.ts',           // 46（毒薄荷：specialMintAnimationListener 的 boost_begin 上毒）
             'chunks:///_virtual/MariGold.ts',          // 47（万寿菊**基类**：`specialSunflowerAnimationListener` 里虚调 `this._turn`
-                                                       //     ⇒ 紫色万寿菊的子类没覆盖这个回调，窗口正好罩住它自己那份 `_turn`。
-                                                       //     ⚠️ 不要改挂 `MariGoldPurple.ts`：那个模块**没有对外导出类**（实机 F12 证过））
+                                                       // ⇒ 紫色万寿菊的子类没覆盖这个回调，窗口正好罩住它自己那份 `_turn`。
+                                                       // 不要改挂 `MariGoldPurple.ts`：那个模块**没有对外导出类**（实机 F12 证过））
             'chunks:///_virtual/goopeaFoodPrj.ts',     // 48（毒液豌豆·**大招弹**：detectEnemy 里直伤 + Poison{50,5}）
             'chunks:///_virtual/GooTileLiquid.ts',     // 49（上面那发大招留下的"黏液地面"：PoisonDPS 50 / goo）
             'chunks:///_virtual/SkyDropShipZombie.ts', // 50（运兵艇 `sky_dropship`：蒲公英大招「驱离」要按类精确判定；
-                                                       //     ⚠️ 它是"非真僵尸"：判定框退化、眩晕/冰冻/毒/击退全是空函数，
-                                                       //     唯一干净的出口就是它自己的 `playDie`（离场））
+                                                       // 它是"非真僵尸"：判定框退化、眩晕/冰冻/毒/击退全是空函数，
+                                                       // 唯一干净的出口就是它自己的 `playDie`（离场））
             'chunks:///_virtual/SoundRescourses.ts',   // 51（音效资源：巴豆屁的 `playZombieFart` 在这里；
-                                                       //     音量 = `play(clip, volume)` 的第 2 个参数 ⇒ 150% 就是传 1.5）
+                                                       // 音量 = `play(clip, volume)` 的第 2 个参数 ⇒ 150% 就是传 1.5）
             'chunks:///_virtual/levelController.ts',   // 52（`LevelPlay.shakeScreen(duration)`：**屏幕震动**的原版入口，
-                                                       //     流星花的流星子弹 / 黑暗巨人攻击都是调它；幅度固定 ±5px、0.2s 一轮）
+                                                       // 流星花的流星子弹 / 黑暗巨人攻击都是调它；幅度固定 ±5px、0.2s 一轮）
             'chunks:///_virtual/TallNut.ts',           // 53（高坚果类 `TallNutPlant`：**按类匹配**比按 `Plant_Type` 字符串稳；
             'chunks:///_virtual/SpringBean.ts',        // 54（弹簧豆 SpringBean：群体击退/休息/落地效果都在它自己的方法上改）
             'chunks:///_virtual/Squash.ts',            // 55（窝瓜：只为让 squashSound 组件类注册，运行时从窝瓜 prefab 取 smashSounds 当落地音效）
-                                                       //     ⚠️ `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
+                                                       // `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
         // 先读 features.json（读不到就按全开处理），再加载模块
@@ -9946,20 +10058,20 @@ export default {
 
 
 
-            // ---- 1d. 配置界面（入口行挂在原版设置窗底部；点它打开我们自己的窗体）----
-            //   ⚠️ 本块是【整体重写版】：早期用"字符串打补丁"往旧代码里反复插入小补丁，导致层级/顺序反复出错
-            //      （曾出现：建行途中触发刷新、refresh 块被插到错层级、let 缩进 0 等）。现改为：
-            //        · 所有行对象存进一个数组 entries[{key,label,master,row,sprite,labelNode}]；
-            //        · **任何点击 ⇒ 改开关值 ⇒ renderAll() 全量重画**（颜色 / 文字 / 置灰一次算清）；
-            //        · 结构扁平、无嵌套陷阱，便于后续维护与排错。
-            //   实测事实（全部已在本项目验证过，勿再改）
-            //     · 原版设置窗用 node.active 开关 ⇒ 必须挂它的 onEnable 才能在"打开时"插入口行；
-            //     · 原版实测行尺寸 968x140；内容区 1916.4x1440（两列）；滚动视口 1916.4x840；
-            //     · 组件识别不能比类名字符串 ⇒ 按属性特征（clickEvents / string / spriteFrame）；
-            //     · Graphics 不可用（Error 3804）；新建节点必须"先入树再加 UITransform/Label"；
-            //     · Sprite.color 染色、Label.string 改字、node.on(touch-end) 点击 —— 均可用。
-            //   开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
-            //             主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
+            // ---- 1d. 配置界面（入口行挂在原版设置窗底部；点它打开我们自己的窗体） ----
+            // 本块是【整体重写版】：早期用"字符串打补丁"往旧代码里反复插入小补丁，导致层级/顺序反复出错
+            // （曾出现：建行途中触发刷新、refresh 块被插到错层级、let 缩进 0 等）。现改为：
+            // · 所有行对象存进一个数组 entries[{key,label,master,row,sprite,labelNode}]；
+            // · **任何点击 ⇒ 改开关值 ⇒ renderAll() 全量重画**（颜色 / 文字 / 置灰一次算清）；
+            // · 结构扁平、无嵌套陷阱，便于后续维护与排错。
+            // 实测事实（全部已在本项目验证过，勿再改）
+            // · 原版设置窗用 node.active 开关 ⇒ 必须挂它的 onEnable 才能在"打开时"插入口行；
+            // · 原版实测行尺寸 968x140；内容区 1916.4x1440（两列）；滚动视口 1916.4x840；
+            // · 组件识别不能比类名字符串 ⇒ 按属性特征（clickEvents / string / spriteFrame）；
+            // · Graphics 不可用（Error 3804）；新建节点必须"先入树再加 UITransform/Label"；
+            // · Sprite.color 染色、Label.string 改字、node.on(touch-end) 点击 —— 均可用。
+            // 开关状态表现：**整行染色**（绿=开 / 红=关；与原版二态项一致）+ 右侧「开/关」小字；
+            // 主子联动：**父关 ⇒ 子行整行变灰**（不可点）。
             try {
                 const gpnCfgV = 'v28';
                 let origWin = null;          // 原版设置窗节点
@@ -9999,14 +10111,14 @@ export default {
                     { key: 'redstinger', label: '红针花' },
                     { key: 'murkadamia', label: '暗影夏威夷果' },
                     { key: 'splitpea', label: '裂荚射手' },
-                    { key: 'meteorflowerAim', label: '流星花' },     // ★ 2026/10/15 补：曾经漏登记 ⇒ 界面上看不到、也切不了
-                    { key: 'sporeshroom', label: '孢子菇' },          // ★ 2026/10/16 新增：亡语 + 数值 + 图鉴两条特点
-                    //   （顺序与 FEATURES 略有不同是**有意的**：玩家视角下「推植物修复」更适合排在末尾）
+                    { key: 'meteorflowerAim', label: '流星花' },     // 补：曾经漏登记 ⇒ 界面上看不到、也切不了
+                    { key: 'sporeshroom', label: '孢子菇' },          // 新增：亡语 + 数值 + 图鉴两条特点
+                    // （顺序与 FEATURES 略有不同是**有意的**：玩家视角下「推植物修复」更适合排在末尾）
                     { key: 'pushPlantFix', label: '推植物修复' },
                     { key: 'verboseLog', label: '诊断日志' },
                 ];
 
-                /* ---------- 小工具（全部只用实测可用的 API） ---------- */
+                /* ---- ---- -- 小工具（全部只用实测可用的 API） ---- ---- -- */
                 function ccColor(r, g, b, a) {
                     try { const ccg = (typeof cc !== 'undefined' && cc) ? cc : null; return ccg.color(r, g, b, a); }
                     catch (e) { return { r: r, g: g, b: b, a: a }; }
@@ -10058,17 +10170,17 @@ function findSprite(n) {
                 }
                 function noWidget(n) { try { for (const c of (n.components || [])) { if (c && c.isAlignLeft !== undefined) c.enabled = false; } } catch (e) { /* 忽略 */ } }
 
-                /* ---------- 入口行：克隆原版 KeyBinds 行（只留文字 + 蓝色齿轮） ---------- */
+                /* ---- ---- -- 入口行：克隆原版 KeyBinds 行（只留文字 + 蓝色齿轮） ---- ---- -- */
                 function buildEntryRow(ccg) {
                     const row = ccg.instantiate(entryTemplate);
                     row.name = 'gpnConfigRow';
                     killChildren(row, true);                  // 只留 ToolTip（行名）
-                    // 【v22】按用户要求：入口行**不放蓝色齿轮**（只留「配置界面」文字，整行可点）。
-                    //   说明：原版那颗齿轮在 website 节点里，点击是"打开键位说明网页"，容易让玩家误解，
-                    //   所以干脆不放。若将来想加回来：从 entryTemplate 里 clone 名为 website 的子节点挂到这里即可。
+                    // 【v22】按要求：入口行**不放蓝色齿轮**（只留「配置界面」文字，整行可点）。
+                    // 说明：原版那颗齿轮在 website 节点里，点击是"打开键位说明网页"，容易让玩家误解，
+                    // 所以干脆不放。若将来想加回来：从 entryTemplate 里 clone 名为 website 的子节点挂到这里即可。
                     clearClicks(row);
                     setText(findDeep(row, 'ToolTip', 0) || row, '配置界面');
-                    // ★ 蓝色齿轮 = 「恢复默认」（用户要求：单击即执行，不二次确认）
+                    // 蓝色齿轮 = 「恢复默认」（要求：单击即执行，不二次确认）
                     try {
                         const webTpl = (entryTemplate.children || []).find((k) => String((k && k.name) || '').indexOf('website') === 0);
                         if (webTpl) {
@@ -10093,10 +10205,10 @@ function findSprite(n) {
                         } else { clog('入口行：模板里找不到 website 节点，齿轮未加入'); }
                     } catch (eG) { clog('入口行齿轮处理失败：' + eG); }
                     let locked = 0;
-                    // ★★ 把"打开面板"抽成具名函数并登记到全局注册表，行点击改为**派发**。
-                    //    为什么：入口行可能由**旧实例**插进【同一个窗口对象】（诊断日志已证实），
-                    //    那行的处理器绑定旧实例（它的 panel/origWin 是旧的）⇒ 点了没反应。
-                    //    现在点击时**现查**当前活动实例的实现 ⇒ 无论这行谁插的都能打开。
+                    // 把"打开面板"抽成具名函数并登记到全局注册表，行点击改为**派发**。
+                    // 为什么：入口行可能由**旧实例**插进【同一个窗口对象】（诊断日志已证实），
+                    // 那行的处理器绑定旧实例（它的 panel/origWin 是旧的）⇒ 点了没反应。
+                    // 现在点击时**现查**当前活动实例的实现 ⇒ 无论这行谁插的都能打开。
                     function openPanel() {
                         try {
                             if (gpnDisposed) return;                       // 旧运行时不响应
@@ -10121,7 +10233,7 @@ function findSprite(n) {
                     return row;
                 }
 
-                /* ---------- render：唯一的状态画法（颜色 + 文字 + 置灰） ---------- */
+                /* ---- ---- -- render：唯一的状态画法（颜色 + 文字 + 置灰） ---- ---- -- */
                 function renderAll() {
                     entries.forEach((e, i) => {
                         try {
@@ -10138,13 +10250,13 @@ function findSprite(n) {
                     });
                 }
 
-                /* ---------- 刷新已建卡片的阳光显示（数值类开关即时生效的关键） ---------- */
-                //  数据（objdata.SunCost）我们早就改了；但已建卡片把阳光缓存在 _SUNCOST 里，
-                //  必须按引擎自己的惯用法「自赋值」一次，才会同时更新缓存与价格文字。
+                /* ---- ---- -- 刷新已建卡片的阳光显示（数值类开关即时生效的关键） ---- ---- -- */
+                // 数据（objdata.SunCost）我们早就改了；但已建卡片把阳光缓存在 _SUNCOST 里，
+                // 必须按引擎自己的惯用法「自赋值」一次，才会同时更新缓存与价格文字。
                 function gpnRefreshCardSunCost() {
-                    // ★ 探测版：先"看清卡片组件长什么样"，再做引擎同款刷新（SUNCOST 自赋值）。
-                    //   上次的实现按"typeof c._SUNCOST === number"去找，找到 0 个 —— 说明特征选错了，
-                    //   所以这次把**所有可疑组件**都打印出来（节点名/属性键/ID/值），用证据改。
+                    // 探测版：先"看清卡片组件长什么样"，再做引擎同款刷新（SUNCOST 自赋值）。
+                    // 上次的实现按"typeof c._SUNCOST === number"去找，找到 0 个 —— 说明特征选错了，
+                    // 所以这次把**所有可疑组件**都打印出来（节点名/属性键/ID/值），用证据改。
                     let found = 0, done = 0;
                     const shapes = [];
                     try {
@@ -10181,11 +10293,11 @@ function findSprite(n) {
                     } catch (e) { if (verboseOn()) clog('卡片探测出错：' + e); }
                 }
 
-                /* ---------- 建窗体（克隆原版外壳；行在打开时懒建） ---------- */
+                /* ---- ---- -- 建窗体（克隆原版外壳；行在打开时懒建） ---- ---- -- */
                 function buildPanel(ccg) {
                     try {
                         if (panel && panel.isValid) return panel;
-                        // ★ 跨场景重建：清空旧行数据（否则 buildRows 会因为 entries 非空而跳过 ⇒ 新窗体会是空的）
+                        // 跨场景重建：清空旧行数据（否则 buildRows 会因为 entries 非空而跳过 ⇒ 新窗体会是空的）
                         if (entries.length) if (verboseOn()) clog('重建面板：清空旧行数据 ' + entries.length + ' 行');
                         entries.length = 0;
                         panelRowsBox = null;
@@ -10216,20 +10328,20 @@ function findSprite(n) {
                         clone.active = false;
                         origWin.parent.addChild(clone);
                         panel = clone;
-                        // ★ 登记到跨实例共享表（新实例启动时能关掉它）
+                        // 登记到跨实例共享表（新实例启动时能关掉它）
                         try {
                             const reg = gpnPanelReg();
                             if (reg) reg[GPN_INSTANCE_ID] = { panel: clone, origWin: origWin };
                         } catch (eReg) { /* 忽略 */ }
                         if (verboseOn()) clog('窗体已建：组件清理 / 清点击 ' + cleared + ' 处 / 标题改写 ' + titleN + ' 处 / 行尺寸 ' + rowW + 'x' + rowH);
-                        // ★ 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
+                        // 建窗体后立即建行（此前是"懒建"，但懒建的触发条件在面板刚建时不成立 ⇒ 行一直没建）
                         buildRows(ccg);
                         if (verboseOn()) clog('建窗体后立即建行：entries=' + entries.length + ' ｜ rowsBox=' + (panelRowsBox ? panelRowsBox.name : '无'));
                         return clone;
                     } catch (e) { warn('【配置界面】建窗体出错', e); return null; }
                 }
 
-                /* ---------- 建 23 行（打开窗体时懒建一次） ---------- */
+                /* ---- ---- -- 建 23 行（打开窗体时懒建一次） ---- ---- -- */
                 function buildRows(ccg) {
                     try {
                         if (!panelRowsBox || entries.length) { clog('buildRows 跳过：rowsBox=' + !!panelRowsBox + ' 已有行=' + entries.length); return; }
@@ -10259,10 +10371,10 @@ function findSprite(n) {
                                 noWidget(row);
                                 setSize(row, cw, ch);
                                 setText(findDeep(row, 'ToolTip', 0) || row, it.label);
-                                // ★ 括号小字（照原版"最大帧率"那行的小字样式）：目前只有"诊断日志"需要
-                                //   ⚠ 原文案是「(需重新启动游戏)」—— **已过期**：本模组的开关（含诊断日志）
-                                //     都是**点一下立刻生效**（切换处理器里紧接着就 renderAll + apply 数据补丁），
-                                //     所以改成说明它"只影响日志、不影响游戏"。
+                                // 括号小字（照原版"最大帧率"那行的小字样式）：目前只有"诊断日志"需要
+                                // 原文案是「(需重新启动游戏)」—— **已过期**：本模组的开关（含诊断日志）
+                                // 都是**点一下立刻生效**（切换处理器里紧接着就 renderAll + apply 数据补丁），
+                                // 所以改成说明它"只影响日志、不影响游戏"。
                                 let hintNode = null;
                                 if (it.key === 'verboseLog') {
                                     try {
@@ -10312,7 +10424,7 @@ function findSprite(n) {
                                         if (e.master && !featOn(e.master)) { clog('已拦下：' + e.key + ' 需先开启 ' + (e.master || '')); return; }
                                         const next = !featOn(e.key);
                                         featSet(e.key, next);
-                                        renderAll();                                   // ★ 全量重画（父变 ⇒ 子立刻变灰）
+                                        renderAll();                                   // 全量重画（父变 ⇒ 子立刻变灰）
                                         try { if (gpnApplyDataPatch && typeof gpnApplyDataPatch.apply === 'function') gpnApplyDataPatch.apply(); } catch (eA) { /* 忽略 */ }
                                         try { gpnRefreshCardSunCost(); } catch (eB) { /* 忽略 */ }   // 数值类：刷新已建卡片的阳光显示
                                         clog('切换：' + e.label + '(' + e.key + ') ⇒ ' + (next ? '开' : '关'));
@@ -10357,10 +10469,10 @@ function findSprite(n) {
                     } catch (e) { warn('【配置界面】建行出错', e); }
                 }
 
-                /* ---------- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---------- */
+                /* ---- ---- -- 找原版设置窗 & 挂 onEnable（打开时确保入口行存在） ---- ---- -- */
                 function ensureEntry() {
     try {
-        // ★ 过期实例不插手（双保险：注册表已被新实例覆盖时，旧闭包即使被调到也不改界面）
+        // 过期实例不插手（双保险：注册表已被新实例覆盖时，旧闭包即使被调到也不改界面）
         if (typeof gpnIsActiveInstance === 'function' && !gpnIsActiveInstance()) return;
         if (!origWin || origWin.active === false) { lastWinActive = false; return; }
         if (lastWinActive) return;
@@ -10376,8 +10488,8 @@ function findSprite(n) {
         entryTemplate = tpl;
         const _oldRow = kids.filter((k) => k && k.name === 'gpnConfigRow');
         if (_oldRow.length) {
-            // ★ 关键：这行若是**别的实例**插的，它的点击处理器绑的是旧实例（点了没反应，诊断已证实）
-            //   ⇒ 删掉它、用本实例重插一行，让行的处理器与窗体都归当前活动实例。
+            // 关键：这行若是**别的实例**插的，它的点击处理器绑的是旧实例（点了没反应，诊断已证实）
+            // ⇒ 删掉它、用本实例重插一行，让行的处理器与窗体都归当前活动实例。
             let owner = null;
             try { const _rgr = gpnGlobalReg(); owner = _rgr && _rgr.rowOwner; } catch (eRo) { /* 忽略 */ }
             if (owner && owner !== GPN_INSTANCE_ID) {
@@ -10408,20 +10520,20 @@ function sceneName() {
 }
 function hookWin() {
     try {
-        // ★★ 第一件事：把"本实例的入口行加载器"登记到**全局注册表**。
-        //    为什么必须放在最前面（实机证据 config-l24）：
-        //      下面有提前返回 `if (hooked && origWin && origWin.isValid) return true;`，
-        //      而 GP-NEXT「保存并重载」后新实例的 hookedScene 恰好已是 mainScene、
-        //      origWin 又是**同一个** SettingWindow 节点（场景没销毁）⇒ 新实例**每次都从这里返回**，
-        //      于是"登记"那段永远不执行 ⇒ 注册表里留的是**旧实例的闭包**
-        //      ⇒ 原型上的派发器调用旧闭包（旧闭包带"过期实例不插手"守卫）⇒ 什么都不做
-        //      ⇒ 入口行插不进去（必须进关卡再退出才能恢复）。
+        // 第一件事：把"本实例的入口行加载器"登记到**全局注册表**。
+        // 为什么必须放在最前面（实机证据 config-l24）：
+        // 下面有提前返回 `if (hooked && origWin && origWin.isValid) return true;`，
+        // 而 GP-NEXT「保存并重载」后新实例的 hookedScene 恰好已是 mainScene、
+        // origWin 又是**同一个** SettingWindow 节点（场景没销毁）⇒ 新实例**每次都从这里返回**，
+        // 于是"登记"那段永远不执行 ⇒ 注册表里留的是**旧实例的闭包**
+        // ⇒ 原型上的派发器调用旧闭包（旧闭包带"过期实例不插手"守卫）⇒ 什么都不做
+        // ⇒ 入口行插不进去（必须进关卡再退出才能恢复）。
         try {
             const _rg = gpnGlobalReg();
             if (_rg) _rg.ensure = function () { try { return ensureEntry.apply(this, arguments); } catch (e) { /* 忽略 */ } };
         } catch (eRg0) { /* 忽略 */ }
         // 每个场景各有自己的 SettingWindow 组件，必须按场景重新挂钩
-        //（曾经只挂启动时那一个，导致世界地图的设置窗没有入口行）
+        // （曾经只挂启动时那一个，导致世界地图的设置窗没有入口行）
         const cur = sceneName();
         if (cur !== hookedScene) {
             hooked = false; origWin = null; lastWinActive = false; hookedScene = cur;
@@ -10445,19 +10557,19 @@ function hookWin() {
         const proto = Object.getPrototypeOf(comp);
         const origOn = proto.onEnable;
         if (typeof origOn !== 'function') { clog('原型没有 onEnable'); return false; }
-        // ★ 关键修复：挂钩必须是【派发器】，每次调用都问"当前活动实例是谁"。
-        //   旧写法 `if (!proto.__gpnCfgHooked)` 把标记挂在**引擎原型**上（重载后依然存在），
-        //   新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
-        //   派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
+        // 关键修复：挂钩必须是【派发器】，每次调用都问"当前活动实例是谁"。
+        // 旧写法 `if (!proto.__gpnCfgHooked)` 把标记挂在**引擎原型**上（重载后依然存在），
+        // 新实例于是跳过挂钩 ⇒ 生效的仍是旧实例的闭包（操作旧的 origWin/panel）⇒ 点击无效。
+        // 派发器只写一次，但里面每次都取"当前活动实例刚登记的 ensureEntry"。
         {
             // 注：本实例 ensureEntry 的**登记已挪到 hookWin() 最前面**（每次调用都执行，
-            //     不会被下面的提前 return 跳过）。这里只保留"装派发器"这一件事。
+            // 不会被下面的提前 return 跳过）。这里只保留"装派发器"这一件事。
             if (!proto.__gpnCfgHooked) {
                 proto.__gpnCfgHooked = true;
                 proto.onEnable = function () {
                     const r = origOn.apply(this, arguments);
                     try {
-                        // ★ 现查"当前活动实例"登记的 ensureEntry（旧实例的已被新实例覆盖）
+                        // 现查"当前活动实例"登记的 ensureEntry（旧实例的已被新实例覆盖）
                         const _rg2 = gpnGlobalReg();
                         const cur = _rg2 && _rg2.ensure;
                         if (typeof cur === 'function') setTimeout(cur, 300);
@@ -10478,11 +10590,11 @@ let ticks = 0;
                 gpnCfgTimer = setInterval(() => {
                     try {
                         if (gpnDisposed) { clearInterval(gpnCfgTimer); return; }
-                        // ★ 切场景 ⇒ 重新把数据补丁落一遍。
-                        //   为什么（实机证据）：暗影龙葵关掉后，进关卡/沙盒里阳光仍是 125（我们的值），
-                        //   而 apply() 内部诊断显示它看到的开关已经是 false ⇒ 说明游戏在进关卡时会重新
-                        //   加载/重置数据，把启动时写下去的值覆盖掉了（readJsons 钩子实测没触发）。
-                        //   钢地刺能生效、龙葵不能，差别就在"关卡是否重新读它"。
+                        // 切场景 ⇒ 重新把数据补丁落一遍。
+                        // 为什么（实机证据）：暗影龙葵关掉后，进关卡/沙盒里阳光仍是 125（我们的值），
+                        // 而 apply() 内部诊断显示它看到的开关已经是 false ⇒ 说明游戏在进关卡时会重新
+                        // 加载/重置数据，把启动时写下去的值覆盖掉了（readJsons 钩子实测没触发）。
+                        // 钢地刺能生效、龙葵不能，差别就在"关卡是否重新读它"。
                         try {
                             const _sc = sceneName();
                             if (_sc && _sc !== gpnLastScene) {
@@ -10501,9 +10613,9 @@ let ticks = 0;
                     } catch (e) { /* 忽略 */ }
                 }, 1000);
                 clog('已就绪（版本 ' + gpnCfgV + '：入口行=配置界面+蓝齿轮；点它打开配置窗体）');
-                // ★ 注册官方生命周期清理：GP-NEXT「保存并重载」会 dispose 本运行时的 ctx，
-                //   届时必须让本实例安静下来（停轮询 / 停存盘 / 停响应点击），
-                //   否则旧实例会与新实例并行 —— 实机表现为「改一个开关、另一个也跟着变」。
+                // 注册官方生命周期清理：GP-NEXT「保存并重载」会 dispose 本运行时的 ctx，
+                // 届时必须让本实例安静下来（停轮询 / 停存盘 / 停响应点击），
+                // 否则旧实例会与新实例并行 —— 实机表现为「改一个开关、另一个也跟着变」。
                 try {
                     const RT = gpnCtx && gpnCtx.runtime;
                     if (RT && typeof RT.onDispose === 'function') {
@@ -10524,7 +10636,7 @@ let ticks = 0;
                 recs.push(...chili.recs);
             }
 
-            // ---- 2b. 巴豆屁联动（§3.80）：**S1 只读探针**（probeFart + verboseLog 都开才打印）----
+            // ---- 2b. 巴豆屁联动（§3.80）：**S1 只读探针**（probeFart + verboseLog 都开才打印） ----
             {
                 const fp = makeFartLinkPatch(zombieMod.Zombie, soundMod && soundMod.SoundRescourses,
                     squareMod.Square, { Square: squareMod.Square, cc: ccMod, LevelPlay: levelMod && levelMod.LevelPlay, FrontYard: frontYardMod && frontYardMod.FrontYard });
@@ -10591,29 +10703,29 @@ let ticks = 0;
                 });
                 if (pb) recs.push(...pb);
             }
-            // ---- 22. 寒冰射手：冰锥（普攻 + 大招每发独立掷，薄荷 x3）----
-            // ⚠️【即时生效改造】不再用 featOn 包住安装：补丁常驻，行为在钩子里运行期现查
+            // ---- 22. 寒冰射手：冰锥（普攻 + 大招每发独立掷，薄荷 x3） ----
+            // 【即时生效改造】不再用 featOn 包住安装：补丁常驻，行为在钩子里运行期现查
             {
                 const spf = makeSnowPeaFreezePatch(snowPeaMod && snowPeaMod.SnowPeaPlant,
                     shotMod && shotMod.commonShot,
                     { Square: squareMod.Square, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2 });
                 if (spf) recs.push(...spf);
             }
-            // ---- 22b. 流星花：索敌策略（P0 只挂空补丁，行为与原版一致）----
+            // ---- 22b. 流星花：索敌策略（P0 只挂空补丁，行为与原版一致） ----
             {
                 const mf = makeMeteorFlowerAimPatch(meteorMod && meteorMod.MeteorFlowerPlant, {
                     Square: squareMod.Square, Rectangle: charMgrMod.Rectangle, Vec2: ccMod.Vec2,
-                    // ⚠️ `ZombiePool` / `TombPool` 是 **CharacterManager.ts** 的导出（不是 Zombie.ts）
+                    // `ZombiePool` / `TombPool` 是 **CharacterManager.ts** 的导出（不是 Zombie.ts）
                     ZombiePool: charMgrMod && charMgrMod.ZombiePool,
                     TombPool: charMgrMod && charMgrMod.TombPool,
                     ZombieEnum: zombiesMod && zombiesMod.ZombieEnum,
-                    // ★ 点燃门改造要用它读 solid/deck 的**真实数值**（绝不硬编码）
+                    // 点燃门改造要用它读 solid/deck 的**真实数值**（绝不硬编码）
                     SquareType: squareMod && squareMod.SquareType,
                 });
                 if (mf) recs.push(...mf);
             }
             // ---- 22c. 孢子菇：亡语（1×3 伤害 + 感染标记 + 0.75s 眩晕）+ 亡语特效 ----
-            //  ⚠️【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
+            // 【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
             {
                 // 特效播放要用的实例化入口（模块级注入；与心蕊/魔音甜菜用的是同一个）
                 try { gpnSporeInstantiateRef = (nodePoolsMod && nodePoolsMod.instantiatePooly) || null; } catch (e) { /* 忽略 */ }
@@ -10621,7 +10733,7 @@ let ticks = 0;
                     Square: squareMod && squareMod.Square,
                     Rectangle: charMgrMod && charMgrMod.Rectangle,
                     Vec2: ccMod && ccMod.Vec2,
-                    // ★★ 这两个都在 **CharacterManager.ts**（不是 Zombie.ts）—— 踩过的坑
+                    // 这两个都在 **CharacterManager.ts**（不是 Zombie.ts）—— 踩过的坑
                     ZombieDamageDetails: charMgrMod && charMgrMod.ZombieDamageDetails,
                     ZombieDamageType: charMgrMod && charMgrMod.ZombieDamageType,
                     ZombiePool: charMgrMod && charMgrMod.ZombiePool,
@@ -10639,12 +10751,12 @@ let ticks = 0;
                 // 亡语特效资源：**提前**加载好（首次进关卡时就绪，避免第一次亡语来不及）
                 try { gpnSporeFxEnsure(null); } catch (e) { /* 忽略 */ }
             }
-            // ---- 22d. 孢子菇 ×1.5（R6/R7）：带孢子标记的僵尸受**毒性家族**伤害 ×1.5（直伤 + Dot）----
-            //  口径（用户定）：Poison 家族（数据判定）**减去** garlic / chilibean，
-            //                 **加上** gloomshroom / shadowshroom（Shadow 家族，仅显式白名单）；
-            //                 心蕊只算"子弹直击"（它的减防 debuff 本身不结算伤害）；
-            //                 多段叠加 Dot = 该帧家族 Dot 合计只 ×1.5 一次。
-            //  ⚠️【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
+            // ---- 22d. 孢子菇 ×1.5（R6/R7）：带孢子标记的僵尸受**毒性家族**伤害 ×1.5（直伤 + Dot） ----
+            // 口径（定）：Poison 家族（数据判定）**减去** garlic / chilibean，
+            // **加上** gloomshroom / shadowshroom（Shadow 家族，仅显式白名单）；
+            // 心蕊只算"子弹直击"（它的减防 debuff 本身不结算伤害）；
+            // 多段叠加 Dot = 该帧家族 Dot 合计只 ×1.5 一次。
+            // 【即时生效改造】不用 featOn 包住安装：钩子常驻，内部运行期现查 featOn('sporeshroom')。
             {
                 const sb = makeSporePoisonBonusPatch({
                     Zombie: zombieMod && zombieMod.Zombie,
@@ -10680,24 +10792,24 @@ let ticks = 0;
                 if (mk) recs.push(...mk);
             }
             // ---- 25. 裂荚射手：左键左右翻转 + 前后豌豆数对调 ----
-            //  ⚠️【即时生效改造·样板】这里**不再**用 `featOn` 包住安装 ——
-            //  补丁**永远装着**，行为在钩子内部**运行期现查** `featOn('splitpea')`。
-            //  这样在游戏内配置界面改开关就能**立刻生效**（不需要退出游戏重进）。
-            //  其它功能后续按同一套路逐个改造（阶段②）。
+            // 【即时生效改造·样板】这里**不再**用 `featOn` 包住安装 ——
+            // 补丁**永远装着**，行为在钩子内部**运行期现查** `featOn('splitpea')`。
+            // 这样在游戏内配置界面改开关就能**立刻生效**（不需要退出游戏重进）。
+            // 其它功能后续按同一套路逐个改造（阶段②）。
             {
                 const sp = makeSplitPeaPatch(splitPeaMod && splitPeaMod.SplitPeaPlant, { cc: ccMod });
                 if (sp) recs.push(...sp);
             }
-            // ---- 20b. 寒冰射手：金卡（数据 + 显示两条路一起走）----
-            //  ⚠️【即时生效改造】这里**不再**用 featOn 包住安装：
-            //    · getBGAnm 钩子**常驻**，内部运行期现查 featOn('snowpea')；
-            //    · 数据层（OBTAINWORLD）抽成 gpnSnowPeaGoldApply()，切换 snowpea 时立刻重刷。
-            //  注意：**已经存在的卡片**不会自动重读 ⇒ 卡面在"进关卡 / 重开图鉴"重建卡面时随之变化
-            //        （引擎里没有 refreshCard 之类的刷新入口，已核对）。
+            // ---- 20b. 寒冰射手：金卡（数据 + 显示两条路一起走） ----
+            // 【即时生效改造】这里**不再**用 featOn 包住安装：
+            // · getBGAnm 钩子**常驻**，内部运行期现查 featOn('snowpea')；
+            // · 数据层（OBTAINWORLD）抽成 gpnSnowPeaGoldApply()，切换 snowpea 时立刻重刷。
+            // 注意：**已经存在的卡片**不会自动重读 ⇒ 卡面在"进关卡 / 重开图鉴"重建卡面时随之变化
+            // （引擎里没有 refreshCard 之类的刷新入口，已核对）。
             try {
                 const PM0 = plantsMod && plantsMod.plants;   // 模块导出名是小写 plants（踩过的坑）
                 const res0 = PM0 && PM0.plantRes;
-                const listPF = (res0 && res0.PlantFeatures) ? res0.PlantFeatures : [];   // ★ 快照一次
+                const listPF = (res0 && res0.PlantFeatures) ? res0.PlantFeatures : [];   // 快照一次
                 if (listPF && typeof listPF.length === 'number' && listPF.length > 0) {
                     const sd0 = res0.PlantFeatures.find((x) => x && x.CODENAME === 'snowdrop');
                     const goldW = (sd0 && sd0.OBTAINWORLD) || 'market';
@@ -10705,7 +10817,7 @@ let ticks = 0;
                     gpnSnowPeaGoldApply = function () {
                         try {
                             const on = featOn('snowpea');
-                            // ⚠️ 实机报过 "PlantFeatures is not iterable" ⇒ 不用 for...of，改下标循环
+                            // 实机报过 "PlantFeatures is not iterable" ⇒ 不用 for...of，改下标循环
                             for (let gi = 0; gi < listPF.length; gi++) {
                                 const f = listPF[gi];
                                 if (f && f.CODENAME === CFG.snowpea.plantType) f.OBTAINWORLD = on ? goldW : vanW;
@@ -10762,9 +10874,9 @@ let ticks = 0;
                     // 在 onLoad 里赋值 —— 跟 jalapeno 类没有关系。
                     GroundFiresManager: gfmMod && gfmMod.GroundFiresManager,
                     // 植物阵营的火（被弹反的甜椒弹）要用到这几样：
-                    //   CharacterType       判 enemyType 是不是被翻成了 plant
-                    //   CharacterManager    Rectangle（圈出"这一格"去判被催眠的僵尸）
-                    //   ZombieDamageDetails 打被催眠僵尸用的伤害对象
+                    // CharacterType 判 enemyType 是不是被翻成了 plant
+                    // CharacterManager Rectangle（圈出"这一格"去判被催眠的僵尸）
+                    // ZombieDamageDetails 打被催眠僵尸用的伤害对象
                     CharacterType: characterMod.CharacterType,
                     CharacterManager: charMgrMod,
                     ZombieDamageDetails: charMgrMod.ZombieDamageDetails,
@@ -10772,7 +10884,7 @@ let ticks = 0;
                     // 伞叶注册表（CharacterManager 上的静态数组）：被弹反的甜椒弹落地时按位置判定用
                     Umbrellas: charMgrMod.Umbrellas,
                     // 「是谁反弹的」两个类（独立模块）：只用来给子弹打来源标记 ⇒
-                    //   弄臣反弹的 ⇒ 不再算投掷物（不吃伞叶）；三节棍反弹的 ⇒ 仍算投掷物（照旧可挡）
+                    // 弄臣反弹的 ⇒ 不再算投掷物（不吃伞叶）；三节棍反弹的 ⇒ 仍算投掷物（照旧可挡）
                     DarkJesterZombieCls: darkJesterMod && (darkJesterMod.DarkJesterZombie || darkJesterMod.default),
                     Abbot3SectionStaffCls: abbot3Mod && (abbot3Mod.Abbot3SectionStaffZombie || abbot3Mod.default),
                 });
@@ -10787,7 +10899,7 @@ let ticks = 0;
                 if (sweet) recs.push(...sweet);
             }
 
-            // ---- 7. 白萝卜：受伤间隔（挂在扣血叶子上，不影响覆盖层）----
+            // ---- 7. 白萝卜：受伤间隔（挂在扣血叶子上，不影响覆盖层） ----
             {
                 const turnip = makeTurnipPatch(plantMod.Plant);
                 if (turnip) recs.push(turnip);
@@ -10807,7 +10919,7 @@ let ticks = 0;
                 const perfumeDur = makePerfumeDurationPatch(perfumeShroomMod && perfumeShroomMod.PerfumeShroomPlant);
                 if (perfumeDur) recs.push(...perfumeDur);   // 香水火时长 9 -> 13.5 秒
 
-                // ---- 10. 取减防特效 prefab（异步，不阻塞 setup）----
+                // ---- 10. 取减防特效 prefab（异步，不阻塞 setup） ----
                 loadBloomingHeartBuffPrefab(ccMod, buffCache);
             }
 
@@ -10836,7 +10948,7 @@ let ticks = 0;
                 if (dan) recs.push(...dan);
             }
 
-            // ---- 12. 推植物：跳过「不可推」的挡路植物（不再飞出屏幕）----
+            // ---- 12. 推植物：跳过「不可推」的挡路植物（不再飞出屏幕） ----
             {
                 const pushFix = makePushSkipPatch(charMgrMod.footballmech);
                 if (pushFix) recs.push(...pushFix);
@@ -10845,14 +10957,14 @@ let ticks = 0;
             // ---- 11. 高坚果：同原始坚果，可扛 3 次巨人砸击 ----
             {
                 // !! WallNut.ts 导出的名字是 WallNutPlant（大写 N），不是 WallnutPlant ——
-                //    写错会拿到 undefined，补丁会「静默跳过」（v2.4.0 就是这个 BUG：扛 3 次砸击没生效）
+                // 写错会拿到 undefined，补丁会「静默跳过」（v2.4.0 就是这个 BUG：扛 3 次砸击没生效）
                 const wallNutCls = wallNutMod.WallNutPlant || wallNutMod.WallnutPlant;
                 if (!wallNutMod.WallNutPlant && wallNutMod.WallnutPlant) {
                     warn('WallNut.ts 用的是备用导出名 WallnutPlant，请检查是否版本变动');
                 }
                 const tall = makeTallnutPatch(wallNutCls, primalMod.PrimalWallNutPlant, tallnutMod && tallnutMod.TallNutPlant);
                 if (tall) { if (Array.isArray(tall)) recs.push.apply(recs, tall); else recs.push(tall); }
-            // ---- 卷心菜投手：子弹首次命中后再弹 1 格（2026/10/22 用户指定）----
+            // ---- 卷心菜投手：子弹首次命中后再弹 1 格 ----
             {
                 const cabRecs = makeCabbagePultPatch(
                     shotMod && shotMod.commonShot,
@@ -10888,8 +11000,8 @@ let ticks = 0;
             {
                 const off = Object.keys(FEATURES_LIVE).filter((k) => !featOn(k) && k !== 'verboseLog');
                 // 依赖：starfruit 关掉 ⇒ starfruitFollowMerge 一律视为关闭（运行时判定，绝不去改玩家的 features.json）。
-                //   ① 把它也列进【已关闭】，玩家能看到"我没关它、它也关了"；
-                //   ② 玩家【显式写了 true】时额外打一行黄色提示，解释为什么没生效。
+                // ① 把它也列进【已关闭】，玩家能看到"我没关它、它也关了"；
+                // ② 玩家【显式写了 true】时额外打一行黄色提示，解释为什么没生效。
                 if (!featOn('starfruit') && off.indexOf('starfruitFollowMerge') === -1) {
                     off.push('starfruitFollowMerge');
                 }
@@ -10900,9 +11012,9 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l98 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
-            // ★ 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
-            //   要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
+            log('[CTM] BUILD = config-l107 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
+            // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
                 try {
                     const _ao = gpnAlmOverview();
@@ -10976,8 +11088,8 @@ let ticks = 0;
                 + '·冷却' + CFG.murkadamia.jellyCooldown + '秒'
                 + (CFG.murkadamia.hideWhenJellyDown ? '/打光后真隐身' : '') + ')、'
                 + '裂荚射手(左键左右翻转/前后豌豆对调/阳光' + CFG.splitpea.sunCost + ')、'
-                // ↓ 2026/10/16 补：这两项上线时漏进了启动摘要（F12 里没法一眼核对），现在补上。
-                //   顺序与 FEATURES 表一致（splitpea → meteorflowerAim → sporeshroom）。
+                // ↓ 补：这两项上线时漏进了启动摘要（F12 里没法一眼核对），现在补上。
+                // 顺序与 FEATURES 表一致（splitpea → meteorflowerAim → sporeshroom）。
                 + '流星花(索敌：本行僵尸→全场僵尸→本行障碍/护盾→全场障碍/护盾；第2颗不打歪；纯墓碑场面也开火)、'
                 + '孢子菇(阳光' + CFG.sporeshroom.sunCost + '/血量' + CFG.sporeshroom.toughness
                 + '/亡语' + (CFG.sporeshroom.deathRadiusTiles > 0 ? CFG.sporeshroom.deathRadiusTiles : 3)
@@ -10991,14 +11103,14 @@ let ticks = 0;
                 + '推植物跳过挡路者(' + (CFG.pushPlant.skipBlockers ? '开' : '关') + ')');
 
             return function cleanup() {
-                // ★ 先停下"本实例的活动"（轮询 / 点击 / 存盘），再做原型还原。
-                //   为什么关键：GP-NEXT「保存并重载」时旧运行时会被 dispose，但我们没注册清理，
-                //   旧代码会继续跑（继续操作界面、继续存盘）⇒ 与新运行时并行 ⇒ 开关错乱。
+                // 先停下"本实例的活动"（轮询 / 点击 / 存盘），再做原型还原。
+                // 为什么关键：GP-NEXT「保存并重载」时旧运行时会被 dispose，但我们没注册清理，
+                // 旧代码会继续跑（继续操作界面、继续存盘）⇒ 与新运行时并行 ⇒ 开关错乱。
                 gpnDisposed = true;
                 try { if (typeof gpnCfgTimer !== 'undefined' && gpnCfgTimer) clearInterval(gpnCfgTimer); } catch (e) { /* 忽略 */ }
                 // !! 必须【倒序】还原：同一个方法可能被多个补丁层层包裹
-                //    （例如 commonShot.dealDamageToZombie 被"甜椒灼烧"和"星星果追击"各包了一层），
-                //    正序还原会把先包的那层包装重新装回去 = 卸载后补丁还在。
+                // （例如 commonShot.dealDamageToZombie 被"甜椒灼烧"和"星星果追击"各包了一层），
+                // 正序还原会把先包的那层包装重新装回去 = 卸载后补丁还在。
                 for (const rec of recs.slice().reverse()) {
                     if (rec.__dataPatch) rec.__dataPatch.revert();
                     else if (typeof rec.__onCleanup === 'function') {
