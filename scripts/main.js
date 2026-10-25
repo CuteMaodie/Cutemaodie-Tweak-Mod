@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.3.4';
+const MOD_VERSION = '1.3.5';
 /* 实例身份：每次模块被加载都会生成一个新的 ID。
  * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -357,7 +357,7 @@ const VANILLA = {
     cabbagepult: { sunCost: 100 },
     kernelpult: { sunCost: 100 },
     springbean: { sunCost: 50, cooldown: 10, restTime: 10, knockbackDistance: 1, mintFactor: 5 },
-    sunshroom: { sunCost: 25 },
+    sunshroom: { sunCost: 25, toughness: 300 },
     starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
     noctarine: { sunCost: 150, cooldown: 15 },
     dandelion: { sunCost: 275, cooldown: 15 },
@@ -529,6 +529,7 @@ const CFG = {
     sunshroom: {
         plantType: 'sunshroom',
         sunCost: 50,                  // 阳光 25 → 50
+        toughness: 200,               // 血量 300 → 200
         intervalDayBase: 14.5,        // 白天：14.5 + rand×1.7 ⇒ 14.5–16.2 s
         intervalDayRand: 1.7,
         intervalNightBase: 10.5,      // 夜晚：10.5 + rand×0.7 ⇒ 10.5–11.2 s
@@ -1853,6 +1854,15 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                   '阳光菇能快速提供小阳光，并在生产阳光时提高周围植物的阳光生产效率',
                   'Sun-shroom quickly provides small suns and boosts the sun production of nearby plants while producing sun.');
               addSpecial('sunshroom', '在白天生产效率会降低', 'Sun production is slower during the day.');
+              const _eSS = findAl('sunshroom');
+              const _elSS = (_eSS && _eSS.objdata && Array.isArray(_eSS.objdata.Elements)) ? _eSS.objdata.Elements : null;
+              if (_elSS) {
+                  for (const _el of _elSS) {
+                      if (_el && _el.TYPE === 'SUNPRODUCTION' && _el.SORT) { _el.SORT.zh = '25'; _el.SORT.en = '25'; }
+                  }
+              } else {
+                  warn('图鉴：sunshroom 的 Elements 取不到（阳光产量没写进去）');
+              }
           }
     }
     };
@@ -1901,6 +1911,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', 'springbean', 'MintKnockBackDistanceFactor', featOn('springbean') ? CFG.springbean.mintFactor : VANILLA.springbean.mintFactor);
         // 阳光菇：阳光 25 → 50（只改数据；生产逻辑在 makeSunShroomPatch 里）
         setField('PlantProps', 'sunshroom', 'SunCost', featOn('sunshroom') ? CFG.sunshroom.sunCost : VANILLA.sunshroom.sunCost);
+        setField('PlantProps', 'sunshroom', 'Toughness', featOn('sunshroom') ? CFG.sunshroom.toughness : VANILLA.sunshroom.toughness);
         // ---- 玉米投手：黄油落点留下「地面黄油」（**数据层**补丁） ----
         // 引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
         // ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
@@ -11303,7 +11314,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l113 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l114 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
