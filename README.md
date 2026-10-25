@@ -3,7 +3,7 @@
 PvZ2 Gardendless 的杂项强化模组（GP-Next **JS 模组**）。
 
 - 作者：可爱小耄（CuteMaodie）。
-- 目标版本：`0.15.0`（GP-Next `1.5.5`）
+- 目标版本：`0.15.x` / `0.16.x`（GP-Next `1.5.5`；0.16.1 已实测）
 - 形式：`pack.json` + `scripts/main.js`
 - 依赖：无 —— 但**要先用 GP-Next 的「实验性 → JS Modding」开启 JS**（一次性，由你确认风险；不开则 JS 模组无法加载）
 
