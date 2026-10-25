@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.2.0';
+const MOD_VERSION = '1.3.4';
 /* 实例身份：每次模块被加载都会生成一个新的 ID。
  * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -66,7 +66,8 @@ const FEATURES = {
     hurrikale: true,        // 飓风甘蓝：全屏寒风（其他行 50% 推力）+ 全屏吹飞飞行僵尸
     cabbagepult: true,      // 卷心菜投手：子弹首次命中后再**弹跳 1 格**（不索敌；同伤害）+ 阳光 125
     kernelpult: true,       // 玉米投手：黄油**落点留下地面黄油**（与黄油毛茛同款；普通 120 秒 / 大招 150 秒）
-    springbean: true,       // 弹簧豆：群体击退（1×1 全弹）、距离×3、弹起 108、落地 80 穿甲+震动+3×3 眩晕 1.5s+小跳、休息 5s、冷却 15s、阳光 75
+    springbean: true,       // 弹簧豆：群体击退（1×1 全弹）、距离×3、弹起 432、落地 50 穿甲+震动+3×3 眩晕 1s+小跳、休息 5s、冷却 15s、阳光 75
+    sunshroom: true,        // 阳光菇：永久小形态（开大变最大）/ 生产间隔 14.5–16.2（夜 10.5–11.2）/ 首次 1–3s / 光环减冷却 / 阳光 50
     // ↓ 下面这几个以前【忘了登记】：features.json 里写了 false 也不会生效（featOn 找不到这个键 -> 当成开）
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
     garlic: true,           // 大蒜：每口固定伤害 37.5 / 阳光 75 / 冷却 15 秒
@@ -356,6 +357,7 @@ const VANILLA = {
     cabbagepult: { sunCost: 100 },
     kernelpult: { sunCost: 100 },
     springbean: { sunCost: 50, cooldown: 10, restTime: 10, knockbackDistance: 1, mintFactor: 5 },
+    sunshroom: { sunCost: 25 },
     starfruit: { sunCost: 150, pinkSunCost: 225, shootingSunCost: 500, shootingCooldown: 5 },
     noctarine: { sunCost: 150, cooldown: 15 },
     dandelion: { sunCost: 275, cooldown: 15 },
@@ -522,6 +524,35 @@ const CFG = {
         landSoundVolume: 0.25,      // 落地音效音量（游戏内音效约 0.25；1.0 会响得离谱）
         landSoundPrefab: 'plants/SquashPLANT',        // 真实路径（F12 assetInfos 实测：plants/SquashPLANT，DIS 是展示用变体）
         landSoundNode: 'squashSound',                  // 组件名：窝瓜的音频组件
+        debugLog: false,
+    },
+    sunshroom: {
+        plantType: 'sunshroom',
+        sunCost: 50,                  // 阳光 25 → 50
+        intervalDayBase: 14.5,        // 白天：14.5 + rand×1.7 ⇒ 14.5–16.2 s
+        intervalDayRand: 1.7,
+        intervalNightBase: 10.5,      // 夜晚：10.5 + rand×0.7 ⇒ 10.5–11.2 s
+        intervalNightRand: 0.7,
+        firstBase: 1,                 // 首次生产：1 + rand×2 ⇒ 1–3 s（昼夜相同）
+        firstRand: 2,
+        smallSunValue: 25,            // 小形态阳光面额
+        bigSunValue: 50,              // 大形态阳光面额（原版 75 → 50）
+        midSunParts: [25, 5, 5, 5],   // 中形态仅作兜底：25 + 3×5 = 35（正常不会出现）
+        pfSunCount: 3,                // 大招：3 × 50（引擎按 PlantfoodTime 连发）
+        pfSunValue: 50,
+        auraRadiusCells: 1,           // 3×3（以自身格为中心）
+        auraSunflowerCd: 6,           // 普通形态：向日葵系当前冷却 -6s
+        auraShroomCdDay: 1.7,         // 普通形态：其他阳光菇（白天）-1.7s
+        auraShroomCdNight: 1.6,       // 普通形态：其他阳光菇（夜晚）-1.6s
+        auraToadstoolCd: 5,           // 普通形态：金蟾菇消化 -5s
+        auraShineVineCd: 4,           // 普通形态：闪耀藤蔓 produceCD -4s（异格）
+        auraShineVineCdSameTile: 1,   // 普通形态：闪耀藤蔓与阳光菇同格 -1s
+        auraSunflowerCdBig: 8,        // 大形态：向日葵系 -8s
+        auraShroomCdDayBig: 2,        // 大形态：其他阳光菇（白天）-2s
+        auraShroomCdNightBig: 1.9,    // 大形态：其他阳光菇（夜晚）-1.9s
+        auraToadstoolCdBig: 8,        // 大形态：金蟾菇消化 -8s
+        auraShineVineCdBig: 6,        // 大形态：闪耀藤蔓 produceCD -6s（异格）
+        auraShineVineCdSameTileBig: 1.5, // 大形态：闪耀藤蔓与阳光菇同格 -1.5s
         debugLog: false,
     },
     tallnut: {
@@ -1118,7 +1149,7 @@ const GPN_ALM_CHANGED = [
     ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
     ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
     ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
-    ['sporeshroom', 'sporeshroom'], ['springbean', 'springbean'],
+    ['sporeshroom', 'sporeshroom'], ['springbean', 'springbean'], ['sunshroom', 'sunshroom'],
 ];
 
 function gpnAlmList() {
@@ -1815,6 +1846,14 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                   warn('图鉴：springbean 的 Elements 取不到（恢复时间/范围没写进去）');
               }
           }
+
+          // ---- 阳光菇：介绍 + 新增特点（原版白天减产，只是写明） ----
+          if (featOn('sunshroom')) {
+              writeIntro('sunshroom',
+                  '阳光菇能快速提供小阳光，并在生产阳光时提高周围植物的阳光生产效率',
+                  'Sun-shroom quickly provides small suns and boosts the sun production of nearby plants while producing sun.');
+              addSpecial('sunshroom', '在白天生产效率会降低', 'Sun production is slower during the day.');
+          }
     }
     };
 
@@ -1860,6 +1899,8 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         setField('PlantProps', 'springbean', 'RestTime', featOn('springbean') ? CFG.springbean.restTime : VANILLA.springbean.restTime);
         setField('PlantProps', 'springbean', 'KnockbackDistance', featOn('springbean') ? CFG.springbean.knockbackDistance : VANILLA.springbean.knockbackDistance);
         setField('PlantProps', 'springbean', 'MintKnockBackDistanceFactor', featOn('springbean') ? CFG.springbean.mintFactor : VANILLA.springbean.mintFactor);
+        // 阳光菇：阳光 25 → 50（只改数据；生产逻辑在 makeSunShroomPatch 里）
+        setField('PlantProps', 'sunshroom', 'SunCost', featOn('sunshroom') ? CFG.sunshroom.sunCost : VANILLA.sunshroom.sunCost);
         // ---- 玉米投手：黄油落点留下「地面黄油」（**数据层**补丁） ----
         // 引擎链路：ProjectileProps.TileLiquid ⇒ 弹道 `pop()` 时 `inLnC.SpawnTileLiquidWithDuration(type, duration)`
         // ⇒ `ButterTileLiquid`：每次 update 找本行**最左**一只非飞行、可移动、与黄油矩形相交的僵尸
@@ -3963,6 +4004,234 @@ let GPN_SB_SMASH_URLS = [];   // 音频文件的 nativeUrl（跨场景/资源释
 let GPN_SB_SMASH_PENDING = false;   // 落地时音效还没加载好 ⇒ 加载完成后补播一次
 let GPN_SB_SMASH_TRIES = 0;         // 失败后最多重试几次（避免每帧刷警告）
 let GPN_SB_LAST_SOUND_AT = 0;       // 落地音效上次播放时间（全局最小间隔，防大招全屏连响）
+/* =======================================================================
+ * 阳光菇（sunshroom）：永久小形态 + 生产间隔 45% + 光环减冷却 + 大招 3×50
+ * =======================================================================*/
+function makeSunShroomPatch(SunShroomPlant, SunflowerPlant, sunHelper, MoonflowerPlant, ShineVinePlant, ToadstoolPlant, LevelPlay, deps) {
+    const recs = [];
+    if (!SunShroomPlant || !SunShroomPlant.prototype || typeof SunShroomPlant.prototype.getStartingCD !== 'function') {
+        warn('跳过阳光菇：拿不到 SunShroomPlant.getStartingCD');
+        return recs;
+    }
+    const D = deps || {};
+    const cfg = () => CFG.sunshroom || {};
+    const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+    const atNight = () => { try { return !!(LevelPlay && LevelPlay.atNight); } catch (e) { return false; } };
+    const pushRec = (name, original, own) => {
+        recs.push({
+            restore: function () {
+                try {
+                    if (own) SunShroomPlant.prototype[name] = original;
+                    else delete SunShroomPlant.prototype[name];
+                } catch (e) { /* 忽略 */ }
+            },
+        });
+    };
+    const own = (name) => Object.prototype.hasOwnProperty.call(SunShroomPlant.prototype, name);
+    const orig = (name) => SunShroomPlant.prototype[name];
+
+    /* 光环：3×3 内其他阳光生产者扣"当前冷却"；同一击退组/大招只由调用方触发一次 */
+    const sunAura = function (self, big) {
+        try {
+            const c = cfg();
+            const sq = self.inLnC;
+            if (!sq) return;
+            const list = [], seen = [];
+            const addSq = function (s) {
+                if (!s || typeof s.getAllPlants !== 'function') return;
+                const arr = s.getAllPlants() || [];
+                for (let i = 0; i < arr.length; i++) {
+                    const p = arr[i];
+                    if (!p || p === self || seen.indexOf(p) !== -1) continue;
+                    seen.push(p); list.push(p);
+                }
+            };
+            addSq(sq);
+            addSq(sq.lefter); addSq(sq.righter); addSq(sq.upper); addSq(sq.lower);
+            if (sq.upper) { addSq(sq.upper.lefter); addSq(sq.upper.righter); }
+            if (sq.lower) { addSq(sq.lower.lefter); addSq(sq.lower.righter); }
+            const night = atNight();
+            const dSun = num(big ? c.auraSunflowerCdBig : c.auraSunflowerCd, big ? 8 : 6);
+            const dShroom = num(big
+                ? (night ? c.auraShroomCdNightBig : c.auraShroomCdDayBig)
+                : (night ? c.auraShroomCdNight : c.auraShroomCdDay),
+                big ? (night ? 1.9 : 2) : (night ? 1.6 : 1.7));
+            const dToad = num(big ? c.auraToadstoolCdBig : c.auraToadstoolCd, big ? 8 : 5);
+            const dShine = num(big ? c.auraShineVineCdBig : c.auraShineVineCd, big ? 6 : 4);
+            const dShineSame = num(big ? c.auraShineVineCdSameTileBig : c.auraShineVineCdSameTile, big ? 1.5 : 1);
+            const sameTile = function (p) {
+                try {
+                    if (!p || !p.inLnC || !sq) return false;
+                    if (p.inLnC === sq) return true;
+                    const a = p.inLnC, b = sq;
+                    if (a.cIndex !== b.cIndex) return false;
+                    const la = p.inLane || a.inLane || null;
+                    const lb = self.inLane || b.inLane || null;
+                    return !!(la && lb && la === lb);
+                } catch (e) { return false; }
+            };
+            const cut = function (p, key, d) {
+                try {
+                    const v = p[key];
+                    if (typeof v === 'number' && isFinite(v) && v > 0) p[key] = Math.max(0, v - d);
+                } catch (e) { /* 忽略 */ }
+            };
+            for (let i = 0; i < list.length; i++) {
+                const p = list[i];
+                try {
+                    /* 金蟾菇：所有在嚼僵尸的剩余消化时间各扣；>0 才扣 */
+                    if (typeof ToadstoolPlant === 'function' && p instanceof ToadstoolPlant) {
+                        const zs = p.zombiesInMouth;
+                        if (Array.isArray(zs)) {
+                            for (let k = 0; k < zs.length; k++) {
+                                const v = zs[k];
+                                if (typeof v === 'number' && isFinite(v) && v > 0) zs[k] = Math.max(0, v - dToad);
+                            }
+                        }
+                        continue;
+                    }
+                    /* 其他阳光菇（含已开大的最大形态）：-2.5 / -3.5 */
+                    if (typeof SunShroomPlant === 'function' && p instanceof SunShroomPlant) { cut(p, 'busy', dShroom); continue; }
+                    /* 闪耀藤蔓：独立字段 produceCD；与阳光菇同格时只 -1 / -2 */
+                    if (typeof ShineVinePlant === 'function' && p instanceof ShineVinePlant) {
+                        cut(p, 'produceCD', sameTile(p) ? dShineSame : dShine);
+                        continue;
+                    }
+                    /* 月光花（可能不继承 SunflowerPlant，单独判） */
+                    if (typeof MoonflowerPlant === 'function' && p instanceof MoonflowerPlant) { cut(p, 'busy', dSun); continue; }
+                    /* 向日葵 / 原始 / 双胞：busy */
+                    if (typeof SunflowerPlant === 'function' && p instanceof SunflowerPlant) { cut(p, 'busy', dSun); continue; }
+                } catch (e) { /* 忽略 */ }
+            }
+            if (dbg()) log('阳光菇光环：' + (big ? '大' : '小') + '形态，目标 ' + list.length + ' 株');
+        } catch (e) { /* 忽略 */ }
+    };
+    const dbg = function () { try { return !!(CFG.sunshroom && CFG.sunshroom.debugLog); } catch (e) { return false; } };
+
+    /* 1) 首次生产：1–3 s（昼夜相同） */
+    {
+        const o = orig('getStartingCD'), ownFlag = own('getStartingCD');
+        SunShroomPlant.prototype.getStartingCD = function () {
+            if (!featOn('sunshroom')) return o.apply(this, arguments);
+            const c = cfg();
+            return num(c.firstBase, 1) + Math.random() * num(c.firstRand, 2);
+        };
+        pushRec('getStartingCD', o, ownFlag);
+    }
+
+    /* 2) 生产间隔：白天 14.5–16.2 / 夜晚 10.5–11.2 */
+    {
+        const o = orig('getBetweenCD'), ownFlag = own('getBetweenCD');
+        SunShroomPlant.prototype.getBetweenCD = function () {
+            if (!featOn('sunshroom')) return o.apply(this, arguments);
+            const c = cfg();
+            return atNight()
+                ? num(c.intervalNightBase, 10.5) + Math.random() * num(c.intervalNightRand, 0.7)
+                : num(c.intervalDayBase, 14.5) + Math.random() * num(c.intervalDayRand, 1.7);
+        };
+        pushRec('getBetweenCD', o, ownFlag);
+    }
+
+    /* 3) 永久小形态：倒计时冻结 + grow 空操作（大招自己设大形态，不依赖 grow） */
+    const keepSmall = function () {
+        try {
+            if (this.growthStage !== 2) {
+                this.growthStage = 0;
+                this.sunValue = num(cfg().smallSunValue, 25);
+            }
+            this.growthCountdown = Infinity;
+        } catch (e) { /* 忽略 */ }
+    };
+    {
+        const o = orig('specialSunflowerOnEnable'), ownFlag = own('specialSunflowerOnEnable');
+        if (typeof o === 'function') {
+            SunShroomPlant.prototype.specialSunflowerOnEnable = function () {
+                const r = o.apply(this, arguments);
+                if (featOn('sunshroom')) keepSmall.call(this);
+                return r;
+            };
+            pushRec('specialSunflowerOnEnable', o, ownFlag);
+        }
+    }
+    {
+        const o = orig('onObjdataSet'), ownFlag = own('onObjdataSet');
+        if (typeof o === 'function') {
+            SunShroomPlant.prototype.onObjdataSet = function () {
+                const r = o.apply(this, arguments);
+                if (featOn('sunshroom')) keepSmall.call(this);
+                return r;
+            };
+            pushRec('onObjdataSet', o, ownFlag);
+        }
+    }
+    {
+        const o = orig('grow'), ownFlag = own('grow');
+        SunShroomPlant.prototype.grow = function () {
+            if (!featOn('sunshroom')) return o.apply(this, arguments);
+            /* 永久小形态：不成长；大招在 specialPlantFood 里直接设大形态 */
+        };
+        pushRec('grow', o, ownFlag);
+    }
+
+    /* 4) 大招：直接最大形态 + 3×50；光环整次只触发一次 */
+    {
+        const o = orig('specialPlantFood'), ownFlag = own('specialPlantFood');
+        SunShroomPlant.prototype.specialPlantFood = function () {
+            if (!featOn('sunshroom')) return o.apply(this, arguments);
+            const c = cfg();
+            try {
+                this.__gpnSunPfAura = false;      // 本次大招还没触发光环
+                this.growthStage = 2;
+                this.sunValue = num(c.bigSunValue, 50);
+                this.shouldScale = 1;
+                this.growthCountdown = Infinity;
+                this.produceAnm = 'Produce';
+                if (this.anmControl) {
+                    this.anmControl.IdleAnim = 'Idle';
+                    this.anmControl.RandomAnim = ['Random'];
+                }
+            } catch (e) { /* 忽略 */ }
+            return o.apply(this, arguments);
+        };
+        pushRec('specialPlantFood', o, ownFlag);
+    }
+
+    /* 5) 生产事件：中形态兜底 25+3×5；光环（大招只一次） */
+    {
+        const o = orig('_produce'), ownFlag = own('_produce');
+        SunShroomPlant.prototype._produce = function () {
+            if (!featOn('sunshroom')) return o.apply(this, arguments);
+            const c = cfg();
+            const stage = this.growthStage;
+            if (stage === 1 && sunHelper && typeof sunHelper.produceSun === 'function') {
+                const parts = Array.isArray(c.midSunParts) ? c.midSunParts : [25, 5, 5, 5];
+                for (let i = 0; i < parts.length; i++) {
+                    const v = num(parts[i], 0);
+                    if (v > 0) {
+                        sunHelper.produceSun(v, this.worldPosition,
+                            this.sunSpawnpoint.worldPosition.y - this.worldPositionY,
+                            true, false, this.plantInLnC && this.plantInLnC.ShineVineBuffed);
+                    }
+                }
+                this.producing = false;
+            } else {
+                o.apply(this, arguments);
+            }
+            const isFood = !!this.fooding;
+            const big = isFood || this.growthStage === 2;
+            if (isFood) {
+                if (!this.__gpnSunPfAura) { this.__gpnSunPfAura = true; sunAura(this, true); }
+            } else {
+                sunAura(this, big);
+            }
+        };
+        pushRec('_produce', o, ownFlag);
+    }
+
+    log('[阳光菇] 补丁已装（永久小形态 / 间隔 14.5–16.2·10.5–11.2 / 首次 1–3s / 光环 / 大招 3×50，' + recs.length + ' 个钩子）');
+    return recs;
+}
+
 function makeSpringBeanPatch(SpringBeanPlant, Zombie, deps) {
     const D = deps || {};
     const recs = [];
@@ -9843,6 +10112,7 @@ export default {
     _cabbageCfg: () => CFG.cabbagepult,
     _cabbagePultPatch: makeCabbagePultPatch,           // 孢子菇配置（自检核对数值）
     _springCfg: () => CFG.springbean,     _springPatch: makeSpringBeanPatch,
+    _sunCfg: () => CFG.sunshroom,         _sunPatch: makeSunShroomPatch,
     // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
     _sporePoisonPatch: makeSporePoisonBonusPatch,   // ×1.5 补丁工厂
     _sporeMult: gpnSporeMult,                       // 倍率（从 CFG 现算）
@@ -9985,6 +10255,11 @@ export default {
             'chunks:///_virtual/TallNut.ts',           // 53（高坚果类 `TallNutPlant`：**按类匹配**比按 `Plant_Type` 字符串稳；
             'chunks:///_virtual/SpringBean.ts',        // 54（弹簧豆 SpringBean：群体击退/休息/落地效果都在它自己的方法上改）
             'chunks:///_virtual/Squash.ts',            // 55（窝瓜：只为让 squashSound 组件类注册，运行时从窝瓜 prefab 取 smashSounds 当落地音效）
+            'chunks:///_virtual/Sunflower.ts',         // 56（向日葵基类 SunflowerPlant + 静态 produceSun）
+            'chunks:///_virtual/SunShroom.ts',         // 57（阳光菇：永久小形态/生产间隔/光环/大招）
+            'chunks:///_virtual/Moonflower.ts',        // 58（月光花：光环扣 busy）
+            'chunks:///_virtual/ShineVine.ts',         // 59（闪耀藤蔓：光环扣 produceCD）
+            'chunks:///_virtual/Toadstool.ts',         // 60（金蟾菇：光环扣 zombiesInMouth）
                                                        // `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
@@ -10013,7 +10288,8 @@ export default {
                 fumeShroomMod = mods[42], vamporciniMod = mods[43], gloomShroomMod = mods[44],
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
-                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53], springBeanMod = mods[54], squashMod = mods[55];
+                skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53], springBeanMod = mods[54], squashMod = mods[55],
+                sunFlowerMod = mods[56], sunShroomMod = mods[57], moonflowerMod = mods[58], shineVineMod = mods[59], toadstoolMod = mods[60];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -10105,6 +10381,7 @@ export default {
                     { key: 'cabbagepult', label: '卷心菜投手' },
                     { key: 'kernelpult', label: '玉米投手' },
                     { key: 'springbean', label: '弹簧豆' },
+                    { key: 'sunshroom', label: '阳光菇' },
                     { key: 'phatbeet', label: '魔音甜菜' },
                     { key: 'garlic', label: '大蒜' },
                     { key: 'snowpea', label: '寒冰射手' },
@@ -10995,6 +11272,20 @@ let ticks = 0;
                     });
                 if (springRecs && springRecs.length) recs.push.apply(recs, springRecs);
             }
+
+            // ---- 阳光菇：永久小形态 / 生产间隔 / 光环减冷却 / 大招 3×50 ----
+            {
+                const sunRecs = makeSunShroomPatch(
+                    sunShroomMod && sunShroomMod.SunShroomPlant,
+                    sunFlowerMod && sunFlowerMod.SunflowerPlant,
+                    sunFlowerMod && sunFlowerMod.sunflower,
+                    moonflowerMod && moonflowerMod.MoonflowerPlant,
+                    shineVineMod && shineVineMod.ShineVinePlant,
+                    toadstoolMod && toadstoolMod.ToadstoolPlant,
+                    levelMod && levelMod.LevelPlay,
+                    {});
+                if (sunRecs && sunRecs.length) recs.push.apply(recs, sunRecs);
+            }
             }
 
             {
@@ -11012,7 +11303,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l108 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l113 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -11067,6 +11358,7 @@ let ticks = 0;
                 + '/全屏吹飞/特效同行)、'
                 + '玉米投手(黄油落地留油' + CFG.kernelpult.tileLiquidDuration + '秒/大招' + CFG.kernelpult.tileLiquidDurationPlantfood + '秒)、'
                 + '弹簧豆(群体击退/距离×' + CFG.springbean.knockbackDistance + '格·薄荷' + (CFG.springbean.knockbackDistance * CFG.springbean.mintFactor) + '格/弹起' + CFG.springbean.leapHeight + 'px/落地' + CFG.springbean.landDamage + '穿甲+3×3眩晕' + CFG.springbean.aoeStunDuration + '秒/休息' + CFG.springbean.restTime + '秒/冷却' + CFG.springbean.cooldown + '秒/阳光' + CFG.springbean.sunCost + ')、'
+                + '阳光菇(永久小形态/间隔' + CFG.sunshroom.intervalDayBase + '–' + (CFG.sunshroom.intervalDayBase + CFG.sunshroom.intervalDayRand) + '秒·夜' + CFG.sunshroom.intervalNightBase + '–' + (CFG.sunshroom.intervalNightBase + CFG.sunshroom.intervalNightRand) + '秒/首次' + CFG.sunshroom.firstBase + '–' + (CFG.sunshroom.firstBase + CFG.sunshroom.firstRand) + '秒/光环/大招3×' + CFG.sunshroom.pfSunValue + '/阳光' + CFG.sunshroom.sunCost + ')、'
                 + '卷心菜投手(子弹首次命中再弹' + CFG.cabbagepult.bounceCells + '格/同伤害/阳光' + CFG.cabbagepult.sunCost + ')、'
                 + '甜椒投手(阳光' + CFG.pepperpult.sunCost + '/冷却' + CFG.pepperpult.packetCooldown
                 + '秒/落点3x3灼烧' + CFG.pepperpult.burnSeconds + '秒/'
