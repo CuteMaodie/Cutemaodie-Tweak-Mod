@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.3.9';
+const MOD_VERSION = '1.4.1';
 /* 实例身份：每次模块被加载都会生成一个新的 ID。
  * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -68,6 +68,7 @@ const FEATURES = {
     kernelpult: true,       // 玉米投手：黄油**落点留下地面黄油**（与黄油毛茛同款；普通 120 秒 / 大招 150 秒）
     springbean: true,       // 弹簧豆：群体击退（1×1 全弹）、距离×3、弹起 432、落地 50 穿甲+震动+3×3 眩晕 1s+小跳、休息 5s、冷却 15s、阳光 75
     sunshroom: true,        // 阳光菇：永久小形态（开大变最大）/ 生产间隔 14.5–16.2（夜 10.5–11.2）/ 首次 1–3s / 光环减冷却 / 阳光 50
+    lightningreed: true,    // 闪电芦苇：两栖种植（可种水中）+ 攻击/连锁可索敌浮潜僵尸 + 图鉴特点
     // ↓ 下面这几个以前【忘了登记】：features.json 里写了 false 也不会生效（featOn 找不到这个键 -> 当成开）
     phatbeet: true,         // 魔音甜菜：普攻眩晕 / 大招眩晕+击起 / 解除安抚 / 音乐免疫
     garlic: true,           // 大蒜：每口固定伤害 37.5 / 阳光 75 / 冷却 15 秒
@@ -556,6 +557,10 @@ const CFG = {
         auraToadstoolCdBig: 8,        // 大形态：金蟾菇消化 -8s
         auraShineVineCdBig: 6,        // 大形态：闪耀藤蔓 produceCD -6s（异格）
         auraShineVineCdSameTileBig: 1.5, // 大形态：闪耀藤蔓与阳光菇同格 -1.5s
+        debugLog: false,
+    },
+    lightningreed: {
+        plantType: 'lightningreed',
         debugLog: false,
     },
     tallnut: {
@@ -1152,7 +1157,7 @@ const GPN_ALM_CHANGED = [
     ['noctarine', 'noctarine'], ['dandelion', 'dandelion'], ['pepperpult', 'pepperpult'],
     ['hurrikale', 'hurrikale'], ['phatbeet', 'phatbeet'], ['snowpea', 'snowpea'],
     ['redstinger', 'redstinger'], ['splitpea', 'splitpea'], ['murkadamia', 'murkadamia'],
-    ['sporeshroom', 'sporeshroom'], ['springbean', 'springbean'], ['sunshroom', 'sunshroom'],
+    ['sporeshroom', 'sporeshroom'], ['springbean', 'springbean'], ['sunshroom', 'sunshroom'], ['lightningreed', 'lightningreed'],
 ];
 
 function gpnAlmList() {
@@ -1850,6 +1855,11 @@ function makeDataPatcher(PvZ2ObjectContainer) {
               }
           }
 
+          // ---- 闪电芦苇：两栖 ----
+          if (featOn('lightningreed')) {
+              addSpecial('lightningreed', '可种植在水中', 'Can be planted in water.');
+          }
+
           // ---- 阳光菇：介绍 + 新增特点（原版白天减产，只是写明） ----
           if (featOn('sunshroom')) {
               writeIntro('sunshroom',
@@ -1875,6 +1885,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
         // 每次现取容器：PvZ2ObjectContainer 是 JSONs 模块上的类，其 static 数组可能晚于 setup 才被填充。
         const Box = (typeof gpnResolveDataBox === 'function') ? gpnResolveDataBox() : PvZ2ObjectContainer;
         if (!Box) { warn('数据补丁：容器不可用，这次没落下去'); return false; }
+        // 闪电芦苇的两栖 TAGS 在 makeLightningReedPatch 里挂到真实的 Plants.plantRes.PlantFeatures。
         // 【诊断】记账：apply 被调用的次数（临时开关，默认静默；见 gpnAlmTempVerbose）
         gpnAlmApplyCalls++;
         const _almDumpTail = (why) => { try { if (gpnAlmTempVerbose) gpnAlmDump(why); } catch (e) { /* 只影响诊断 */ } };
@@ -4021,6 +4032,94 @@ let GPN_SB_LAST_SOUND_AT = 0;       // 落地音效上次播放时间（全局�
 /* =======================================================================
  * 阳光菇（sunshroom）：永久小形态 + 生产间隔 45% + 光环减冷却 + 大招 3×50
  * =======================================================================*/
+/* =======================================================================
+ * 闪电芦苇（lightningreed）：两栖种植 + 攻击可索敌浮潜僵尸
+ * =======================================================================*/
+function makeLightningReedPatch(LightningReedPlant, BeachSnorkelZombie, Plants) {
+    const recs = [];
+    /* 两栖：实际被 Plant 使用的是 Plants.plantRes.PlantFeatures，不是 PvZ2ObjectContainer 那份。
+     * 除了改数组，也包住两个 getter，保证运行期开关即时生效、且晚加载也不会漏。 */
+    const tagOne = function (f) {
+        try {
+            if (!f || (f.CODENAME !== 'lightningreed' && f._CARDSPRITENAME !== 'lightningreed')) return;
+            if (!Array.isArray(f.TAGS)) f.TAGS = [];
+            if (featOn('lightningreed')) {
+                if (!f.__gpnLrTagAdded) {
+                    /* 关键：putPlantAvailable 的分支顺序是 plant 在 amphibious 前面。
+                     * 必须把 "plant" 移除、只留 "amphibious"，否则会走 plantable()，
+                     * 水格仍会被“需要荷叶”拦下。 */
+                    f.__gpnLrTagsSaved = f.TAGS.slice();
+                    for (let i = f.TAGS.length - 1; i >= 0; i--) {
+                        if (f.TAGS[i] === 'plant' || f.TAGS[i] === 'amphibious') f.TAGS.splice(i, 1);
+                    }
+                    f.TAGS.push('amphibious');
+                    f.__gpnLrTagAdded = true;
+                }
+            } else if (f.__gpnLrTagAdded) {
+                if (Array.isArray(f.__gpnLrTagsSaved)) {
+                    f.TAGS.length = 0;
+                    for (let i = 0; i < f.__gpnLrTagsSaved.length; i++) f.TAGS.push(f.__gpnLrTagsSaved[i]);
+                }
+                delete f.__gpnLrTagsSaved;
+                f.__gpnLrTagAdded = false;
+            }
+        } catch (e) { /* 忽略 */ }
+    };
+    try {
+        if (Plants) {
+            const list = Plants.plantRes && Plants.plantRes.PlantFeatures;
+            if (list && typeof list.length === 'number') {
+                for (let k = 0; k < list.length; k++) tagOne(list[k]);
+            }
+            ['getPlantFeature', 'getPlantFeatureByType'].forEach(function (name) {
+                const o = Plants[name];
+                if (typeof o !== 'function') return;
+                Plants[name] = function () {
+                    const f = o.apply(this, arguments);
+                    tagOne(f);
+                    return f;
+                };
+                recs.push({ restore: function () { try { Plants[name] = o; } catch (e) { /* 忽略 */ } } });
+            });
+        }
+    } catch (e) { warn('闪电芦苇：两栖 TAGS 钩子安装失败', e); }
+    if (!LightningReedPlant || !LightningReedPlant.prototype || typeof LightningReedPlant.prototype.playAttack !== 'function') {
+        warn('跳过闪电芦苇：拿不到 LightningReedPlant.playAttack');
+        return recs;
+    }
+    const proto = (BeachSnorkelZombie && BeachSnorkelZombie.prototype) || null;
+    const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'bodyRecForShooter') : null;
+    const o = LightningReedPlant.prototype.playAttack;
+    LightningReedPlant.prototype.playAttack = function () {
+        if (!featOn('lightningreed')) return o.apply(this, arguments);
+        let swapped = false;
+        if (desc && typeof desc.get === 'function') {
+            try {
+                /* 只在闪电芦苇攻击的那一瞬间让浮潜僵尸“显形”。
+                 * 平时其他植物仍然看不到完全下潜的浮潜僵尸。 */
+                Object.defineProperty(proto, 'bodyRecForShooter', {
+                    configurable: true,
+                    get: function () {
+                        try { return this.bodyRec; } catch (e) { return desc.get.call(this); }
+                    },
+                });
+                swapped = true;
+            } catch (e) { /* 忽略 */ }
+        }
+        try {
+            return o.apply(this, arguments);
+        } finally {
+            if (swapped) {
+                try { Object.defineProperty(proto, 'bodyRecForShooter', desc); }
+                catch (e) { /* 忽略 */ }
+            }
+        }
+    };
+    recs.push({ restore: function () { try { LightningReedPlant.prototype.playAttack = o; } catch (e) { /* 忽略 */ } } });
+    log('[闪电芦苇] 补丁已装（两栖 TAGS / 攻击索敌浮潜，' + recs.length + ' 个钩子）');
+    return recs;
+}
+
 function makeSunShroomPatch(SunShroomPlant, SunflowerPlant, sunHelper, MoonflowerPlant, ShineVinePlant, ToadstoolPlant, LevelPlay, deps) {
     const recs = [];
     if (!SunShroomPlant || !SunShroomPlant.prototype || typeof SunShroomPlant.prototype.getStartingCD !== 'function') {
@@ -10127,6 +10226,7 @@ export default {
     _cabbagePultPatch: makeCabbagePultPatch,           // 孢子菇配置（自检核对数值）
     _springCfg: () => CFG.springbean,     _springPatch: makeSpringBeanPatch,
     _sunCfg: () => CFG.sunshroom,         _sunPatch: makeSunShroomPatch,
+    _lrCfg: () => CFG.lightningreed,      _lrPatch: makeLightningReedPatch,
     // 孢子菇 ×1.5（R6/R7：毒性家族伤害加成）—— 工厂 + 纯函数/工具，自检直接单测
     _sporePoisonPatch: makeSporePoisonBonusPatch,   // ×1.5 补丁工厂
     _sporeMult: gpnSporeMult,                       // 倍率（从 CFG 现算）
@@ -10274,6 +10374,8 @@ export default {
             'chunks:///_virtual/Moonflower.ts',        // 58（月光花：光环扣 busy）
             'chunks:///_virtual/ShineVine.ts',         // 59（闪耀藤蔓：光环扣 produceCD）
             'chunks:///_virtual/Toadstool.ts',         // 60（金蟾菇：光环扣 zombiesInMouth）
+            'chunks:///_virtual/LightningReed.ts',     // 61（闪电芦苇：两栖 + 攻击/连锁索敌浮潜）
+            'chunks:///_virtual/BeachSnorkelZombie.ts',// 62（浮潜僵尸：临时显形 bodyRecForShooter）
                                                        // `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
@@ -10303,7 +10405,8 @@ export default {
                 shadowShroomMod = mods[45], ailMintMod = mods[46], mariGoldMod = mods[47],
                 gooFoodMod = mods[48], gooTileMod = mods[49],
                 skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53], springBeanMod = mods[54], squashMod = mods[55],
-                sunFlowerMod = mods[56], sunShroomMod = mods[57], moonflowerMod = mods[58], shineVineMod = mods[59], toadstoolMod = mods[60];
+                sunFlowerMod = mods[56], sunShroomMod = mods[57], moonflowerMod = mods[58], shineVineMod = mods[59], toadstoolMod = mods[60],
+                lightningReedMod = mods[61], snorkelMod = mods[62];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -10396,6 +10499,7 @@ export default {
                     { key: 'kernelpult', label: '玉米投手' },
                     { key: 'springbean', label: '弹簧豆' },
                     { key: 'sunshroom', label: '阳光菇' },
+                    { key: 'lightningreed', label: '闪电芦苇' },
                     { key: 'phatbeet', label: '魔音甜菜' },
                     { key: 'garlic', label: '大蒜' },
                     { key: 'snowpea', label: '寒冰射手' },
@@ -11287,6 +11391,15 @@ let ticks = 0;
                 if (springRecs && springRecs.length) recs.push.apply(recs, springRecs);
             }
 
+            // ---- 闪电芦苇：两栖 + 攻击索敌浮潜 ----
+            {
+                const lrRecs = makeLightningReedPatch(
+                    lightningReedMod && lightningReedMod.LightningReedPlant,
+                    snorkelMod && snorkelMod.BeachSnorkelZombie,
+                    plantsMod && plantsMod.plants);
+                if (lrRecs && lrRecs.length) recs.push.apply(recs, lrRecs);
+            }
+
             // ---- 阳光菇：永久小形态 / 生产间隔 / 光环减冷却 / 大招 3×50 ----
             {
                 const sunRecs = makeSunShroomPatch(
@@ -11317,7 +11430,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l118 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l120 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
@@ -11371,6 +11484,7 @@ let ticks = 0;
                 + '飓风甘蓝(其他行推力' + Math.round(CFG.hurrikale.otherLanePushScale * 100) + '%'
                 + '/全屏吹飞/特效同行)、'
                 + '玉米投手(黄油落地留油' + CFG.kernelpult.tileLiquidDuration + '秒/大招' + CFG.kernelpult.tileLiquidDurationPlantfood + '秒)、'
+                + '闪电芦苇(两栖/索敌浮潜)、'
                 + '弹簧豆(群体击退/距离×' + CFG.springbean.knockbackDistance + '格·薄荷' + (CFG.springbean.knockbackDistance * CFG.springbean.mintFactor) + '格/弹起' + CFG.springbean.leapHeight + 'px/落地' + CFG.springbean.landDamage + '穿甲+3×3眩晕' + CFG.springbean.aoeStunDuration + '秒/休息' + CFG.springbean.restTime + '秒/冷却' + CFG.springbean.cooldown + '秒/阳光' + CFG.springbean.sunCost + ')、'
                 + '阳光菇(永久小形态/间隔' + CFG.sunshroom.intervalDayBase + '–' + (CFG.sunshroom.intervalDayBase + CFG.sunshroom.intervalDayRand) + '秒·夜' + CFG.sunshroom.intervalNightBase + '–' + (CFG.sunshroom.intervalNightBase + CFG.sunshroom.intervalNightRand) + '秒/首次' + CFG.sunshroom.firstBase + '–' + (CFG.sunshroom.firstBase + CFG.sunshroom.firstRand) + '秒/光环/大招3×' + CFG.sunshroom.pfSunValue + '/阳光' + CFG.sunshroom.sunCost + ')、'
                 + '卷心菜投手(子弹首次命中再弹' + CFG.cabbagepult.bounceCells + '格/同伤害/阳光' + CFG.cabbagepult.sunCost + ')、'
