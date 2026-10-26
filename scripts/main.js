@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.3.5';
+const MOD_VERSION = '1.3.9';
 /* 实例身份：每次模块被加载都会生成一个新的 ID。
  * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -541,6 +541,8 @@ const CFG = {
         midSunParts: [25, 5, 5, 5],   // 中形态仅作兜底：25 + 3×5 = 35（正常不会出现）
         pfSunCount: 3,                // 大招：3 × 50（引擎按 PlantfoodTime 连发）
         pfSunValue: 50,
+        briefZh: '能快速提供小额阳光', // 选卡/图鉴简介
+        briefEn: 'Quickly provides small suns.',
         auraRadiusCells: 1,           // 3×3（以自身格为中心）
         auraSunflowerCd: 6,           // 普通形态：向日葵系当前冷却 -6s
         auraShroomCdDay: 1.7,         // 普通形态：其他阳光菇（白天）-1.7s
@@ -1854,6 +1856,7 @@ function makeDataPatcher(PvZ2ObjectContainer) {
                   '阳光菇能快速提供小阳光，并在生产阳光时提高周围植物的阳光生产效率',
                   'Sun-shroom quickly provides small suns and boosts the sun production of nearby plants while producing sun.');
               addSpecial('sunshroom', '在白天生产效率会降低', 'Sun production is slower during the day.');
+              writeBrief('sunshroom', CFG.sunshroom.briefZh, CFG.sunshroom.briefEn);
               const _eSS = findAl('sunshroom');
               const _elSS = (_eSS && _eSS.objdata && Array.isArray(_eSS.objdata.Elements)) ? _eSS.objdata.Elements : null;
               if (_elSS) {
@@ -11314,7 +11317,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l114 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l118 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
