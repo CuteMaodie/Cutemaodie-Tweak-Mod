@@ -33,7 +33,7 @@
  */
 
 const MOD_ID = 'Cutemaodies_Tweaks';
-const MOD_VERSION = '1.4.1';
+const MOD_VERSION = '1.4.6';
 /* 实例身份：每次模块被加载都会生成一个新的 ID。
  * 用途：确认"同一份代码是否被加载了多次"（多实例会各自写 FEATURES / 各自 apply 数据补丁 ⇒ 互相覆盖）。
  * 判据：日志里出现多个不同的 INSTANCE=xxx 就是多实例。 */
@@ -744,6 +744,16 @@ const CFG = {
         normalJamClearSeconds: 1.25,   // 普攻命中后的音乐免疫秒数（0 = 关掉这条）
         normalJamFx: true,             // 普攻这 1.25 秒**也铺**⑧命中特效（纯视觉、零伤害）
                                        // false = 只给机制、不铺特效（旧行为）
+        // ---- ②b 解除安抚后的「安抚免疫」 ----
+        sootheImmuneSeconds: 6,        // 真正解除安抚后，植物 N 秒内不会再被施加安抚
+        sootheImmuneFx: true,          // 这 N 秒内持续铺命中特效（纯视觉、零伤害）
+        sootheImmuneSafety: true,      // 每帧兜底：异常绕过免疫直接写 boomboxCD 时，再清一次
+        // ---- ⑥ 麦克说唱家：打断 3×3 特殊攻击 ----
+        mcCancelLockSeconds: 0.5,      // 取消后 N 秒内不再进入特殊攻击
+        mcReverse: true,               // true = 尝试倒放 Attack 动画；false / 失败 = 直接切回 Idle
+        mcReverseMaxSeconds: 1.0,      // 倒放最长时间（防止循环动画/接口不生效时无限卡住）
+        mcReverseStallSeconds: 0.3,    // currentTime 连续这么久不递减 ⇒ 判定倒放卡住，直接回 Idle
+        bdReverseSpeed: 1.0,           // 霹雳舞僵尸手动逐帧回退速度（1 = 正常动画速度）
         // ---- ④ 大招眩晕 + 原地向上击起 ----
         plantfoodStun: 5,              // 大招使命中的僵尸眩晕几秒（本次 3 -> 5）
         liftDuration: 0.5,             // 滞空总时长（上抛 + 落回）；必须明显小于 plantfoodStun
@@ -1793,8 +1803,10 @@ function makeDataPatcher(PvZ2ObjectContainer) {
             // （这是刻意的，不是漏同步 —— 别当 BUG 修）。
             addSpecial('phatbeet', '攻击可以停顿僵尸，同时干扰僵尸，使音乐暂时无法对其生效',
                 'Its attacks can halt zombies and disrupt them, temporarily preventing the Jam Stage effect from affecting them.');
-            addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚',
-                'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range.');
+            addSpecial('phatbeet', '可以解除伤害范围内音响僵尸对植物施加的安抚，并使其接下来 '
+                + CFG.phatbeet.sootheImmuneSeconds + ' 秒内不会再次被施加安抚',
+                'Removes the soothing effect that Boombox Zombies inflict on plants within its damage range, '
+                + 'and prevents it from being applied again for ' + CFG.phatbeet.sootheImmuneSeconds + ' seconds.');
             addSpecial('phatbeet', '大招可以将僵尸震起',
                 'Its Plant Food can knock zombies upward.');
         }
@@ -6926,6 +6938,7 @@ function gpnLiftZombie(z, deps, noStun) {
 /** 解除一株植物身上的「安抚」。 三件事缺一不可（否则下一帧就被刷回来） */
 function gpnClearSoothe(p, deps, fx, srcPlant) {
     if (!p || p.dead) return false;
+    const C = CFG.phatbeet;
     const od = p.objdataOwn;
     if (od && od.ImmuneToBoomBox) return false;      // 免疫的植物（含魔音甜菜自己）本来就不会被安抚
     let did = false;
@@ -6945,6 +6958,12 @@ function gpnClearSoothe(p, deps, fx, srcPlant) {
             const i = arr.indexOf(p);
             if (i !== -1) { arr.splice(i, 1); did = true; }
         }
+    }
+    // ②b 真的解除掉了 -> 获得 N 秒「安抚免疫」；若已经处于免疫中则不刷新（避免 Phat Beet 连续攻击无限续期）
+    if (did && C.sootheImmuneSeconds > 0 && !(p.__gpnSootheImmuneCD > 0)) {
+        p.__gpnSootheImmuneCD = C.sootheImmuneSeconds;
+        p.__gpnSootheFxAcc = 0;
+        p.__gpnSootheFxOn = !!(C.sootheImmuneFx && fx);
     }
     // ⑦ 真的解除掉了 -> 在这株【被安抚的植物】脚下放一次命中特效（纯视觉，不伤植物）
     if (did && fx && CFG.phatbeet.clearFx) {
@@ -7025,6 +7044,138 @@ function gpnTickJamClear(Square, dt, fx, deps) {
     }
 }
 
+
+/** ②b 「安抚免疫」倒数 + 持续命中特效（纯视觉）
+ * 语义：只有真正解除过一次安抚才获得；免疫期间不刷新（防止连续攻击无限续期）。
+ * 安全兜底：若有别的代码绕过施加端拦截、直接写了 boomboxCD，这里再清一次，但**不刷新**计时。 */
+function gpnTickSootheImmune(Square, dt, fx, deps) {
+    if (!(dt > 0) || !Square || typeof Square.getAllLane !== 'function') return;
+    const C = CFG.phatbeet;
+    const wantFx = !!(C.sootheImmuneFx && fx && deps && typeof deps.instantiatePooly === 'function');
+    const iv = wantFx ? gpnJamFxInterval(fx) : 0;
+    for (const lane of (Square.getAllLane() || [])) {
+        if (!lane || typeof lane.plantPool !== 'function') continue;
+        for (const p of (lane.plantPool() || [])) {
+            if (!p) continue;
+            if (p.dead) {
+                p.__gpnSootheImmuneCD = 0;
+                p.__gpnSootheFxAcc = 0;
+                p.__gpnSootheFxOn = false;
+                continue;
+            }
+            if (!(p.__gpnSootheImmuneCD > 0)) continue;
+            if (C.sootheImmuneSafety && (p.boomboxCD > 0 || p.boomboxPar)) {
+                try { gpnClearSoothe(p, deps, null, null); } catch (e) { /* 忽略 */ }
+            }
+            p.__gpnSootheImmuneCD -= dt;
+            if (wantFx && p.__gpnSootheFxOn) {
+                p.__gpnSootheFxAcc = (p.__gpnSootheFxAcc || 0) + dt;
+                if (p.__gpnSootheFxAcc >= iv) {
+                    p.__gpnSootheFxAcc = 0;
+                    try { gpnHitFxSpawn(fx, p, deps, false); } catch (e) { /* 忽略 */ }
+                }
+            }
+            if (p.__gpnSootheImmuneCD <= 0) {
+                p.__gpnSootheImmuneCD = 0;
+                p.__gpnSootheFxAcc = 0;
+                p.__gpnSootheFxOn = false;
+            }
+        }
+    }
+}
+
+
+/** ⑥b 霹雳舞僵尸：0.5 秒锁 + 倒放状态机；倒放到 0 后回 Idle/Walk */
+function gpnTickBdState(Square, dt, deps) {
+    if (!(dt > 0) || !Square || typeof Square.getAllLane !== 'function') return;
+    for (const lane of (Square.getAllLane() || [])) {
+        if (!lane) continue;
+        const pools = [];
+        if (typeof lane.zombiePool === 'function') pools.push(lane.zombiePool());
+        if (typeof lane.hypnoZombiePool === 'function') pools.push(lane.hypnoZombiePool());
+        for (const pool of pools) {
+            for (const z of (pool || [])) {
+                if (!z) continue;
+                if (z.__gpnBdAttackLockCD > 0) z.__gpnBdAttackLockCD = Math.max(0, z.__gpnBdAttackLockCD - dt);
+                if (!z.__gpnBdReversing) continue;
+                if (z.dead) {
+                    z.__gpnBdReversing = false;
+                    z.__gpnBdReverseState = null;
+                    z.__gpnBdAttacking = false;
+                    continue;
+                }
+                const st = z.__gpnBdReverseState;
+                const anim = z.__gpnBdReverseAnim;
+                const animName = z.__gpnBdReverseName;
+                const total = +z.__gpnBdReverseTotal;
+                z.__gpnBdReverseElapsed = (z.__gpnBdReverseElapsed || 0) + dt;
+                const maxSec = Math.max(0.2, +(CFG.phatbeet.mcReverseMaxSeconds || 1.0));
+                const speed = Math.max(0.1, +(CFG.phatbeet.bdReverseSpeed || 1.0));
+                let reason = '';
+                if (!anim || !animName || !(total > 0)) reason = 'no-state';
+                else {
+                    z.__gpnBdReverseTime = Math.max(0, (+z.__gpnBdReverseTime || 0) - dt * speed);
+                    try { anim.gotoAndStopByTime(animName, z.__gpnBdReverseTime); } catch (e) { /* 忽略 */ }
+                    if (z.__gpnBdReverseTime <= 0) reason = 'zero';
+                    else if (z.__gpnBdReverseElapsed >= maxSec) reason = 'timeout';
+                }
+                if (reason) {
+                    try { if (anim && typeof anim.timeScale === 'number') anim.timeScale = 1; } catch (e) { /* 忽略 */ }
+                    try { if (st) st.timeScale = 1; } catch (e) { /* 忽略 */ }
+                    log('[霹雳舞] 手动倒放结束：' + reason
+                        + ' elapsed=' + (+z.__gpnBdReverseElapsed).toFixed(3)
+                        + ' time=' + (+z.__gpnBdReverseTime).toFixed(3));
+                    z.__gpnBdReversing = false;
+                    z.__gpnBdReverseState = null;
+                    z.__gpnBdReverseAnim = null;
+                    z.__gpnBdReverseName = null;
+                    z.switching = false;
+                    z.isWalking = true;
+                    z.kickCountdown = Infinity;
+                    try {
+                        if (typeof z.playIdle === 'function') z.playIdle(0);
+                        else if (z.body && typeof z.body.playAnimation === 'function' && z.body.IdleAnm) z.body.playAnimation(z.body.IdleAnm, 1 / 0);
+                    } catch (e) { /* 忽略 */ }
+                }
+            }
+        }
+    }
+}
+/** ⑥ 麦克说唱家：0.5 秒锁 + 倒放状态机（倒放到 0 后回 Idle；失败/无状态时由调用方直接切 Idle） */
+function gpnTickMcState(Square, dt, deps) {
+    if (!(dt > 0) || !Square || typeof Square.getAllLane !== 'function') return;
+    for (const lane of (Square.getAllLane() || [])) {
+        if (!lane) continue;
+        const pools = [];
+        if (typeof lane.zombiePool === 'function') pools.push(lane.zombiePool());
+        if (typeof lane.hypnoZombiePool === 'function') pools.push(lane.hypnoZombiePool());
+        for (const pool of pools) {
+            for (const z of (pool || [])) {
+                if (!z) continue;
+                if (z.__gpnMcAttackLockCD > 0) z.__gpnMcAttackLockCD = Math.max(0, z.__gpnMcAttackLockCD - dt);
+                if (!z.__gpnMcReversing) continue;
+                if (z.dead) {
+                    z.__gpnMcReversing = false;
+                    z.__gpnMcReverseState = null;
+                    z.__gpnMcAttacking = false;
+                    continue;
+                }
+                const st = z.__gpnMcReverseState;
+                if (!st || !(st.totalTime > 0) || !(st.currentTime > 0)) {
+                    z.__gpnMcReversing = false;
+                    z.__gpnMcReverseState = null;
+                    try { if (st) st.timeScale = 1; } catch (e) { /* 忽略 */ }
+                    z.switching = false;
+                    z.isWalking = true;
+                    try {
+                        if (typeof z.playIdle === 'function') z.playIdle(0);
+                        else if (z.body && typeof z.body.playAnimation === 'function' && z.body.IdleAnm) z.body.playAnimation(z.body.IdleAnm, 1 / 0);
+                    } catch (e) { /* 忽略 */ }
+                }
+            }
+        }
+    }
+}
 /* ==========================================================================
  * 魔音甜菜的「命中特效」（hitPar）—— 纯视觉，不造成任何伤害
  * 引擎事实（PhatBeetPlant.playHitOnCharacter）：
@@ -7253,6 +7404,200 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
     // 卸载模组时把缓存里的引用配平（decRef）
     recs.push({ __onCleanup: function () { gpnFxDropCache(fx); } });
 
+
+    // ---- ⑥ 麦克说唱家：取消 3×3 特殊攻击（倒放优先；失败回退直接切 Idle） ----
+    const MC = deps.EightiesMCZombie;
+    let mcCancel = null;
+    const mcAnimRef = function (z) {
+        try {
+            const db = z && z.body && z.body.db;
+            const arm = db && typeof db.armature === 'function' ? db.armature() : null;
+            return (arm && arm.animation) || null;
+        } catch (e) { return null; }
+    };
+    const mcReverseState = function (z) {
+        try {
+            const db = z && z.body && z.body.db;
+            const arm = db && typeof db.armature === 'function' ? db.armature() : null;
+            const anim = arm && arm.animation;
+            const st = anim && anim.lastAnimationState;
+            return (st && st.currentTime > 0 && st.totalTime > 0) ? st : null;
+        } catch (e) { return null; }
+    };
+    mcCancel = function (z, reverse) {
+        if (!z || z.dead) return false;
+        z.__gpnMcCancelAttack = true;       // 让已经排队的 "attack" 帧事件不再造成伤害
+        z.__gpnMcAttacking = false;
+        z.__gpnMcAttackLockCD = Math.max(z.__gpnMcAttackLockCD || 0, C.mcCancelLockSeconds);
+        if (reverse) {
+            const st = mcReverseState(z);
+            if (st && typeof st.timeScale === 'number') {
+                try {
+                    st.timeScale = -1;      // DragonBones：倒放当前 Attack
+                    z.__gpnMcReverseState = st;
+                    z.__gpnMcReversing = true;
+                    return true;
+                } catch (e) { /* 回退直接切 Idle */ }
+            }
+        }
+        z.__gpnMcReversing = false;
+        z.__gpnMcReverseState = null;
+        z.switching = false;
+        z.isWalking = true;
+        try {
+            if (typeof z.playIdle === 'function') z.playIdle(0);
+            else if (z.body && typeof z.body.playAnimation === 'function' && z.body.IdleAnm) z.body.playAnimation(z.body.IdleAnm, 1 / 0);
+        } catch (e) { /* 忽略 */ }
+        return true;
+    };
+    const tryInterruptMc = function (target) {
+        if (!MC || !target || !featOn('phatbeet')) return false;
+        try {
+            if (!(target instanceof MC)) return false;
+            if (!(target.__gpnMcAttacking || (target.body && target.body.currentAnimationName === 'Attack'))) return false;
+            return mcCancel(target, !!C.mcReverse);
+        } catch (e) { return false; }
+    };
+    if (MC && MC.prototype) {
+        if (typeof MC.prototype.playAttack === 'function') {
+            const rec = methodRecord(MC, 'playAttack');
+            MC.prototype.playAttack = function () {
+                if (featOn('phatbeet')) {
+                    this.__gpnMcAttacking = true;
+                    this.__gpnMcCancelAttack = false;
+                    this.__gpnMcReversing = false;
+                    this.__gpnMcReverseState = null;
+                }
+                return rec.original.apply(this, arguments);
+            };
+            recs.push(rec);
+        }
+        if (typeof MC.prototype.attack === 'function') {
+            const rec = methodRecord(MC, 'attack');
+            MC.prototype.attack = function () {
+                if (this.__gpnMcCancelAttack) {
+                    this.__gpnMcCancelAttack = false;
+                    this.__gpnMcAttacking = false;
+                    return;
+                }
+                this.__gpnMcAttacking = false;
+                return rec.original.apply(this, arguments);
+            };
+            recs.push(rec);
+        }
+        if (typeof MC.prototype.detectJamEnemies === 'function') {
+            const rec = methodRecord(MC, 'detectJamEnemies');
+            MC.prototype.detectJamEnemies = function () {
+                if (featOn('phatbeet') && this.__gpnMcAttackLockCD > 0) return;
+                return rec.original.apply(this, arguments);
+            };
+            recs.push(rec);
+        }
+    } else {
+        warn('跳过麦克说唱家：拿不到 EightiesMCZombie（特殊攻击取消会失效）');
+    }
+
+
+    // ---- ⑥b 霹雳舞僵尸：取消推人特殊攻击（kick guard + 倒放优先） ----
+    const BD = deps.EightiesBreakDancerZombie;
+    let bdCancel = null;
+    bdCancel = function (z) {
+        if (!z || z.dead) return false;
+        z.__gpnBdCancelAttack = true;
+        z.__gpnBdAttacking = false;
+        z.__gpnBdAttackLockCD = Math.max(z.__gpnBdAttackLockCD || 0, C.mcCancelLockSeconds);
+        z.kickCountdown = Infinity;
+        const st = mcReverseState(z);
+        const animRd = mcAnimRef(z);
+        const animName = (z.body && z.body.currentAnimationName) || (st && st.name) || '';
+        if (C.mcReverse && st && animRd && animName
+            && st.totalTime > 0 && st.currentTime > 0
+            && typeof animRd.gotoAndStopByTime === 'function') {
+            try {
+                z.__gpnBdReverseName = animName;
+                z.__gpnBdReverseTime = +st.currentTime;
+                z.__gpnBdReverseTotal = +st.totalTime;
+                z.__gpnBdReverseState = st;
+                z.__gpnBdReverseAnim = animRd;
+                z.__gpnBdReverseElapsed = 0;
+                z.__gpnBdReverseLastTime = +st.currentTime;
+                if (typeof animRd.timeScale === 'number') animRd.timeScale = 0;   // 停掉自动推进
+                animRd.gotoAndStopByTime(animName, +st.currentTime);             // 先定位当前姿态
+                z.__gpnBdReversing = true;
+                z.switching = true;      // 倒放期间不再启动新循环
+                log('[霹雳舞] 手动倒放开始：name=' + animName
+                    + ' currentTime=' + (+st.currentTime).toFixed(3)
+                    + ' totalTime=' + (+st.totalTime).toFixed(3));
+                return true;
+            } catch (e) { /* 回退直接切 Idle */ }
+        }
+        z.__gpnBdReversing = false;
+        z.__gpnBdReverseState = null;
+        try { if (z.__gpnBdReverseAnim && typeof z.__gpnBdReverseAnim.timeScale === 'number') z.__gpnBdReverseAnim.timeScale = 1; } catch (e) { /* 忽略 */ }
+        z.__gpnBdReverseAnim = null;
+        z.switching = false;
+        z.isWalking = true;
+        try {
+            if (typeof z.playIdle === 'function') z.playIdle(0);
+            else if (z.body && typeof z.body.playAnimation === 'function' && z.body.IdleAnm) z.body.playAnimation(z.body.IdleAnm, 1 / 0);
+        } catch (e) { /* 忽略 */ }
+        return true;
+    };
+    const tryInterruptBreakDancer = function (target) {
+        if (!BD || !target || !featOn('phatbeet')) return false;
+        try {
+            if (!(target instanceof BD)) return false;
+            if (target.__gpnBdReversing) return true;      // 已在倒放中，不要重复重启
+            const anim = target.body && target.body.currentAnimationName;
+            const inRotate = (typeof anim === 'string' && anim.indexOf('Rotate') === 0);
+            if (!inRotate) return false;                    // Walk/Idle 等不取消
+            return bdCancel(target);
+        } catch (e) { return false; }
+    };
+    if (BD && BD.prototype) {
+        if (typeof BD.prototype.specialZombieUpdateBeforePlantDetect === 'function') {
+            const rec = methodRecord(BD, 'specialZombieUpdateBeforePlantDetect');
+            BD.prototype.specialZombieUpdateBeforePlantDetect = function () {
+                if (featOn('phatbeet')) {
+                    if (this.__gpnBdAttackLockCD > 0 || this.__gpnBdReversing) return;
+                    if (!this.__gpnBdAttacking) this.__gpnBdCancelAttack = false;   // 新一轮开始，清掉上一轮取消标记
+                }
+                const r = rec.original.apply(this, arguments);
+                if (featOn('phatbeet')) {
+                    try {
+                        const an = this.body && this.body.currentAnimationName;
+                        this.__gpnBdAttacking = !!(this.switching && typeof an === 'string' && an.indexOf('Rotate') === 0);
+                    } catch (e) { /* 忽略 */ }
+                }
+                return r;
+            };
+            recs.push(rec);
+        }
+        if (typeof BD.prototype.kick === 'function') {
+            const rec = methodRecord(BD, 'kick');
+            BD.prototype.kick = function () {
+                if (featOn('phatbeet') && this.__gpnBdCancelAttack) return;
+                return rec.original.apply(this, arguments);
+            };
+            recs.push(rec);
+        }
+        if (typeof BD.prototype.specialAnimationListener === 'function') {
+            const rec = methodRecord(BD, 'specialAnimationListener');
+            BD.prototype.specialAnimationListener = function (ev) {
+                if (featOn('phatbeet') && this.__gpnBdCancelAttack && ev && (
+                    ev.name === 'rotateStart'
+                    || ev.name === 'rotate_start_say'
+                    || ev.name === 'rotate_start_sound'
+                    || ev.name === 'rotate_end_say'
+                )) return;
+                return rec.original.apply(this, arguments);
+            };
+            recs.push(rec);
+        }
+    } else {
+        warn('跳过霹雳舞僵尸：拿不到 EightiesBreakDancerZombie（推人取消会失效）');
+    }
+
     // ---- (1) 命中那一刻：普攻 0.075s 眩晕 / 大招 2s + 原地击起 + 音乐免疫 ----
     if (typeof P.playHitOnCharacter === 'function') {
         const rec = methodRecord(PhatBeetPlant, 'playHitOnCharacter');
@@ -7294,6 +7639,11 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
                             try { if ('dancing' in target) target.dancing = false; } catch (e) {}
                         }
                     }
+                }
+                // 施加「不受魔音舞台效果影响」后，若命中的是正在 3×3 的麦克说唱家，取消当前攻击
+                if (target && target.__gpnJamClearCD > 0) {   // 只在音乐免疫真正生效时取消，不靠眩晕
+                    tryInterruptMc(target);
+                    tryInterruptBreakDancer(target);
                 }
             } catch (e) { warn('魔音甜菜：命中效果出错', e); }
             return r;
@@ -7354,6 +7704,50 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
         recs.push(rec);
     }
 
+
+    // ---- (4b) 安抚免疫：音响僵尸施加安抚时跳过免疫中的植物 ----
+    const BB = deps.EightiesBoomBoxZombie;
+    if (BB && BB.prototype && typeof BB.prototype.heartOnPlants === 'function') {
+        const rec = methodRecord(BB, 'heartOnPlants');
+        BB.prototype.heartOnPlants = function () {
+            if (!featOn('phatbeet')) return rec.original.apply(this, arguments);
+            const saved = [];
+            try {
+                const Sq = deps.Square;
+                if (Sq && typeof Sq.getAllLane === 'function') {
+                    for (const lane of (Sq.getAllLane() || [])) {
+                        if (!lane || typeof lane.plantPool !== 'function') continue;
+                        for (const p of (lane.plantPool() || [])) {
+                            const od = p && p.objdataOwn;
+                            if (!p || p.dead || !(p.__gpnSootheImmuneCD > 0) || !od || od.ImmuneToBoomBox) continue;
+                            saved.push([od, od.ImmuneToBoomBox]);
+                            od.ImmuneToBoomBox = true;   // 只在这一次调用期间临时免疫
+                        }
+                    }
+                }
+                return rec.original.apply(this, arguments);
+            } finally {
+                for (const [od, v] of saved) { try { od.ImmuneToBoomBox = v; } catch (e) { /* 忽略 */ } }
+            }
+        };
+        recs.push(rec);
+    } else {
+        warn('跳过魔音甜菜：拿不到 EightiesBoomBoxZombie.heartOnPlants（6 秒免疫拦截会失效）');
+    }
+    if (BB && BB.prototype && typeof BB.prototype.readHearts === 'function') {
+        const rec = methodRecord(BB, 'readHearts');
+        BB.prototype.readHearts = function () {
+            if (featOn('phatbeet') && Array.isArray(this.lovePs)) {
+                for (let i = this.lovePs.length - 1; i >= 0; i--) {
+                    const p = this.lovePs[i];
+                    if (p && p.__gpnSootheImmuneCD > 0) this.lovePs.splice(i, 1);
+                }
+            }
+            return rec.original.apply(this, arguments);
+        };
+        recs.push(rec);
+    }
+
     // ---- (5) 音乐免疫：标记期间这一只僵尸的移速不吃 jam 加成 ----
     if (Zombie && Zombie.prototype && typeof Zombie.prototype.defaultShouldSpeedScale === 'function') {
         const rec = methodRecord(Zombie, 'defaultShouldSpeedScale');
@@ -7385,6 +7779,12 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             const r = rec.original.apply(this, arguments);
             try { gpnTickJamClear(deps.Square, dt, fx, deps); }
             catch (e) { warn('魔音甜菜：音乐免疫倒计时出错', e); }
+            try { gpnTickSootheImmune(deps.Square, dt, fx, deps); }
+            catch (e) { warn('魔音甜菜：安抚免疫倒计时出错', e); }
+            try { gpnTickMcState(deps.Square, dt, deps); }
+            catch (e) { warn('魔音甜菜：麦克说唱家状态机出错', e); }
+            try { gpnTickBdState(deps.Square, dt, deps); }
+            catch (e) { warn('魔音甜菜：霹雳舞僵尸状态机出错', e); }
             return r;
         };
         recs.push(rec);
@@ -7398,6 +7798,22 @@ function makePhatBeetPatch(PhatBeetPlant, deps) {
             this.__gpnJamClearCD = 0;
             this.__gpnJamFxAcc = 0;
             this.__gpnJamFxOn = false;
+            this.__gpnSootheImmuneCD = 0;
+            this.__gpnSootheFxAcc = 0;
+            this.__gpnSootheFxOn = false;
+            this.__gpnMcAttacking = false;
+            this.__gpnMcCancelAttack = false;
+            this.__gpnMcAttackLockCD = 0;
+            this.__gpnMcReversing = false;
+            this.__gpnMcReverseState = null;
+            this.__gpnBdAttacking = false;
+            this.__gpnBdCancelAttack = false;
+            this.__gpnBdAttackLockCD = 0;
+            this.__gpnBdReversing = false;
+            this.__gpnBdReverseState = null;
+            this.__gpnBdReverseAnim = null;
+            this.__gpnBdReverseElapsed = 0;
+            this.__gpnBdReverseLastTime = 0;
             this.__gpnDancingRaw = undefined;
             this.__gpnDrivenAway = false;   // 池化复用：运兵艇的"已驱离"标记也要清
             return r;
@@ -10376,6 +10792,9 @@ export default {
             'chunks:///_virtual/Toadstool.ts',         // 60（金蟾菇：光环扣 zombiesInMouth）
             'chunks:///_virtual/LightningReed.ts',     // 61（闪电芦苇：两栖 + 攻击/连锁索敌浮潜）
             'chunks:///_virtual/BeachSnorkelZombie.ts',// 62（浮潜僵尸：临时显形 bodyRecForShooter）
+            'chunks:///_virtual/EightiesBoomBoxZombie.ts', // 63（音响僵尸：安抚施加入口）
+            'chunks:///_virtual/EightiesMCZombie.ts',      // 64（麦克说唱家：取消 3×3 特殊攻击）
+            'chunks:///_virtual/EightiesBreakDancerZombie.ts', // 65（霹雳舞僵尸：取消推人特殊攻击）
                                                        // `TallNut` 自己没覆盖 normalSmash，继承 WallNut 的「一砸就死」）
         ];
 
@@ -10406,7 +10825,7 @@ export default {
                 gooFoodMod = mods[48], gooTileMod = mods[49],
                 skyShipMod = mods[50], soundMod = mods[51], levelMod = mods[52], tallnutMod = mods[53], springBeanMod = mods[54], squashMod = mods[55],
                 sunFlowerMod = mods[56], sunShroomMod = mods[57], moonflowerMod = mods[58], shineVineMod = mods[59], toadstoolMod = mods[60],
-                lightningReedMod = mods[61], snorkelMod = mods[62];
+                lightningReedMod = mods[61], snorkelMod = mods[62], boomBoxMod = mods[63], eightiesMcMod = mods[64], breakDancerMod = mods[65];
 
             const recs = [];
             /** 心蕊减防特效 prefab 的缓存（香水菇要用） */
@@ -11095,6 +11514,9 @@ let ticks = 0;
                     instantiatePooly: nodePoolsMod && nodePoolsMod.instantiatePooly,
                     Vec3: ccMod && ccMod.Vec3,
                     Component: ccMod && ccMod.Component,
+                    EightiesBoomBoxZombie: boomBoxMod && (boomBoxMod.EightiesBoomBoxZombieZombie || boomBoxMod.EightiesBoomBoxZombie),
+                    EightiesMCZombie: eightiesMcMod && eightiesMcMod.EightiesMCZombie,
+                    EightiesBreakDancerZombie: breakDancerMod && (breakDancerMod.EightiesBreakDancerZombieZombie || breakDancerMod.EightiesBreakDancerZombie),
                 });
                 if (pb) recs.push(...pb);
             }
@@ -11430,7 +11852,7 @@ let ticks = 0;
             }
 
             const perTooth = Math.ceil(CFG.spikerock.maxSpike / CFG.spikerock.teeth);
-            log('[CTM] BUILD = config-l120 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
+            log('[CTM] BUILD = config-l125 ｜ 本行用于确认实机加载的代码版本 ｜ ' + new Date().toISOString());
             // 图鉴文案总览（只读设施）就绪提示：**只在 verboseLog 打开时打一行**，不刷屏。
             // 要详情就在 F12 控制台执行：gpnAlmDumpAll() / gpnAlmDumpOne('starfruit')
             if (verboseOn()) {
